@@ -8,6 +8,8 @@ import ai.starlake.quack.ondemand.api.{
   DeletePoolRequest,
   KillStatementRequest,
   MaintenanceHandlers,
+  MaintenancePolicyDeleteRequest,
+  MaintenancePolicyUpsertRequest,
   MaintenanceRunRequest,
   NodeHandlers,
   NodeOpRequest,
@@ -23,6 +25,7 @@ import ai.starlake.quack.ondemand.api.{
   StopPoolRequest,
   SuspendPoolRequest,
   TagCreateRequest,
+  TagDeleteRequest,
   TagHandlers,
   TagProtectRequest,
   TenantDbHandlers,
@@ -36,14 +39,14 @@ import cats.effect.IO
 import io.circe.{Json, JsonObject}
 import io.circe.syntax._
 
-/** The MCP admin tier: pool/node operations, statement kill, maintenance, tags, and audit search.
-  * Every tool is `adminOnly = true` (the route re-checks at call time) and delegates to the SAME
-  * REST handlers the admin UI uses, with the principal's raw bearer as `apiKey`, so the
+/** The MCP admin tier: pool/node/tenant-db operations, statement kill, maintenance, tags, and audit
+  * search. Every tool is `adminOnly = true` (the route re-checks at call time) and delegates to the
+  * SAME REST handlers the admin UI uses, with the principal's raw bearer as `apiKey`, so the
   * `TenantScopeCheck` gates and audit trail behave identically to REST.
   *
-  * Deny-list (spec 2026-08-18, "Decisions" item 2): nothing here can weaken protection or destroy
-  * irreversibly. In particular `protect_tag` has NO unprotect argument and there is no tag-delete
-  * tool; the only direction this surface can move a guardrail is ON.
+  * Full-surface (spec 2026-09-10, supersedes the 2026-08-18 deny-list): agents are admins in this
+  * deployment model, so destructive and protection-weakening operations are exposed and rely on the
+  * same server-side guards REST relies on.
   */
 final class McpAdminTools(
     pools: PoolHandlers,
@@ -73,6 +76,10 @@ final class McpAdminTools(
     maintenanceRunsTool,
     createTagTool,
     protectTagTool,
+    getMaintenancePolicyTool,
+    upsertMaintenancePolicyTool,
+    deleteMaintenancePolicyTool,
+    deleteTagTool,
     auditSearchTool,
     createPoolTool,
     deletePoolTool,
@@ -392,8 +399,132 @@ final class McpAdminTools(
   private val protectTagTool = McpToolDef(
     name = "protect_tag",
     description =
-      "Protect a tag so its snapshot survives retention and cannot be expired. There is no " +
-        "unprotect from here: protection can only be removed by a human through the UI or CLI.",
+      "Toggle the retention hold on a snapshot tag: protected tags pin their snapshot against " +
+        "retention expiry.",
+    inputSchema = objectSchema(
+      required = List("database", "name", "is_protected"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "name"         -> strProp("Tag name."),
+      "is_protected" -> boolProp("true sets the retention hold, false releases it."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant      <- tenantOf(principal, args)
+        database    <- required(args, "database")
+        name        <- required(args, "name")
+        isProtected <- bool(args, "is_protected").toRight("the 'is_protected' argument is required")
+      yield (tenant, database, name, isProtected)) match
+        case Left(err)                                    => IO.pure(Left(err))
+        case Right((tenant, database, name, isProtected)) =>
+          tags
+            .protect(
+              TagProtectRequest(tenant, database, name, isProtected),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val getMaintenancePolicyTool = McpToolDef(
+    name = "get_maintenance_policy",
+    description = "List a database's maintenance policy rows plus the effective merged " +
+      "policy (retention, compaction, cleanup).",
+    inputSchema = objectSchema(
+      required = List("database"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant   <- tenantOf(principal, args)
+        database <- required(args, "database")
+      yield (tenant, database)) match
+        case Left(err)                 => IO.pure(Left(err))
+        case Right((tenant, database)) =>
+          maintenance
+            .listPolicies(tenant, database, keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val upsertMaintenancePolicyTool = McpToolDef(
+    name = "upsert_maintenance_policy",
+    description = "Create or update a maintenance policy at tenantdb, schema, or table " +
+      "scope. Only the provided fields are set; others inherit.",
+    inputSchema = objectSchema(
+      required = List("database", "scope_kind"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "scope_kind"               -> strProp("tenantdb | schema | table."),
+      "scope_schema"             -> strProp("Schema (schema/table scopes)."),
+      "scope_table"              -> strProp("Table (table scope)."),
+      "enabled"                  -> boolProp("Enable/disable managed maintenance at this scope."),
+      "retention_days"           -> intProp("Snapshot retention window in days."),
+      "compaction_enabled"       -> boolProp("Enable compaction at this scope."),
+      "target_file_size"         -> strProp("Compaction target file size, e.g. '512MB'."),
+      "small_file_min_count"     -> intProp("Min small files before merge."),
+      "rewrite_delete_threshold" -> Json.obj(
+        "type"        -> Json.fromString("number"),
+        "description" -> Json.fromString("Deleted-row fraction that triggers rewrite (0-1).")
+      ),
+      "cleanup_grace_days"  -> intProp("Days before expired files are cleaned."),
+      "orphan_min_age_days" -> intProp("Min age for orphan deletion."),
+      "cron"                -> strProp("Cron expression for the maintenance schedule."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant    <- tenantOf(principal, args)
+        database  <- required(args, "database")
+        scopeKind <- required(args, "scope_kind")
+      yield (tenant, database, scopeKind)) match
+        case Left(err)                            => IO.pure(Left(err))
+        case Right((tenant, database, scopeKind)) =>
+          maintenance
+            .upsertPolicy(
+              MaintenancePolicyUpsertRequest(
+                tenant = tenant,
+                tenantDb = database,
+                scopeKind = scopeKind,
+                scopeSchema = str(args, "scope_schema"),
+                scopeTable = str(args, "scope_table"),
+                enabled = bool(args, "enabled"),
+                retentionDays = int(args, "retention_days"),
+                compactionEnabled = bool(args, "compaction_enabled"),
+                targetFileSize = str(args, "target_file_size"),
+                smallFileMinCount = int(args, "small_file_min_count"),
+                rewriteDeleteThreshold = double(args, "rewrite_delete_threshold"),
+                cleanupGraceDays = int(args, "cleanup_grace_days"),
+                orphanMinAgeDays = int(args, "orphan_min_age_days"),
+                cron = str(args, "cron")
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val deleteMaintenancePolicyTool = McpToolDef(
+    name = "delete_maintenance_policy",
+    description = "Delete a maintenance policy row by id (see get_maintenance_policy).",
+    inputSchema = objectSchema(
+      required = List("id"),
+      props = "id" -> strProp("Policy row id.")
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      required(args, "id") match
+        case Left(err) => IO.pure(Left(err))
+        case Right(id) =>
+          maintenance
+            .deletePolicy(MaintenancePolicyDeleteRequest(id), keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(id))))
+  )
+
+  private val deleteTagTool = McpToolDef(
+    name = "delete_tag",
+    description = "Delete a snapshot tag. The snapshot itself is untouched; a protected " +
+      "tag must be unprotected first.",
     inputSchema = objectSchema(
       required = List("database", "name"),
       props = "database" -> strProp("Database (tenant-db) name."),
@@ -410,16 +541,8 @@ final class McpAdminTools(
         case Left(err)                       => IO.pure(Left(err))
         case Right((tenant, database, name)) =>
           tags
-            // isProtected is pinned true: the deny-list (spec, Decisions item 2) forbids any
-            // protection-weakening operation from /mcp, so this tool has no boolean and the
-            // request is hardcoded to the protecting direction.
-            .protect(
-              TagProtectRequest(tenant, database, name, isProtected = true),
-              keyOf(principal)
-            )(
-              scopeOf
-            )
-            .map(res => bridge(res).map(_.asJson))
+            .delete(TagDeleteRequest(tenant, database, name), keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(name))))
   )
 
   // ---------- audit ----------
@@ -468,10 +591,10 @@ final class McpAdminTools(
     inputSchema = objectSchema(
       required = List("database", "pool"),
       props = "database" -> strProp("Database (tenant-db) name."),
-      "pool"    -> strProp("Pool name."),
-      "writers" -> intProp("Write-only node count (default 0)."),
-      "readers" -> intProp("Read-only node count (default 0)."),
-      "dual"    -> intProp("Dual (read+write) node count (default 0)."),
+      "pool"             -> strProp("Pool name."),
+      "writers"          -> intProp("Write-only node count (default 0)."),
+      "readers"          -> intProp("Read-only node count (default 0)."),
+      "dual"             -> intProp("Dual (read+write) node count (default 0)."),
       "idle_timeout_sec" -> intProp(
         "Hibernation window seconds: -1 inherit (default), 0 never, >0 explicit."
       ),
@@ -489,7 +612,7 @@ final class McpAdminTools(
     adminOnly = true,
     run = (principal, args) =>
       poolTarget(principal, args) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                       => IO.pure(Left(err))
         case Right((tenant, database, pool)) =>
           val dist = RoleDistribution(
             writeonly = int(args, "writers").getOrElse(0),
@@ -533,7 +656,7 @@ final class McpAdminTools(
     adminOnly = true,
     run = (principal, args) =>
       poolTarget(principal, args) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                       => IO.pure(Left(err))
         case Right((tenant, database, pool)) =>
           pools
             .deletePool(
@@ -557,7 +680,7 @@ final class McpAdminTools(
     adminOnly = true,
     run = (principal, args) =>
       poolTarget(principal, args) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                       => IO.pure(Left(err))
         case Right((tenant, database, pool)) =>
           pools
             .stopPool(
@@ -583,7 +706,7 @@ final class McpAdminTools(
         target   <- poolTarget(principal, args)
         disabled <- bool(args, "disabled").toRight("the 'disabled' argument is required")
       yield (target, disabled)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                                   => IO.pure(Left(err))
         case Right(((tenant, database, pool), disabled)) =>
           pools
             .setPoolDisabled(
@@ -612,7 +735,7 @@ final class McpAdminTools(
         cpu    <- required(args, "cpu")
         memory <- required(args, "memory")
       yield (target, cpu, memory)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                                      => IO.pure(Left(err))
         case Right(((tenant, database, pool), cpu, memory)) =>
           pools
             .setResources(
@@ -635,7 +758,7 @@ final class McpAdminTools(
     adminOnly = true,
     run = (principal, args) =>
       poolTarget(principal, args) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                       => IO.pure(Left(err))
         case Right((tenant, database, pool)) =>
           pools
             .setPodTemplate(
@@ -666,7 +789,7 @@ final class McpAdminTools(
         target   <- poolTarget(principal, args)
         lockdown <- required(args, "lockdown")
       yield (target, lockdown)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                                   => IO.pure(Left(err))
         case Right(((tenant, database, pool), lockdown)) =>
           pools
             .setLockdown(
@@ -690,7 +813,7 @@ final class McpAdminTools(
     adminOnly = true,
     run = (principal, args) =>
       poolTarget(principal, args) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                       => IO.pure(Left(err))
         case Right((tenant, database, pool)) =>
           pools
             .setPoolAutoscale(
@@ -724,7 +847,7 @@ final class McpAdminTools(
         nodeId <- required(args, "node_id")
         max    <- int(args, "max").toRight("the 'max' argument is required")
       yield (target, nodeId, max)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                                      => IO.pure(Left(err))
         case Right(((tenant, database, pool), nodeId, max)) =>
           nodes
             .setMaxConcurrent(
@@ -745,8 +868,10 @@ final class McpAdminTools(
       required = List("name"),
       props = "name" -> strProp("Database (tenant-db) name."),
       "kind"      -> strProp("ducklake | duckdb-file | memory (default ducklake)."),
-      "metastore" -> objProp("DuckLake metastore config: pgHost, pgPort, pgUser, " +
-        "pgPassword, dbName, schemaName."),
+      "metastore" -> objProp(
+        "DuckLake metastore config: pgHost, pgPort, pgUser, " +
+          "pgPassword, dbName, schemaName."
+      ),
       "data_path"        -> strProp("Data directory / object-store path."),
       "object_store"     -> objProp("Object-store credentials config."),
       "default_database" -> strProp("Default catalog name presented to clients."),
@@ -761,7 +886,7 @@ final class McpAdminTools(
         tenant <- tenantOf(principal, args)
         name   <- required(args, "name")
       yield (tenant, name)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)             => IO.pure(Left(err))
         case Right((tenant, name)) =>
           tenantDbs
             .createTenantDb(
@@ -817,7 +942,7 @@ final class McpAdminTools(
         tenant <- tenantOf(principal, args)
         name   <- required(args, "name")
       yield (tenant, name)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)             => IO.pure(Left(err))
         case Right((tenant, name)) =>
           tenantDbs
             .update(
@@ -851,7 +976,7 @@ final class McpAdminTools(
         tenant <- tenantOf(principal, args)
         name   <- required(args, "name")
       yield (tenant, name)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)             => IO.pure(Left(err))
         case Right((tenant, name)) =>
           tenantDbs
             .deleteTenantDb(

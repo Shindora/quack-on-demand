@@ -241,7 +241,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
     unknown.toOption.get.hcursor.get[String]("status").toOption shouldBe Some("already-completed")
   }
 
-  "protect_tag" should "always protect and expose no unprotect surface" in {
+  "protect_tag" should "protect a tag when is_protected=true" in {
     val f = new Fixture
     f.call(
       "create_tag",
@@ -252,20 +252,89 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       "snapshot_id" -> Json.fromLong(3L)
     ).isRight shouldBe true
 
-    val schema = f.tools.tools.find(_.name == "protect_tag").get.inputSchema.noSpaces
-    schema should not include "protected"
-
     f.call(
       "protect_tag",
+      McpPrincipal.StaticKey,
+      "tenant"       -> Json.fromString(Tenant0),
+      "database"     -> Json.fromString(TenantDb),
+      "name"         -> Json.fromString("v1"),
+      "is_protected" -> Json.True
+    ).isRight shouldBe true
+    f.store.listSnapshotTags(Tenant0, TenantDb).find(_.name == "v1").get.isProtected shouldBe true
+  }
+
+  "upsert_maintenance_policy" should "create a tenantdb-scope policy and list it back" in {
+    val f = new Fixture
+    val up = f.call(
+      "upsert_maintenance_policy",
+      McpPrincipal.StaticKey,
+      "tenant"         -> Json.fromString(Tenant0),
+      "database"       -> Json.fromString(TenantDb),
+      "scope_kind"     -> Json.fromString("tenantdb"),
+      "retention_days" -> Json.fromInt(7)
+    )
+    up.isRight shouldBe true
+    val listed = f.call(
+      "get_maintenance_policy",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb)
+    )
+    listed.isRight shouldBe true
+    val id = up.toOption.get.hcursor.get[String]("id").toOption.get
+    f.call("delete_maintenance_policy", McpPrincipal.StaticKey, "id" -> Json.fromString(id))
+      .isRight shouldBe true
+  }
+
+  "delete_tag" should "delete a created tag" in {
+    val f = new Fixture
+    f.call(
+      "create_tag",
+      McpPrincipal.StaticKey,
+      "tenant"      -> Json.fromString(Tenant0),
+      "database"    -> Json.fromString(TenantDb),
+      "name"        -> Json.fromString("v1"),
+      "snapshot_id" -> Json.fromLong(42L)
+    ).isRight shouldBe true
+    f.call(
+      "delete_tag",
       McpPrincipal.StaticKey,
       "tenant"   -> Json.fromString(Tenant0),
       "database" -> Json.fromString(TenantDb),
       "name"     -> Json.fromString("v1")
     ).isRight shouldBe true
-    f.store.listSnapshotTags(Tenant0, TenantDb).find(_.name == "v1").get.isProtected shouldBe true
+  }
 
-    // There is no unprotect and no tag delete anywhere in the admin tier.
-    f.tools.tools.map(_.name) should not contain "delete_tag"
+  "protect_tag" should "toggle protection both directions" in {
+    val f = new Fixture
+    f.call(
+      "create_tag",
+      McpPrincipal.StaticKey,
+      "tenant"      -> Json.fromString(Tenant0),
+      "database"    -> Json.fromString(TenantDb),
+      "name"        -> Json.fromString("v1"),
+      "snapshot_id" -> Json.fromLong(42L)
+    ).isRight shouldBe true
+    val on = f.call(
+      "protect_tag",
+      McpPrincipal.StaticKey,
+      "tenant"       -> Json.fromString(Tenant0),
+      "database"     -> Json.fromString(TenantDb),
+      "name"         -> Json.fromString("v1"),
+      "is_protected" -> Json.True
+    )
+    // Wire field is "protected", not "isProtected": CatalogTagEntry's hand-rolled Codec (Dtos.scala)
+    // renames it because "protected" is a Scala keyword -- see that codec's comment.
+    on.toOption.get.hcursor.get[Boolean]("protected").toOption.get shouldBe true
+    val off = f.call(
+      "protect_tag",
+      McpPrincipal.StaticKey,
+      "tenant"       -> Json.fromString(Tenant0),
+      "database"     -> Json.fromString(TenantDb),
+      "name"         -> Json.fromString("v1"),
+      "is_protected" -> Json.False
+    )
+    off.toOption.get.hcursor.get[Boolean]("protected").toOption.get shouldBe false
   }
 
   "audit_search" should "map filters through and admit the static key" in {
