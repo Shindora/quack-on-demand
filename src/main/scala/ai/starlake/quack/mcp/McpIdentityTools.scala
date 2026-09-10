@@ -1,8 +1,13 @@
 package ai.starlake.quack.mcp
 
 import ai.starlake.quack.ondemand.api.{
+  GroupCreateRequest,
+  GroupDeleteRequest,
   GroupHandlers,
+  GroupRoleMembershipRequest,
   MembershipHandlers,
+  RoleCreateRequest,
+  RoleDeleteRequest,
   RoleHandlers,
   SetTenantAuthRequest,
   SetTenantDisabledRequest,
@@ -11,7 +16,9 @@ import ai.starlake.quack.ondemand.api.{
   TenantRequest,
   UserCreateRequest,
   UserDeleteRequest,
+  UserGroupMembershipRequest,
   UserHandlers,
+  UserRoleMembershipRequest,
   UserUpdateRequest
 }
 import ai.starlake.quack.ondemand.api.Dtos.given
@@ -46,7 +53,16 @@ final class McpIdentityTools(
     createUserTool,
     updateUserTool,
     deleteUserTool,
-    userEffectivePermissionsTool
+    userEffectivePermissionsTool,
+    listGroupsTool,
+    createGroupTool,
+    deleteGroupTool,
+    listRolesTool,
+    createRoleTool,
+    deleteRoleTool,
+    addMembershipTool,
+    removeMembershipTool,
+    listGroupRoleMembershipsTool
   )
 
   private def keyOf(principal: McpPrincipal): Option[String] = principal.rawToken
@@ -279,4 +295,206 @@ final class McpIdentityTools(
         case Left(err) => IO.pure(Left(err))
         case Right(id) =>
           users.effective(id, keyOf(principal))(scopeOf).map(res => bridge(res).map(_.asJson))
+  )
+
+  // ---------- groups & roles ----------
+
+  private val listGroupsTool = McpToolDef(
+    name = "list_groups",
+    description = "List a tenant's groups. PATs infer their tenant; superusers pass 'tenant'.",
+    inputSchema = objectSchema(required = Nil, props = tenantProp),
+    adminOnly = true,
+    run = (principal, args) =>
+      tenantOf(principal, args) match
+        case Left(err)     => IO.pure(Left(err))
+        case Right(tenant) =>
+          groups
+            .listGroups(tenant, keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val createGroupTool = McpToolDef(
+    name = "create_group",
+    description = "Create a group in a tenant.",
+    inputSchema = objectSchema(
+      required = List("name"),
+      props = "name" -> strProp("Group name."),
+      "description" -> strProp("Optional description."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant <- tenantOf(principal, args)
+        name   <- required(args, "name")
+      yield (tenant, name)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, name)) =>
+          groups
+            .createGroup(
+              GroupCreateRequest(tenant, name, str(args, "description")),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val deleteGroupTool = McpToolDef(
+    name = "delete_group",
+    description = "Delete a group by id (memberships are detached).",
+    inputSchema = objectSchema(
+      required = List("id"),
+      props = "id" -> strProp("Group id (see list_groups).")
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      required(args, "id") match
+        case Left(err) => IO.pure(Left(err))
+        case Right(id) =>
+          groups
+            .deleteGroup(GroupDeleteRequest(id), keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(id))))
+  )
+
+  private val listRolesTool = McpToolDef(
+    name = "list_roles",
+    description = "List a tenant's roles. PATs infer their tenant; superusers pass 'tenant'.",
+    inputSchema = objectSchema(required = Nil, props = tenantProp),
+    adminOnly = true,
+    run = (principal, args) =>
+      tenantOf(principal, args) match
+        case Left(err)     => IO.pure(Left(err))
+        case Right(tenant) =>
+          roles
+            .listRoles(tenant, keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val createRoleTool = McpToolDef(
+    name = "create_role",
+    description = "Create a role in a tenant. Grant table permissions to it with " +
+      "grant_role_permission.",
+    inputSchema = objectSchema(
+      required = List("name"),
+      props = "name" -> strProp("Role name."),
+      "description" -> strProp("Optional description."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant <- tenantOf(principal, args)
+        name   <- required(args, "name")
+      yield (tenant, name)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, name)) =>
+          roles
+            .createRole(
+              RoleCreateRequest(tenant, name, str(args, "description")),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val deleteRoleTool = McpToolDef(
+    name = "delete_role",
+    description = "Delete a role by id (its permissions and memberships go with it).",
+    inputSchema = objectSchema(
+      required = List("id"),
+      props = "id" -> strProp("Role id (see list_roles).")
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      required(args, "id") match
+        case Left(err) => IO.pure(Left(err))
+        case Right(id) =>
+          roles
+            .deleteRole(RoleDeleteRequest(id), keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(id))))
+  )
+
+  // ---------- memberships ----------
+
+  private def membershipCall(
+      principal: McpPrincipal,
+      args: JsonObject,
+      add: Boolean
+  ): IO[Either[String, Json]] =
+    val done = Json.obj("ok" -> Json.True)
+    required(args, "kind") match
+      case Left(err) => IO.pure(Left(err))
+      case Right("user_role") =>
+        (for
+          userId <- required(args, "user_id")
+          roleId <- required(args, "role_id")
+        yield UserRoleMembershipRequest(userId, roleId)) match
+          case Left(err)  => IO.pure(Left(err))
+          case Right(req) =>
+            val io =
+              if add then memberships.addUserRole(req, keyOf(principal))(scopeOf)
+              else memberships.removeUserRole(req, keyOf(principal))(scopeOf)
+            io.map(res => bridge(res).map(_ => done))
+      case Right("user_group") =>
+        (for
+          userId  <- required(args, "user_id")
+          groupId <- required(args, "group_id")
+        yield UserGroupMembershipRequest(userId, groupId)) match
+          case Left(err)  => IO.pure(Left(err))
+          case Right(req) =>
+            val io =
+              if add then memberships.addUserGroup(req, keyOf(principal))(scopeOf)
+              else memberships.removeUserGroup(req, keyOf(principal))(scopeOf)
+            io.map(res => bridge(res).map(_ => done))
+      case Right("group_role") =>
+        (for
+          groupId <- required(args, "group_id")
+          roleId  <- required(args, "role_id")
+        yield GroupRoleMembershipRequest(groupId, roleId)) match
+          case Left(err)  => IO.pure(Left(err))
+          case Right(req) =>
+            val io =
+              if add then memberships.addGroupRole(req, keyOf(principal))(scopeOf)
+              else memberships.removeGroupRole(req, keyOf(principal))(scopeOf)
+            io.map(res => bridge(res).map(_ => done))
+      case Right(other) =>
+        IO.pure(Left(s"unknown membership kind '$other': use user_role, user_group, group_role"))
+
+  private val membershipSchema = objectSchema(
+    required = List("kind"),
+    props = "kind" -> strProp("One of user_role, user_group, group_role."),
+    "user_id"  -> strProp("User id (user_role / user_group kinds)."),
+    "role_id"  -> strProp("Role id (user_role / group_role kinds)."),
+    "group_id" -> strProp("Group id (user_group / group_role kinds).")
+  )
+
+  private val addMembershipTool = McpToolDef(
+    name = "add_membership",
+    description = "Attach a user to a role or group, or a group to a role. Idempotent.",
+    inputSchema = membershipSchema,
+    adminOnly = true,
+    run = (principal, args) => membershipCall(principal, args, add = true)
+  )
+
+  private val removeMembershipTool = McpToolDef(
+    name = "remove_membership",
+    description = "Detach a user from a role or group, or a group from a role. Idempotent.",
+    inputSchema = membershipSchema,
+    adminOnly = true,
+    run = (principal, args) => membershipCall(principal, args, add = false)
+  )
+
+  private val listGroupRoleMembershipsTool = McpToolDef(
+    name = "list_group_role_memberships",
+    description = "List the roles attached to a group.",
+    inputSchema = objectSchema(
+      required = List("group_id"),
+      props = "group_id" -> strProp("Group id.")
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      required(args, "group_id") match
+        case Left(err)      => IO.pure(Left(err))
+        case Right(groupId) =>
+          memberships
+            .listGroupRoles(groupId, keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
   )

@@ -248,3 +248,147 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     out.isRight shouldBe true
     out.toOption.get.hcursor.downField("user").get[String]("username").toOption.get shouldBe "bob"
   }
+
+  "create_group and create_role" should "create in a tenant and list back" in {
+    val f = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val g = f.call(
+      "create_group",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("analysts")
+    )
+    g.isRight shouldBe true
+    val r = f.call(
+      "create_role",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("reader")
+    )
+    r.isRight shouldBe true
+    f.call("list_groups", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
+      .toOption.get.hcursor.downField("groups").values.get.size shouldBe 1
+    // create_tenant seeds a built-in "admin" role (PoolSupervisor.createTenant), so the tenant
+    // already has 1 role before "reader" is created here.
+    f.call("list_roles", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
+      .toOption.get.hcursor.downField("roles").values.get.size shouldBe 2
+  }
+
+  "list_roles" should "infer the tenant for a tenant-scoped PAT" in {
+    val f = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    f.call(
+      "create_role",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("reader")
+    )
+    val out = f.call("list_roles", adminPat()) // no tenant arg
+    out.isRight shouldBe true
+    // create_tenant's built-in "admin" role plus the "reader" role created above.
+    out.toOption.get.hcursor.downField("roles").values.get.size shouldBe 2
+  }
+
+  "add_membership" should "attach a user to a role and reflect in effective permissions" in {
+    val f = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val u = f.idOf(f.call(
+      "create_user",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString("acme"),
+      "username" -> Json.fromString("bob"),
+      "password" -> Json.fromString("s3cret-s3cret")
+    ))
+    val r = f.idOf(f.call(
+      "create_role",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("reader")
+    ))
+    val add = f.call(
+      "add_membership",
+      McpPrincipal.StaticKey,
+      "kind"    -> Json.fromString("user_role"),
+      "user_id" -> Json.fromString(u),
+      "role_id" -> Json.fromString(r)
+    )
+    add.isRight shouldBe true
+    val eff =
+      f.call("user_effective_permissions", McpPrincipal.StaticKey, "id" -> Json.fromString(u))
+    eff.toOption.get.hcursor.downField("roles").values.get.size shouldBe 1
+  }
+
+  it should "reject an unknown kind" in {
+    val f   = new Fixture
+    val out = f.call(
+      "add_membership",
+      McpPrincipal.StaticKey,
+      "kind"    -> Json.fromString("user_planet"),
+      "user_id" -> Json.fromString("u"),
+      "role_id" -> Json.fromString("r")
+    )
+    out.isLeft shouldBe true
+    out.left.toOption.get should include("kind")
+  }
+
+  "remove_membership" should "detach a group role and list_group_role_memberships shows it" in {
+    val f = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val g = f.idOf(f.call(
+      "create_group",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("analysts")
+    ))
+    val r = f.idOf(f.call(
+      "create_role",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("reader")
+    ))
+    f.call(
+      "add_membership",
+      McpPrincipal.StaticKey,
+      "kind"     -> Json.fromString("group_role"),
+      "group_id" -> Json.fromString(g),
+      "role_id"  -> Json.fromString(r)
+    ).isRight shouldBe true
+    f.call(
+      "list_group_role_memberships",
+      McpPrincipal.StaticKey,
+      "group_id" -> Json.fromString(g)
+    ).toOption.get.hcursor.downField("roles").values.get.size shouldBe 1
+    f.call(
+      "remove_membership",
+      McpPrincipal.StaticKey,
+      "kind"     -> Json.fromString("group_role"),
+      "group_id" -> Json.fromString(g),
+      "role_id"  -> Json.fromString(r)
+    ).isRight shouldBe true
+    f.call(
+      "list_group_role_memberships",
+      McpPrincipal.StaticKey,
+      "group_id" -> Json.fromString(g)
+    ).toOption.get.hcursor.downField("roles").values.get.size shouldBe 0
+  }
+
+  "delete_group and delete_role" should "delete by id" in {
+    val f = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val g = f.idOf(f.call(
+      "create_group",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("analysts")
+    ))
+    val r = f.idOf(f.call(
+      "create_role",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString("acme"),
+      "name"   -> Json.fromString("reader")
+    ))
+    f.call("delete_group", McpPrincipal.StaticKey, "id" -> Json.fromString(g))
+      .isRight shouldBe true
+    f.call("delete_role", McpPrincipal.StaticKey, "id" -> Json.fromString(r))
+      .isRight shouldBe true
+  }
