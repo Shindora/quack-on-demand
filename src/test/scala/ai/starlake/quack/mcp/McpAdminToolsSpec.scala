@@ -13,7 +13,8 @@ import ai.starlake.quack.ondemand.api.{
   PoolHandlers,
   SessionTokenStore,
   SetPoolAutoscaleRequest,
-  TagHandlers
+  TagHandlers,
+  TenantDbHandlers
 }
 import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.ha.StateChangePublisher
@@ -97,9 +98,11 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       snapshotExists = (_, _, _) => true,
       snapshotsExist = (_, _, ids) => ids
     )
-    val audit = new AuditHandlers(NoopTelemetryStore)
+    val audit     = new AuditHandlers(NoopTelemetryStore)
+    val tenantDbs = new TenantDbHandlers(sup)
 
-    val tools = new McpAdminTools(pools, nodes, statements, maintenance, tags, audit, scopeOf)
+    val tools =
+      new McpAdminTools(pools, nodes, statements, maintenance, tags, audit, tenantDbs, scopeOf)
 
     def call(name: String, principal: McpPrincipal, args: (String, Json)*): Either[String, Json] =
       val tool = tools.tools.find(_.name == name).getOrElse(fail(s"tool $name not defined"))
@@ -288,4 +291,90 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       "pool"     -> Json.fromString(Pool)
     )
     withClue(status)(status.isRight shouldBe true)
+  }
+
+  "create_pool" should "create a pool with a role distribution" in {
+    val f = new Fixture
+    val out = f.call(
+      "create_pool",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString("etl"),
+      "dual"     -> Json.fromInt(1)
+    )
+    out.isRight shouldBe true
+    f.sup.get(PoolKey(Tenant0, TenantDb, "etl")).isDefined shouldBe true
+  }
+
+  "set_pool_disabled" should "flip the disabled flag" in {
+    val f = new Fixture
+    val out = f.call(
+      "set_pool_disabled",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString(Pool),
+      "disabled" -> Json.True
+    )
+    out.isRight shouldBe true
+    out.toOption.get.hcursor.get[Boolean]("disabled").toOption.get shouldBe true
+  }
+
+  "delete_pool" should "delete a pool with force" in {
+    val f = new Fixture
+    val out = f.call(
+      "delete_pool",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString(Pool),
+      "force"    -> Json.True
+    )
+    out.isRight shouldBe true
+    f.sup.get(Key).isEmpty shouldBe true
+  }
+
+  "set_node_max_concurrent" should "surface an error for an unknown node" in {
+    val f = new Fixture
+    val out = f.call(
+      "set_node_max_concurrent",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString(Pool),
+      "node_id"  -> Json.fromString("no-such-node"),
+      "max"      -> Json.fromInt(4)
+    )
+    out.isLeft shouldBe true
+  }
+
+  "create_database and list_databases_admin" should "round-trip a tenant-db" in {
+    val f = new Fixture
+    val created = f.call(
+      "create_database",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString(Tenant0),
+      "name"   -> Json.fromString("scratch"),
+      "kind"   -> Json.fromString("memory")
+    )
+    withClue(created)(created.isRight shouldBe true)
+    // create_database's "name" is a suffix the supervisor composes into "<tenant>_<suffix>"
+    // (Names.normalizeTenantDbName); delete/update address the tenant-db by that full stored
+    // name, so round-trip through the create response rather than re-typing the suffix.
+    val fullName = created.toOption.get.hcursor.get[String]("name").toOption.get
+    fullName shouldBe s"${Tenant0}_scratch"
+    val listed = f.call(
+      "list_databases_admin",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString(Tenant0)
+    )
+    listed.toOption.get.hcursor
+      .downField("tenantDbs").values.get.size should be >= 2 // fixture's + scratch
+    f.call(
+      "delete_database",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString(Tenant0),
+      "name"   -> Json.fromString(fullName)
+    ).isRight shouldBe true
   }

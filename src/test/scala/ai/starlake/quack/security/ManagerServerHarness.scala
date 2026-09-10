@@ -523,6 +523,7 @@ object ManagerServerHarness:
           maintenanceHandlers,
           tagHandlers,
           auditHandlers,
+          tenantDbs,
           mcpScopeOf
         )
         Some(

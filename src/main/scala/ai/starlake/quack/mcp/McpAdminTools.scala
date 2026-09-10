@@ -4,6 +4,8 @@ import ai.starlake.quack.model.RoleDistribution
 import ai.starlake.quack.ondemand.api.{
   ActiveStatementHandlers,
   AuditHandlers,
+  CreatePoolRequest,
+  DeletePoolRequest,
   KillStatementRequest,
   MaintenanceHandlers,
   MaintenanceRunRequest,
@@ -12,10 +14,21 @@ import ai.starlake.quack.ondemand.api.{
   PoolHandlers,
   ResumePoolRequest,
   ScalePoolRequest,
+  SetMaxConcurrentRequest,
+  SetPoolAutoscaleRequest,
+  SetPoolDisabledRequest,
+  SetPoolLockdownRequest,
+  SetPoolResourcesRequest,
+  SetPoolTemplateRequest,
+  StopPoolRequest,
   SuspendPoolRequest,
   TagCreateRequest,
   TagHandlers,
-  TagProtectRequest
+  TagProtectRequest,
+  TenantDbHandlers,
+  TenantDbOpRequest,
+  TenantDbRequest,
+  UpdateTenantDbRequest
 }
 import ai.starlake.quack.ondemand.api.Dtos.given
 import ai.starlake.quack.ondemand.auth.SessionScope
@@ -39,6 +52,7 @@ final class McpAdminTools(
     maintenance: MaintenanceHandlers,
     tags: TagHandlers,
     auditH: AuditHandlers,
+    tenantDbs: TenantDbHandlers,
     scopeOf: String => Option[SessionScope]
 ):
 
@@ -59,7 +73,21 @@ final class McpAdminTools(
     maintenanceRunsTool,
     createTagTool,
     protectTagTool,
-    auditSearchTool
+    auditSearchTool,
+    createPoolTool,
+    deletePoolTool,
+    stopPoolTool,
+    setPoolDisabledTool,
+    setPoolResourcesTool,
+    setPoolPodTemplateTool,
+    setPoolLockdownTool,
+    setPoolAutoscaleTool,
+    setNodeMaxConcurrentTool,
+    createDatabaseTool,
+    listDatabasesAdminTool,
+    updateDatabaseTool,
+    deleteDatabaseTool,
+    metastoreDefaultsTool
   )
 
   private def keyOf(principal: McpPrincipal): Option[String] = principal.rawToken
@@ -143,6 +171,17 @@ final class McpAdminTools(
             )(scopeOf)
             .map(res => bridge(res).map(_.asJson))
   )
+
+  /** (tenant, database, pool) triple every pool tool starts from. */
+  private def poolTarget(
+      principal: McpPrincipal,
+      args: JsonObject
+  ): Either[String, (String, String, String)] =
+    for
+      tenant   <- tenantOf(principal, args)
+      database <- required(args, "database")
+      pool     <- required(args, "pool")
+    yield (tenant, database, pool)
 
   private def poolLifecycleTool(
       name: String,
@@ -417,5 +456,423 @@ final class McpAdminTools(
           None,
           keyOf(principal)
         )(scopeOf)
+        .map(res => bridge(res).map(_.asJson))
+  )
+
+  // ---------- pool lifecycle/settings, node max-concurrent ----------
+
+  private val createPoolTool = McpToolDef(
+    name = "create_pool",
+    description = "Create a pool of DuckDB nodes in a database. Sizes are per role: " +
+      "writers/readers/dual. Subject to module quota gates.",
+    inputSchema = objectSchema(
+      required = List("database", "pool"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"    -> strProp("Pool name."),
+      "writers" -> intProp("Write-only node count (default 0)."),
+      "readers" -> intProp("Read-only node count (default 0)."),
+      "dual"    -> intProp("Dual (read+write) node count (default 0)."),
+      "idle_timeout_sec" -> intProp(
+        "Hibernation window seconds: -1 inherit (default), 0 never, >0 explicit."
+      ),
+      "max_concurrent_per_node" -> intProp("Per-node statement cap (0 = unlimited)."),
+      "disabled"                -> boolProp("Create disabled."),
+      "start_suspended"         -> boolProp("Create suspended at zero nodes."),
+      "init_sql"                -> strProp("SQL run on each node at boot."),
+      "cpu"                     -> strProp("K8s CPU quantity, e.g. '500m'."),
+      "memory"                  -> strProp("K8s memory quantity, e.g. '2Gi'."),
+      "lockdown"                -> strProp("inherit | on | off (default inherit)."),
+      "min_nodes"               -> intProp("Autoscale floor."),
+      "max_nodes"               -> intProp("Autoscale ceiling."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      poolTarget(principal, args) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, database, pool)) =>
+          val dist = RoleDistribution(
+            writeonly = int(args, "writers").getOrElse(0),
+            readonly = int(args, "readers").getOrElse(0),
+            dual = int(args, "dual").getOrElse(0)
+          )
+          pools
+            .createPool(
+              CreatePoolRequest(
+                tenant = tenant,
+                tenantDb = database,
+                pool = pool,
+                size = dist.writeonly + dist.readonly + dist.dual,
+                roleDistribution = dist,
+                idleTimeoutSec = int(args, "idle_timeout_sec").getOrElse(-1),
+                maxConcurrentPerNode = int(args, "max_concurrent_per_node").getOrElse(0),
+                disabled = bool(args, "disabled").getOrElse(false),
+                startSuspended = bool(args, "start_suspended").getOrElse(false),
+                initSql = str(args, "init_sql"),
+                cpu = str(args, "cpu").getOrElse(""),
+                memory = str(args, "memory").getOrElse(""),
+                lockdown = str(args, "lockdown").getOrElse("inherit"),
+                minNodes = int(args, "min_nodes"),
+                maxNodes = int(args, "max_nodes")
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val deletePoolTool = McpToolDef(
+    name = "delete_pool",
+    description = "Delete a pool and stop its nodes. force=true skips drain protection.",
+    inputSchema = objectSchema(
+      required = List("database", "pool"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"  -> strProp("Pool name."),
+      "force" -> boolProp("Force past drain protection."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      poolTarget(principal, args) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, database, pool)) =>
+          pools
+            .deletePool(
+              DeletePoolRequest(tenant, database, pool, bool(args, "force").getOrElse(false)),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(pool))))
+  )
+
+  private val stopPoolTool = McpToolDef(
+    name = "stop_pool",
+    description = "Stop all of a pool's nodes without deleting the pool. force=true skips " +
+      "drain protection. resume_pool or the next statement brings it back.",
+    inputSchema = objectSchema(
+      required = List("database", "pool"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"  -> strProp("Pool name."),
+      "force" -> boolProp("Force past drain protection."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      poolTarget(principal, args) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, database, pool)) =>
+          pools
+            .stopPool(
+              StopPoolRequest(tenant, database, pool, bool(args, "force").getOrElse(false)),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("stopped" -> Json.fromString(pool))))
+  )
+
+  private val setPoolDisabledTool = McpToolDef(
+    name = "set_pool_disabled",
+    description = "Disable (true) or re-enable (false) a pool for routing.",
+    inputSchema = objectSchema(
+      required = List("database", "pool", "disabled"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"     -> strProp("Pool name."),
+      "disabled" -> boolProp("true to disable, false to enable."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        target   <- poolTarget(principal, args)
+        disabled <- bool(args, "disabled").toRight("the 'disabled' argument is required")
+      yield (target, disabled)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right(((tenant, database, pool), disabled)) =>
+          pools
+            .setPoolDisabled(
+              SetPoolDisabledRequest(tenant, database, pool, disabled),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val setPoolResourcesTool = McpToolDef(
+    name = "set_pool_resources",
+    description = "Set a pool's per-node CPU and memory (Kubernetes quantities). " +
+      "Subject to module quota gates.",
+    inputSchema = objectSchema(
+      required = List("database", "pool", "cpu", "memory"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"   -> strProp("Pool name."),
+      "cpu"    -> strProp("K8s CPU quantity, e.g. '500m'; empty = undeclared."),
+      "memory" -> strProp("K8s memory quantity, e.g. '2Gi'; empty = undeclared."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        target <- poolTarget(principal, args)
+        cpu    <- required(args, "cpu")
+        memory <- required(args, "memory")
+      yield (target, cpu, memory)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right(((tenant, database, pool), cpu, memory)) =>
+          pools
+            .setResources(
+              SetPoolResourcesRequest(tenant, database, pool, cpu, memory),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val setPoolPodTemplateTool = McpToolDef(
+    name = "set_pool_pod_template",
+    description = "Set a pool's Kubernetes pod template YAML (superuser only).",
+    inputSchema = objectSchema(
+      required = List("database", "pool", "pod_template_yaml"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"              -> strProp("Pool name."),
+      "pod_template_yaml" -> strProp("Pod template YAML; empty string clears it."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      poolTarget(principal, args) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, database, pool)) =>
+          pools
+            .setPodTemplate(
+              SetPoolTemplateRequest(
+                tenant,
+                database,
+                pool,
+                str(args, "pod_template_yaml").getOrElse("")
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val setPoolLockdownTool = McpToolDef(
+    name = "set_pool_lockdown",
+    description = "Set a pool's node-lockdown override: inherit | on | off (superuser only).",
+    inputSchema = objectSchema(
+      required = List("database", "pool", "lockdown"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"     -> strProp("Pool name."),
+      "lockdown" -> strProp("inherit | on | off."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        target   <- poolTarget(principal, args)
+        lockdown <- required(args, "lockdown")
+      yield (target, lockdown)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right(((tenant, database, pool), lockdown)) =>
+          pools
+            .setLockdown(
+              SetPoolLockdownRequest(tenant, database, pool, lockdown),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val setPoolAutoscaleTool = McpToolDef(
+    name = "set_pool_autoscale",
+    description = "Set or clear a pool's autoscale band. Omit both bounds to clear it.",
+    inputSchema = objectSchema(
+      required = List("database", "pool"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"      -> strProp("Pool name."),
+      "min_nodes" -> intProp("Autoscale floor; omit to clear."),
+      "max_nodes" -> intProp("Autoscale ceiling; omit to clear."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      poolTarget(principal, args) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, database, pool)) =>
+          pools
+            .setPoolAutoscale(
+              SetPoolAutoscaleRequest(
+                tenant,
+                database,
+                pool,
+                minNodes = int(args, "min_nodes"),
+                maxNodes = int(args, "max_nodes")
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val setNodeMaxConcurrentTool = McpToolDef(
+    name = "set_node_max_concurrent",
+    description = "Set one node's max concurrent statements (0 = unlimited).",
+    inputSchema = objectSchema(
+      required = List("database", "pool", "node_id", "max"),
+      props = "database" -> strProp("Database (tenant-db) name."),
+      "pool"    -> strProp("Pool name."),
+      "node_id" -> strProp("Node id (see get_pool_status)."),
+      "max"     -> intProp("Max concurrent statements; 0 = unlimited."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        target <- poolTarget(principal, args)
+        nodeId <- required(args, "node_id")
+        max    <- int(args, "max").toRight("the 'max' argument is required")
+      yield (target, nodeId, max)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right(((tenant, database, pool), nodeId, max)) =>
+          nodes
+            .setMaxConcurrent(
+              SetMaxConcurrentRequest(tenant, database, pool, nodeId, max),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("ok" -> Json.True)))
+  )
+
+  // ---------- tenant-dbs (databases) ----------
+
+  private val createDatabaseTool = McpToolDef(
+    name = "create_database",
+    description = "Register a database (tenant-db) in a tenant: a DuckLake catalog " +
+      "(kind=ducklake, needs metastore config), a DuckDB file (duckdb-file), or in-memory " +
+      "(memory).",
+    inputSchema = objectSchema(
+      required = List("name"),
+      props = "name" -> strProp("Database (tenant-db) name."),
+      "kind"      -> strProp("ducklake | duckdb-file | memory (default ducklake)."),
+      "metastore" -> objProp("DuckLake metastore config: pgHost, pgPort, pgUser, " +
+        "pgPassword, dbName, schemaName."),
+      "data_path"        -> strProp("Data directory / object-store path."),
+      "object_store"     -> objProp("Object-store credentials config."),
+      "default_database" -> strProp("Default catalog name presented to clients."),
+      "default_schema"   -> strProp("Default schema presented to clients."),
+      "init_sql"         -> strProp("SQL run on each node at attach."),
+      "managed_storage"  -> boolProp("Let the manager provision metastore + storage."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant <- tenantOf(principal, args)
+        name   <- required(args, "name")
+      yield (tenant, name)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, name)) =>
+          tenantDbs
+            .createTenantDb(
+              TenantDbRequest(
+                tenant = tenant,
+                name = name,
+                kind = str(args, "kind").getOrElse("ducklake"),
+                metastore = mapArg(args, "metastore"),
+                dataPath = str(args, "data_path").getOrElse(""),
+                objectStore = mapArg(args, "object_store"),
+                defaultDatabase = str(args, "default_database"),
+                defaultSchema = str(args, "default_schema"),
+                initSql = str(args, "init_sql").getOrElse(""),
+                managedStorage = bool(args, "managed_storage").getOrElse(false)
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val listDatabasesAdminTool = McpToolDef(
+    name = "list_databases_admin",
+    description = "Admin view of a tenant's databases (tenant-dbs) with metastore config, " +
+      "data paths, and federation counts. For plain catalog browsing use list_databases.",
+    inputSchema = objectSchema(required = Nil, props = tenantProp),
+    adminOnly = true,
+    run = (principal, args) =>
+      tenantOf(principal, args) match
+        case Left(err)     => IO.pure(Left(err))
+        case Right(tenant) =>
+          tenantDbs
+            .listTenantDbs(tenant, keyOf(principal))(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val updateDatabaseTool = McpToolDef(
+    name = "update_database",
+    description = "Update a database's metastore/object-store config, defaults, or init " +
+      "SQL. Affected nodes are restarted; the response lists restart failures.",
+    inputSchema = objectSchema(
+      required = List("name"),
+      props = "name" -> strProp("Database (tenant-db) name."),
+      "metastore"        -> objProp("Replacement metastore config (omit = unchanged)."),
+      "object_store"     -> objProp("Replacement object-store config (omit = unchanged)."),
+      "default_database" -> strProp("New default catalog (omit = unchanged)."),
+      "default_schema"   -> strProp("New default schema (omit = unchanged)."),
+      "init_sql"         -> strProp("New init SQL (omit = unchanged)."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant <- tenantOf(principal, args)
+        name   <- required(args, "name")
+      yield (tenant, name)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, name)) =>
+          tenantDbs
+            .update(
+              UpdateTenantDbRequest(
+                tenant = tenant,
+                name = name,
+                metastore = mapArgOpt(args, "metastore"),
+                objectStore = mapArgOpt(args, "object_store"),
+                defaultDatabase = str(args, "default_database"),
+                defaultSchema = str(args, "default_schema"),
+                initSql = str(args, "init_sql")
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
+  )
+
+  private val deleteDatabaseTool = McpToolDef(
+    name = "delete_database",
+    description = "Unregister a database (tenant-db). purge_managed_data=true also drops " +
+      "manager-provisioned metastore schema and storage.",
+    inputSchema = objectSchema(
+      required = List("name"),
+      props = "name" -> strProp("Database (tenant-db) name."),
+      "purge_managed_data" -> boolProp("Also destroy managed metastore/storage."),
+      tenantProp
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      (for
+        tenant <- tenantOf(principal, args)
+        name   <- required(args, "name")
+      yield (tenant, name)) match
+        case Left(err) => IO.pure(Left(err))
+        case Right((tenant, name)) =>
+          tenantDbs
+            .deleteTenantDb(
+              TenantDbOpRequest(
+                tenant,
+                name,
+                purgeManagedData = bool(args, "purge_managed_data").getOrElse(false)
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(name))))
+  )
+
+  private val metastoreDefaultsTool = McpToolDef(
+    name = "metastore_defaults",
+    description = "The manager's default Postgres metastore connection values, for " +
+      "prefilling create_database.",
+    inputSchema = objectSchema(required = Nil),
+    adminOnly = true,
+    run = (principal, _) =>
+      tenantDbs
+        .metastoreDefaults(keyOf(principal))(scopeOf)
         .map(res => bridge(res).map(_.asJson))
   )

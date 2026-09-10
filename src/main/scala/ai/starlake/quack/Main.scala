@@ -1239,6 +1239,7 @@ object Main extends IOApp with LazyLogging:
               maint,
               tagH,
               auditHandlers,
+              tenantDbs,
               mcpScopeOf
             )
             new ai.starlake.quack.mcp.McpRoutes(
