@@ -167,7 +167,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     listed.toOption.get.hcursor.downField("users").values.get.size shouldBe 1
   }
 
-  it should "let a PAT create a user in its own tenant without a tenant arg... via explicit tenant" in {
+  it should "let a tenant-scoped PAT create a user in its own tenant with an explicit tenant arg" in {
     val f   = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val out = f.call(

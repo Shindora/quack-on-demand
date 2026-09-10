@@ -12,8 +12,8 @@ import ai.starlake.quack.ondemand.api.{
   UserCreateRequest,
   UserHandlers
 }
-import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
-import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, RbacUser, UserStore}
+import ai.starlake.quack.ondemand.auth.SessionScope
+import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, UserStore}
 import cats.effect.unsafe.implicits.global
 import io.circe.{Json, JsonObject}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -24,20 +24,7 @@ import org.scalatest.matchers.should.Matchers
   */
 class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
 
-  private val Tenant0  = "acme"
-  private val patToken = "qod_pat_alice"
-
-  private def adminPat(tenant: String = Tenant0): McpPrincipal =
-    new McpPrincipal.Pat(
-      PatPrincipal(
-        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", role = "admin"),
-        patId = "pat-1",
-        scope = SessionScope(superuser = false, manageableTenants = Set(tenant)),
-        isAdmin = true,
-        restriction = TokenRestriction.Unrestricted
-      ),
-      patToken
-    )
+  private val Tenant0 = "acme"
 
   private def makeDuckDbUserStore(): UserStore =
     Class.forName("org.duckdb.DuckDBDriver")
@@ -79,11 +66,10 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
     sup.restore()
     sup.createTenant(Tenant(Tenant0)).unsafeRunSync()
 
-    val scopeOf: String => Option[SessionScope] =
-      t =>
-        if t == patToken then
-          Some(SessionScope(superuser = false, manageableTenants = Set(Tenant0)))
-        else None
+    // Every test in this spec calls tools as McpPrincipal.StaticKey, so no PAT ever resolves
+    // through this seam; the handler-level calls below (newRoleId, newUserId) that need a
+    // SessionScope => Option resolver reuse it as the "no session" default.
+    val scopeOf: String => Option[SessionScope] = _ => None
 
     val userStore       = makeDuckDbUserStore()
     val users           = new UserHandlers(sup, userStore)

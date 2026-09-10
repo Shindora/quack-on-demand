@@ -33,6 +33,10 @@ import org.scalatest.matchers.should.Matchers
 /** Drift guard for the full-surface decision (spec 2026-09-10): every REST mutation route
   * (POST/PUT/DELETE/PATCH) must either map to an MCP tool below or sit on the explicit exclusion
   * list. A new mutation endpoint fails this spec until its MCP fate is decided.
+  *
+  * Blind spot: this guard only walks [[DocEndpoints.all]]; routes a module contributes via
+  * `ManagerServer`'s `moduleEndpoints` are not registered there and so sit outside this guard -- a
+  * module that adds mutation routes must extend this coverage deliberately.
   */
 class McpCoverageSpec extends AnyFlatSpec with Matchers:
 

@@ -239,7 +239,8 @@ self/floor guards, mutation gates, audit). Tool families, one line each:
 Tenant inference: a tenant-scoped PAT acts in its own tenant automatically (omit
 `tenant` from tool arguments). Superuser credentials (a superuser PAT or the static
 key) are cross-tenant and must pass `tenant` explicitly on every tool call that needs
-one.
+one. Exception: `create_user` always requires an explicit `tenant` -- omitting it
+attempts SUPERUSER creation, which only superuser credentials may do.
 
 ### Account lockout and self-service password reset
 
