@@ -36,6 +36,8 @@ import org.scalatest.matchers.should.Matchers
   */
 class McpCoverageSpec extends AnyFlatSpec with Matchers:
 
+  ai.starlake.quack.ondemand.state.testkit.TestPostgres.dropStrayTestDatabases("qodmcpc")
+
   /** routeKey prefix -> MCP tool name. Prefix matching keeps this robust to path-param template
     * rendering.
     */
@@ -96,9 +98,14 @@ class McpCoverageSpec extends AnyFlatSpec with Matchers:
     "POST /api/tenant/delete"                -> "delete_tenant",
     "POST /api/tenant/setAuth"               -> "set_tenant_auth",
     "POST /api/tenant/setDisabled"           -> "set_tenant_disabled",
-    "POST /api/tenants/"    -> "upsert_federated_source", // POST .../federated-sources
-    "DELETE /api/tenants/"  -> "delete_federated_source", // covers source + secret DELETEs
-    "PUT /api/tenants/"     -> "set_federated_secret",
+    "POST /api/tenants/{tenant}/tenant-dbs/{tenantDb}/federated-sources" ->
+      "upsert_federated_source",
+    "DELETE /api/tenants/{tenant}/tenant-dbs/{tenantDb}/federated-sources/{alias}/secrets/{name}" ->
+      "delete_federated_secret",
+    "DELETE /api/tenants/{tenant}/tenant-dbs/{tenantDb}/federated-sources/{alias}" ->
+      "delete_federated_source",
+    "PUT /api/tenants/{tenant}/tenant-dbs/{tenantDb}/federated-sources/{alias}/secrets" ->
+      "set_federated_secret",
     "POST /api/user/create" -> "create_user",
     "POST /api/user/delete" -> "delete_user",
     "POST /api/user/update" -> "update_user"
