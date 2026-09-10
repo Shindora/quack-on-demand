@@ -126,3 +126,6 @@ cli/shim-qod-cli/dist
 /.bloop
 /docs
 __pycache__/
+
+# Local git worktrees
+/.worktrees
