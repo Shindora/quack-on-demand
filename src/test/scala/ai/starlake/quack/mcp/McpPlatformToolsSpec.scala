@@ -114,6 +114,15 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
 
       val patsH = new PatHandlers(pats, new SessionTokenStore(), userOf = (_, _) => None)
 
+      // Shared by McpPlatformTools' own scopeOf and FederatedSourceHandlers' own scopeOf below,
+      // so the PAT-aware gates (SuperuserCheck, TenantScopeCheck) inside FederatedSourceHandlers
+      // see the same principal MCP resolved.
+      val scopeOf: String => Option[SessionScope] =
+        t =>
+          if t == patToken then
+            Some(SessionScope(superuser = false, manageableTenants = Set(Tenant0)))
+          else None
+
       val federated =
         if withFederation then
           // qodstate_federated_source.tenant_db_id FK-references a real qodstate_tenant_db row,
@@ -147,7 +156,7 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
               cp.listTenants()
                 .find(_.id == t)
                 .flatMap(tt => cp.listTenantDbs(tt.id).find(_.name == d).map(_.id))
-          Some(new FederatedSourceHandlers(fedStore, resolver))
+          Some(new FederatedSourceHandlers(fedStore, resolver, scopeOf = scopeOf))
         else None
 
       val store               = new InMemoryControlPlaneStore()
@@ -157,12 +166,6 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
       val cfgH     = new ConfigHandlers(ConfigFactory.load(), liveConfigEntries)
       val historyH = new HistoryHandlers(NoopTelemetryStore)
       val usageH   = new UsageHandlers(NoopTelemetryStore)
-
-      val scopeOf: String => Option[SessionScope] =
-        t =>
-          if t == patToken then
-            Some(SessionScope(superuser = false, manageableTenants = Set(Tenant0)))
-          else None
 
       val tools =
         new McpPlatformTools(
@@ -193,6 +196,24 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
         restriction = TokenRestriction.Unrestricted
       ),
       raw
+    )
+
+  /** A tenant-scoped admin PAT whose raw bearer is `patToken`: the fixture's own `scopeOf` (shared
+    * by McpPlatformTools' gates and FederatedSourceHandlers' own `scopeOf`) resolves it to a
+    * non-superuser scope confined to [[Tenant0]] -- that server-side resolution, not the `scope`
+    * field on the [[PatPrincipal]] below, is what the security gates under test consult. Used by
+    * the federated-source security-gate regression tests below.
+    */
+  private def tenantPat: McpPrincipal =
+    new McpPrincipal.Pat(
+      PatPrincipal(
+        user = RbacUser(id = "u2", tenant = None, username = "bob", role = "admin"),
+        patId = "pat-2",
+        scope = SessionScope(superuser = false, manageableTenants = Set(Tenant0)),
+        isAdmin = true,
+        restriction = TokenRestriction.Unrestricted
+      ),
+      patToken
     )
 
   private def call(
@@ -282,6 +303,57 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
         withClue(s"$name: $out")(out.isLeft shouldBe true)
         out.swap.toOption.get should include("federation_disabled")
       }
+    }
+
+  // --- Findings 1 & 2: PAT-aware scope gates on the federated-source handlers over MCP -------
+  // REST resolves scope only from session tokens' scopeOf; MCP admits both session tokens and
+  // PATs. Before the fix, FederatedSourceHandlers was constructed with a session-only scopeOf,
+  // so a tenant-scoped admin PAT (unresolvable there) fell through the "unresolvable scope"
+  // admit-arm meant for static-key/open-mode callers -- bypassing both the externalRef
+  // superuser gate and (since MCP never traverses the REST URL-perimeter guard) tenant scoping.
+
+  "set_federated_secret" should
+    "reject an externalRef secret from a tenant-scoped admin PAT with superuser_required" in
+    withTools(withFederation = true) { (tools, _) =>
+      val created = call(
+        tools,
+        "upsert_federated_source",
+        McpPrincipal.StaticKey,
+        "tenant"    -> Json.fromString(Tenant0),
+        "database"  -> Json.fromString(TenantDb),
+        "alias"     -> Json.fromString("fedpg"),
+        "setup_sql" -> Json.fromString("INSTALL postgres;")
+      )
+      withClue(created)(created.isRight shouldBe true)
+
+      val out = call(
+        tools,
+        "set_federated_secret",
+        tenantPat,
+        "tenant"       -> Json.fromString(Tenant0),
+        "database"     -> Json.fromString(TenantDb),
+        "alias"        -> Json.fromString("fedpg"),
+        "name"         -> Json.fromString("X"),
+        "external_ref" -> Json.fromString("env:QOD_SESSION_JWT_SECRET")
+      )
+      withClue(out)(out.isLeft shouldBe true)
+      out.swap.toOption.get should include("superuser_required")
+    }
+
+  "upsert_federated_source" should
+    "reject a tenant-A-scoped admin PAT addressing tenant B with tenant_forbidden" in
+    withTools(withFederation = true) { (tools, _) =>
+      val out = call(
+        tools,
+        "upsert_federated_source",
+        tenantPat,
+        "tenant"    -> Json.fromString("tenant-b"),
+        "database"  -> Json.fromString(TenantDb),
+        "alias"     -> Json.fromString("fedpg"),
+        "setup_sql" -> Json.fromString("INSTALL postgres;")
+      )
+      withClue(out)(out.isLeft shouldBe true)
+      out.swap.toOption.get should include("tenant_forbidden")
     }
 
   "manifest_export" should "return YAML as a string result" in

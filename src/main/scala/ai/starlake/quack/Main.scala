@@ -1026,7 +1026,7 @@ object Main extends IOApp with LazyLogging:
             resolver,
             tenantIdResolver,
             audit = auditRecorder,
-            scopeOf = sessionTokens.scopeOf
+            scopeOf = t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
           )
         )
 
