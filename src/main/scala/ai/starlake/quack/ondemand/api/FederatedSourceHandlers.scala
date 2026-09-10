@@ -55,8 +55,8 @@ final class FederatedSourceHandlers(
     )
 
   /** True when a RESOLVED session is present and it is not a superuser. Mirrors
-    * [[SuperuserCheck.reject]]: static-key and open-mode callers (no resolvable
-    * scope) are admitted here -- the perimeter (apiKeyGuard) is their gate.
+    * [[SuperuserCheck.reject]]: static-key and open-mode callers (no resolvable scope) are admitted
+    * here -- the perimeter (apiKeyGuard) is their gate.
     */
   private def superuserDenied(apiKey: Option[String]): Boolean =
     SuperuserCheck.reject(apiKey)(scopeOf).isDefined
@@ -79,32 +79,36 @@ final class FederatedSourceHandlers(
       apiKey: Option[String]
   ): Out[FederatedSourceResponse] =
     IO.blocking {
-      resolveTenantDbId(tenantName, tenantDbName) match
-        case Left(e)           => Left(e)
-        case Right(tenantDbId) =>
-          // Try an upsert by alias: if one already exists reuse its id.
-          val existing = fedStore.getSource(tenantDbId, req.alias)
-          val id = existing.map(_.id).getOrElse(ai.starlake.quack.model.Names.newSurrogateId("fs"))
-          val source = FederatedSource(
-            id = id,
-            tenantDbId = tenantDbId,
-            alias = req.alias,
-            setupSql = req.setupSql,
-            description = req.description,
-            disabled = req.disabled
-          )
-          fedStore.upsertSource(source)
-          // NEVER include setupSql in detail (may contain connection strings).
-          audit.rest(
-            apiKey,
-            "control-plane",
-            AuditActions.FederationSourceUpsert,
-            "ok",
-            tenant = tenantIdResolver(tenantName),
-            target = Some(req.alias)
-          )
-          // The upsert wrote every field of `source`; no re-fetch needed.
-          Right(toSourceResponse(source))
+      TenantScopeCheck.reject(apiKey, tenantName)(scopeOf) match
+        case Some(e) => Left(e)
+        case None    =>
+          resolveTenantDbId(tenantName, tenantDbName) match
+            case Left(e)           => Left(e)
+            case Right(tenantDbId) =>
+              // Try an upsert by alias: if one already exists reuse its id.
+              val existing = fedStore.getSource(tenantDbId, req.alias)
+              val id       =
+                existing.map(_.id).getOrElse(ai.starlake.quack.model.Names.newSurrogateId("fs"))
+              val source = FederatedSource(
+                id = id,
+                tenantDbId = tenantDbId,
+                alias = req.alias,
+                setupSql = req.setupSql,
+                description = req.description,
+                disabled = req.disabled
+              )
+              fedStore.upsertSource(source)
+              // NEVER include setupSql in detail (may contain connection strings).
+              audit.rest(
+                apiKey,
+                "control-plane",
+                AuditActions.FederationSourceUpsert,
+                "ok",
+                tenant = tenantIdResolver(tenantName),
+                target = Some(req.alias)
+              )
+              // The upsert wrote every field of `source`; no re-fetch needed.
+              Right(toSourceResponse(source))
     }
 
   def listSources(tenantName: String, tenantDbName: String): Out[FederatedSourceListResponse] =
@@ -137,23 +141,28 @@ final class FederatedSourceHandlers(
       apiKey: Option[String]
   ): Out[Unit] =
     IO.blocking {
-      resolveTenantDbId(tenantName, tenantDbName) match
-        case Left(e)           => Left(e)
-        case Right(tenantDbId) =>
-          fedStore.getSource(tenantDbId, alias) match
-            case None =>
-              Left(StatusCode.NotFound -> ErrorResponse("not_found", s"source '$alias' not found"))
-            case Some(s) =>
-              fedStore.deleteSource(s.id)
-              audit.rest(
-                apiKey,
-                "control-plane",
-                AuditActions.FederationSourceDelete,
-                "ok",
-                tenant = tenantIdResolver(tenantName),
-                target = Some(alias)
-              )
-              Right(())
+      TenantScopeCheck.reject(apiKey, tenantName)(scopeOf) match
+        case Some(e) => Left(e)
+        case None    =>
+          resolveTenantDbId(tenantName, tenantDbName) match
+            case Left(e)           => Left(e)
+            case Right(tenantDbId) =>
+              fedStore.getSource(tenantDbId, alias) match
+                case None =>
+                  Left(
+                    StatusCode.NotFound -> ErrorResponse("not_found", s"source '$alias' not found")
+                  )
+                case Some(s) =>
+                  fedStore.deleteSource(s.id)
+                  audit.rest(
+                    apiKey,
+                    "control-plane",
+                    AuditActions.FederationSourceDelete,
+                    "ok",
+                    tenant = tenantIdResolver(tenantName),
+                    target = Some(alias)
+                  )
+                  Right(())
     }
 
   // ---- FederatedSecret CRUD -----------------------------------------------
@@ -182,80 +191,85 @@ final class FederatedSourceHandlers(
       apiKey: Option[String]
   ): Out[FederatedSecretResponse] =
     IO.blocking {
-      resolveTenantDbId(tenantName, tenantDbName) match
-        case Left(e)           => Left(e)
-        case Right(tenantDbId) =>
-          fedStore.getSource(tenantDbId, alias) match
-            case None =>
-              Left(StatusCode.NotFound -> ErrorResponse("not_found", s"source '$alias' not found"))
-            case Some(s) =>
-              // Validate exactly one of value/externalRef is set
-              (req.value, req.externalRef) match
-                case (Some(_), Some(_)) =>
+      TenantScopeCheck.reject(apiKey, tenantName)(scopeOf) match
+        case Some(e) => Left(e)
+        case None    =>
+          resolveTenantDbId(tenantName, tenantDbName) match
+            case Left(e)           => Left(e)
+            case Right(tenantDbId) =>
+              fedStore.getSource(tenantDbId, alias) match
+                case None =>
                   Left(
-                    StatusCode.BadRequest -> ErrorResponse(
-                      "invalid",
-                      "exactly one of value/externalRef must be set"
-                    )
+                    StatusCode.NotFound -> ErrorResponse("not_found", s"source '$alias' not found")
                   )
-                case (None, None) =>
-                  Left(
-                    StatusCode.BadRequest -> ErrorResponse(
-                      "invalid",
-                      "one of value or externalRef must be provided"
-                    )
-                  )
-                // An externalRef secret directs the manager to resolve a value
-                // from ITS OWN trust domain at node spawn: `env:` reads the
-                // manager process environment (System.getenv), and the KMS
-                // prefixes read the manager's ambient cloud / Vault credentials.
-                // That value is then inlined into the tenant's node setupSql,
-                // which the tenant can read back -- a privilege escalation from
-                // tenant admin to control-plane operator (e.g. exfiltrating
-                // QOD_SESSION_JWT_SECRET). Restrict externalRef authoring to
-                // superusers; tenant admins keep value-backed (inline) secrets.
-                // The bootstrap/manifest import paths bypass this handler and
-                // are separately superuser-gated.
-                case _ if req.externalRef.isDefined && superuserDenied(apiKey) =>
-                  audit.rest(
-                    apiKey,
-                    "control-plane",
-                    AuditActions.FederationSecretUpsert,
-                    "denied",
-                    tenant = tenantIdResolver(tenantName),
-                    target = Some(s"$alias/${req.name}")
-                  )
-                  Left(
-                    StatusCode.Forbidden -> ErrorResponse(
-                      "superuser_required",
-                      "authoring a federated secret with an externalRef requires a " +
-                        "superuser session; tenant admins may use a value-backed secret"
-                    )
-                  )
-                case _ =>
-                  val existing = fedStore.getSecret(s.id, req.name)
-                  val id       =
-                    existing
-                      .map(_.id)
-                      .getOrElse(ai.starlake.quack.model.Names.newSurrogateId("fsec"))
-                  val sec = FederatedSecret(
-                    id = id,
-                    federatedSourceId = s.id,
-                    name = req.name,
-                    value = req.value,
-                    externalRef = req.externalRef
-                  )
-                  fedStore.upsertSecret(sec)
-                  // NEVER include value or externalRef in detail (secret material).
-                  audit.rest(
-                    apiKey,
-                    "control-plane",
-                    AuditActions.FederationSecretUpsert,
-                    "ok",
-                    tenant = tenantIdResolver(tenantName),
-                    target = Some(s"$alias/${req.name}")
-                  )
-                  Right(toSecretResponse(sec))
+                case Some(s) =>
+                  // Validate exactly one of value/externalRef is set
+                  (req.value, req.externalRef) match
+                    case (Some(_), Some(_)) =>
+                      Left(
+                        StatusCode.BadRequest -> ErrorResponse(
+                          "invalid",
+                          "exactly one of value/externalRef must be set"
+                        )
+                      )
+                    case (None, None) =>
+                      Left(
+                        StatusCode.BadRequest -> ErrorResponse(
+                          "invalid",
+                          "one of value or externalRef must be provided"
+                        )
+                      )
+                    // An externalRef secret directs the manager to resolve a value
+                    // from ITS OWN trust domain at node spawn: `env:` reads the
+                    // manager process environment (System.getenv), and the KMS
+                    // prefixes read the manager's ambient cloud / Vault credentials.
+                    // That value is then inlined into the tenant's node setupSql,
+                    // which the tenant can read back -- a privilege escalation from
+                    // tenant admin to control-plane operator (e.g. exfiltrating
+                    // QOD_SESSION_JWT_SECRET). Restrict externalRef authoring to
+                    // superusers; tenant admins keep value-backed (inline) secrets.
+                    // The bootstrap/manifest import paths bypass this handler and
+                    // are separately superuser-gated.
+                    case _ if req.externalRef.isDefined && superuserDenied(apiKey) =>
+                      audit.rest(
+                        apiKey,
+                        "control-plane",
+                        AuditActions.FederationSecretUpsert,
+                        "denied",
+                        tenant = tenantIdResolver(tenantName),
+                        target = Some(s"$alias/${req.name}")
+                      )
+                      Left(
+                        StatusCode.Forbidden -> ErrorResponse(
+                          "superuser_required",
+                          "authoring a federated secret with an externalRef requires a " +
+                            "superuser session; tenant admins may use a value-backed secret"
+                        )
+                      )
+                    case _ =>
+                      val existing = fedStore.getSecret(s.id, req.name)
+                      val id       =
+                        existing
+                          .map(_.id)
+                          .getOrElse(ai.starlake.quack.model.Names.newSurrogateId("fsec"))
+                      val sec = FederatedSecret(
+                        id = id,
+                        federatedSourceId = s.id,
+                        name = req.name,
+                        value = req.value,
+                        externalRef = req.externalRef
+                      )
+                      fedStore.upsertSecret(sec)
+                      // NEVER include value or externalRef in detail (secret material).
+                      audit.rest(
+                        apiKey,
+                        "control-plane",
+                        AuditActions.FederationSecretUpsert,
+                        "ok",
+                        tenant = tenantIdResolver(tenantName),
+                        target = Some(s"$alias/${req.name}")
+                      )
+                      Right(toSecretResponse(sec))
     }
 
   def deleteSecret(
@@ -266,27 +280,35 @@ final class FederatedSourceHandlers(
       apiKey: Option[String]
   ): Out[Unit] =
     IO.blocking {
-      resolveTenantDbId(tenantName, tenantDbName) match
-        case Left(e)           => Left(e)
-        case Right(tenantDbId) =>
-          fedStore.getSource(tenantDbId, alias) match
-            case None =>
-              Left(StatusCode.NotFound -> ErrorResponse("not_found", s"source '$alias' not found"))
-            case Some(s) =>
-              fedStore.getSecret(s.id, name) match
+      TenantScopeCheck.reject(apiKey, tenantName)(scopeOf) match
+        case Some(e) => Left(e)
+        case None    =>
+          resolveTenantDbId(tenantName, tenantDbName) match
+            case Left(e)           => Left(e)
+            case Right(tenantDbId) =>
+              fedStore.getSource(tenantDbId, alias) match
                 case None =>
                   Left(
-                    StatusCode.NotFound -> ErrorResponse("not_found", s"secret '$name' not found")
+                    StatusCode.NotFound -> ErrorResponse("not_found", s"source '$alias' not found")
                   )
-                case Some(_) =>
-                  fedStore.deleteSecret(s.id, name)
-                  audit.rest(
-                    apiKey,
-                    "control-plane",
-                    AuditActions.FederationSecretDelete,
-                    "ok",
-                    tenant = tenantIdResolver(tenantName),
-                    target = Some(s"$alias/$name")
-                  )
-                  Right(())
+                case Some(s) =>
+                  fedStore.getSecret(s.id, name) match
+                    case None =>
+                      Left(
+                        StatusCode.NotFound -> ErrorResponse(
+                          "not_found",
+                          s"secret '$name' not found"
+                        )
+                      )
+                    case Some(_) =>
+                      fedStore.deleteSecret(s.id, name)
+                      audit.rest(
+                        apiKey,
+                        "control-plane",
+                        AuditActions.FederationSecretDelete,
+                        "ok",
+                        tenant = tenantIdResolver(tenantName),
+                        target = Some(s"$alias/$name")
+                      )
+                      Right(())
     }

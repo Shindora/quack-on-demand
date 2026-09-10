@@ -67,3 +67,33 @@ private[mcp] object McpToolArgs:
   /** The shared `tenant` schema property: PATs infer it, superuser credentials pass it. */
   val tenantProp: (String, Json) =
     "tenant" -> strProp("Tenant id; only for superuser credentials (PATs infer it).")
+
+  /** Read a {"k":"v"} object argument as Some(map); absent or non-object = None. */
+  def mapArgOpt(args: JsonObject, name: String): Option[Map[String, String]] =
+    args(name)
+      .flatMap(_.asObject)
+      .map(_.toMap.flatMap((k, v) => v.asString.map(k -> _)))
+
+  /** Read a {"k":"v"} object argument as Map[String,String]; absent = empty. */
+  def mapArg(args: JsonObject, name: String): Map[String, String] =
+    mapArgOpt(args, name).getOrElse(Map.empty)
+
+  /** Read a ["a","b"] array argument as Some(set); absent or non-array = None. */
+  def strSet(args: JsonObject, name: String): Option[Set[String]] =
+    args(name).flatMap(_.asArray).map(_.flatMap(_.asString).toSet)
+
+  def double(args: JsonObject, name: String): Option[Double] =
+    args(name).flatMap(_.asNumber).map(_.toDouble)
+
+  def objProp(description: String): Json =
+    Json.obj(
+      "type"        -> Json.fromString("object"),
+      "description" -> Json.fromString(description)
+    )
+
+  def arrayProp(description: String): Json =
+    Json.obj(
+      "type"        -> Json.fromString("array"),
+      "items"       -> Json.obj("type" -> Json.fromString("string")),
+      "description" -> Json.fromString(description)
+    )

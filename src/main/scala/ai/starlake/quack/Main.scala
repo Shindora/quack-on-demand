@@ -1026,7 +1026,7 @@ object Main extends IOApp with LazyLogging:
             resolver,
             tenantIdResolver,
             audit = auditRecorder,
-            scopeOf = sessionTokens.scopeOf
+            scopeOf = t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
           )
         )
 
@@ -1216,10 +1216,12 @@ object Main extends IOApp with LazyLogging:
           val mcpScopeOf: String => Option[ai.starlake.quack.ondemand.auth.SessionScope] =
             t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
           for
-            cat   <- catalogHandlers
-            hist  <- catalogHistoryHandlers
-            tagH  <- tagHandlers
-            maint <- maintenanceHandlers
+            cat      <- catalogHandlers
+            hist     <- catalogHistoryHandlers
+            tagH     <- tagHandlers
+            maint    <- maintenanceHandlers
+            resto    <- restoreHandlers
+            undropH2 <- undropHandlers
           yield
             val dataTools = new ai.starlake.quack.mcp.McpDataTools(
               mgrCfg.mcp,
@@ -1239,13 +1241,41 @@ object Main extends IOApp with LazyLogging:
               maint,
               tagH,
               auditHandlers,
+              tenantDbs,
+              mcpScopeOf
+            )
+            val identityTools = new ai.starlake.quack.mcp.McpIdentityTools(
+              tenants,
+              userHandlers,
+              groupHandlers,
+              roleHandlers,
+              membershipHandlers,
+              mcpScopeOf
+            )
+            val accessTools = new ai.starlake.quack.mcp.McpAccessTools(
+              roleHandlers,
+              columnPolicyHandlers,
+              rowPolicyHandlers,
+              poolPermHandlers,
+              mcpScopeOf
+            )
+            val platformTools = new ai.starlake.quack.mcp.McpPlatformTools(
+              resto,
+              undropH2,
+              federatedSourceHandlers,
+              manifestHandlers,
+              patHandlers,
+              serverConfigHandlers,
+              historyApiHandlers,
+              usageHandlers,
               mcpScopeOf
             )
             new ai.starlake.quack.mcp.McpRoutes(
               mgrCfg.mcp,
               mgrCfg.apiKey.filter(_.nonEmpty),
               patAuthenticator.resolve,
-              dataTools.tools ++ adminTools.tools,
+              dataTools.tools ++ adminTools.tools ++ identityTools.tools ++
+                accessTools.tools ++ platformTools.tools,
               serverVersion = "dev"
             ).routes
       if mgrCfg.mcp.enabled && mcpRoutes.isEmpty then

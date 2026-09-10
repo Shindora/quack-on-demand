@@ -2,6 +2,19 @@
 
 ## 0.8.1
 
+- **MCP full admin surface.** The MCP endpoint (`POST /mcp`) now exposes the complete
+  admin control plane to agents: tenants, users, groups, roles, memberships, role table
+  permissions, column/row policies, pool permissions, pool lifecycle and settings,
+  tenant-dbs, maintenance policies, tags (including delete and protect/unprotect),
+  restore/undrop, federated sources and secrets, manifest export/import, self-scoped
+  PATs, server config, and statement/usage telemetry - 69 new tools (91 registered in
+  total) across the identity, access, and platform tiers. This supersedes the
+  2026-08-18 deny-list decision: destructive operations are exposed and rely on the
+  same server-side guards REST uses (superuser gates, tenant scope checks, self/floor
+  guards, mutation gates, audit). `protect_tag` now toggles both directions and
+  `delete_tag` is available; PAT tools remain self-scoped (an agent manages only its
+  own token subtree). A coverage spec (`McpCoverageSpec`) now fails the build if a
+  REST mutation route is added without an MCP tool or an explicit exclusion.
 - **SQL admin dialect: audit and history parity with REST.** Admin statements
   executed over FlightSQL (`GRANT`, `CREATE ROLE`, `CREATE USER`, policy DDL,
   ...) now land in statement history and metrics with the SQL redacted, and

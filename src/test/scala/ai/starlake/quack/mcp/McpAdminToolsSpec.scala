@@ -13,7 +13,8 @@ import ai.starlake.quack.ondemand.api.{
   PoolHandlers,
   SessionTokenStore,
   SetPoolAutoscaleRequest,
-  TagHandlers
+  TagHandlers,
+  TenantDbHandlers
 }
 import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.ha.StateChangePublisher
@@ -97,9 +98,11 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       snapshotExists = (_, _, _) => true,
       snapshotsExist = (_, _, ids) => ids
     )
-    val audit = new AuditHandlers(NoopTelemetryStore)
+    val audit     = new AuditHandlers(NoopTelemetryStore)
+    val tenantDbs = new TenantDbHandlers(sup)
 
-    val tools = new McpAdminTools(pools, nodes, statements, maintenance, tags, audit, scopeOf)
+    val tools =
+      new McpAdminTools(pools, nodes, statements, maintenance, tags, audit, tenantDbs, scopeOf)
 
     def call(name: String, principal: McpPrincipal, args: (String, Json)*): Either[String, Json] =
       val tool = tools.tools.find(_.name == name).getOrElse(fail(s"tool $name not defined"))
@@ -238,7 +241,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
     unknown.toOption.get.hcursor.get[String]("status").toOption shouldBe Some("already-completed")
   }
 
-  "protect_tag" should "always protect and expose no unprotect surface" in {
+  "protect_tag" should "protect a tag when is_protected=true" in {
     val f = new Fixture
     f.call(
       "create_tag",
@@ -249,20 +252,89 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       "snapshot_id" -> Json.fromLong(3L)
     ).isRight shouldBe true
 
-    val schema = f.tools.tools.find(_.name == "protect_tag").get.inputSchema.noSpaces
-    schema should not include "protected"
-
     f.call(
       "protect_tag",
+      McpPrincipal.StaticKey,
+      "tenant"       -> Json.fromString(Tenant0),
+      "database"     -> Json.fromString(TenantDb),
+      "name"         -> Json.fromString("v1"),
+      "is_protected" -> Json.True
+    ).isRight shouldBe true
+    f.store.listSnapshotTags(Tenant0, TenantDb).find(_.name == "v1").get.isProtected shouldBe true
+  }
+
+  "upsert_maintenance_policy" should "create a tenantdb-scope policy and list it back" in {
+    val f  = new Fixture
+    val up = f.call(
+      "upsert_maintenance_policy",
+      McpPrincipal.StaticKey,
+      "tenant"         -> Json.fromString(Tenant0),
+      "database"       -> Json.fromString(TenantDb),
+      "scope_kind"     -> Json.fromString("tenantdb"),
+      "retention_days" -> Json.fromInt(7)
+    )
+    up.isRight shouldBe true
+    val listed = f.call(
+      "get_maintenance_policy",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb)
+    )
+    listed.isRight shouldBe true
+    val id = up.toOption.get.hcursor.get[String]("id").toOption.get
+    f.call("delete_maintenance_policy", McpPrincipal.StaticKey, "id" -> Json.fromString(id))
+      .isRight shouldBe true
+  }
+
+  "delete_tag" should "delete a created tag" in {
+    val f = new Fixture
+    f.call(
+      "create_tag",
+      McpPrincipal.StaticKey,
+      "tenant"      -> Json.fromString(Tenant0),
+      "database"    -> Json.fromString(TenantDb),
+      "name"        -> Json.fromString("v1"),
+      "snapshot_id" -> Json.fromLong(42L)
+    ).isRight shouldBe true
+    f.call(
+      "delete_tag",
       McpPrincipal.StaticKey,
       "tenant"   -> Json.fromString(Tenant0),
       "database" -> Json.fromString(TenantDb),
       "name"     -> Json.fromString("v1")
     ).isRight shouldBe true
-    f.store.listSnapshotTags(Tenant0, TenantDb).find(_.name == "v1").get.isProtected shouldBe true
+  }
 
-    // There is no unprotect and no tag delete anywhere in the admin tier.
-    f.tools.tools.map(_.name) should not contain "delete_tag"
+  "protect_tag" should "toggle protection both directions" in {
+    val f = new Fixture
+    f.call(
+      "create_tag",
+      McpPrincipal.StaticKey,
+      "tenant"      -> Json.fromString(Tenant0),
+      "database"    -> Json.fromString(TenantDb),
+      "name"        -> Json.fromString("v1"),
+      "snapshot_id" -> Json.fromLong(42L)
+    ).isRight shouldBe true
+    val on = f.call(
+      "protect_tag",
+      McpPrincipal.StaticKey,
+      "tenant"       -> Json.fromString(Tenant0),
+      "database"     -> Json.fromString(TenantDb),
+      "name"         -> Json.fromString("v1"),
+      "is_protected" -> Json.True
+    )
+    // Wire field is "protected", not "isProtected": CatalogTagEntry's hand-rolled Codec (Dtos.scala)
+    // renames it because "protected" is a Scala keyword -- see that codec's comment.
+    on.toOption.get.hcursor.get[Boolean]("protected").toOption.get shouldBe true
+    val off = f.call(
+      "protect_tag",
+      McpPrincipal.StaticKey,
+      "tenant"       -> Json.fromString(Tenant0),
+      "database"     -> Json.fromString(TenantDb),
+      "name"         -> Json.fromString("v1"),
+      "is_protected" -> Json.False
+    )
+    off.toOption.get.hcursor.get[Boolean]("protected").toOption.get shouldBe false
   }
 
   "audit_search" should "map filters through and admit the static key" in {
@@ -288,4 +360,93 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       "pool"     -> Json.fromString(Pool)
     )
     withClue(status)(status.isRight shouldBe true)
+  }
+
+  "create_pool" should "create a pool with a role distribution" in {
+    val f   = new Fixture
+    val out = f.call(
+      "create_pool",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString("etl"),
+      "dual"     -> Json.fromInt(1)
+    )
+    out.isRight shouldBe true
+    f.sup.get(PoolKey(Tenant0, TenantDb, "etl")).isDefined shouldBe true
+  }
+
+  "set_pool_disabled" should "flip the disabled flag" in {
+    val f   = new Fixture
+    val out = f.call(
+      "set_pool_disabled",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString(Pool),
+      "disabled" -> Json.True
+    )
+    out.isRight shouldBe true
+    out.toOption.get.hcursor.get[Boolean]("disabled").toOption.get shouldBe true
+  }
+
+  "delete_pool" should "delete a pool with force" in {
+    val f   = new Fixture
+    val out = f.call(
+      "delete_pool",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString(Pool),
+      "force"    -> Json.True
+    )
+    out.isRight shouldBe true
+    f.sup.get(Key).isEmpty shouldBe true
+  }
+
+  "set_node_max_concurrent" should "surface an error for an unknown node" in {
+    val f   = new Fixture
+    val out = f.call(
+      "set_node_max_concurrent",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString(Tenant0),
+      "database" -> Json.fromString(TenantDb),
+      "pool"     -> Json.fromString(Pool),
+      "node_id"  -> Json.fromString("no-such-node"),
+      "max"      -> Json.fromInt(4)
+    )
+    out.isLeft shouldBe true
+  }
+
+  "create_database and list_databases_admin" should "round-trip a tenant-db" in {
+    val f       = new Fixture
+    val created = f.call(
+      "create_database",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString(Tenant0),
+      "name"   -> Json.fromString("scratch"),
+      "kind"   -> Json.fromString("memory")
+    )
+    withClue(created)(created.isRight shouldBe true)
+    // create_database's "name" is a suffix the supervisor composes into "<tenant>_<suffix>"
+    // (Names.normalizeTenantDbName); delete/update address the tenant-db by that full stored
+    // name, so round-trip through the create response rather than re-typing the suffix.
+    val fullName = created.toOption.get.hcursor.get[String]("name").toOption.get
+    fullName shouldBe s"${Tenant0}_scratch"
+    val listed = f.call(
+      "list_databases_admin",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString(Tenant0)
+    )
+    listed.toOption.get.hcursor
+      .downField("tenantDbs")
+      .values
+      .get
+      .size should be >= 2 // fixture's + scratch
+    f.call(
+      "delete_database",
+      McpPrincipal.StaticKey,
+      "tenant" -> Json.fromString(Tenant0),
+      "name"   -> Json.fromString(fullName)
+    ).isRight shouldBe true
   }

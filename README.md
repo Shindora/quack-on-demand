@@ -105,6 +105,7 @@ Runnable client examples live in [`examples/`](examples/): FlightSQL clients in 
 - **First-class RBAC graph**: two gates at handshake (user-scope, pool-access), then per-statement table and column checks against a cached **EffectiveSet**. See the [RBAC model](https://docs.starlake.ai/qod/operating/rbac-model)
 - **Column-level security and dynamic data masking**: per-role policies on `catalog.schema.table.column` either **deny** the column or **mask** it through a custom SQL transform, applied by rewriting each statement at the edge before it reaches a node. Row-level security (predicate filters) ships too. Both are on by default, with `QOD_CLS_ENABLED=false` / `QOD_RLS_ENABLED=false` as kill switches
 - **Admin REST API** guarded by an `X-API-Key` static key OR a session token from `/api/auth/login`
+- **MCP server for AI agents** at `POST /mcp`: agents authenticate with a personal access token (self-scoped, tenant-inferred) or the static key, and reach the full admin control plane - identity, access, pools & nodes, databases, maintenance & tags, time travel, federation, manifest, PATs, telemetry - gated by the same server-side guards as REST. See `skills/quack-on-demand/SKILL.md` ("Administering over MCP") for the tool families and setup
 - **Account security**: opt-in login lockout after N failed attempts (`QOD_AUTH_LOCKOUT_ENABLED`), self-service password reset over SMTP (email a single-use link), and admin-forced password change at next login. Database users can carry an email; an email-format username is its own email
 
 ### Data plane
