@@ -264,7 +264,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "upsert_maintenance_policy" should "create a tenantdb-scope policy and list it back" in {
-    val f = new Fixture
+    val f  = new Fixture
     val up = f.call(
       "upsert_maintenance_policy",
       McpPrincipal.StaticKey,
@@ -363,7 +363,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "create_pool" should "create a pool with a role distribution" in {
-    val f = new Fixture
+    val f   = new Fixture
     val out = f.call(
       "create_pool",
       McpPrincipal.StaticKey,
@@ -377,7 +377,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "set_pool_disabled" should "flip the disabled flag" in {
-    val f = new Fixture
+    val f   = new Fixture
     val out = f.call(
       "set_pool_disabled",
       McpPrincipal.StaticKey,
@@ -391,7 +391,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "delete_pool" should "delete a pool with force" in {
-    val f = new Fixture
+    val f   = new Fixture
     val out = f.call(
       "delete_pool",
       McpPrincipal.StaticKey,
@@ -405,7 +405,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "set_node_max_concurrent" should "surface an error for an unknown node" in {
-    val f = new Fixture
+    val f   = new Fixture
     val out = f.call(
       "set_node_max_concurrent",
       McpPrincipal.StaticKey,
@@ -419,7 +419,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "create_database and list_databases_admin" should "round-trip a tenant-db" in {
-    val f = new Fixture
+    val f       = new Fixture
     val created = f.call(
       "create_database",
       McpPrincipal.StaticKey,
@@ -439,7 +439,10 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
       "tenant" -> Json.fromString(Tenant0)
     )
     listed.toOption.get.hcursor
-      .downField("tenantDbs").values.get.size should be >= 2 // fixture's + scratch
+      .downField("tenantDbs")
+      .values
+      .get
+      .size should be >= 2 // fixture's + scratch
     f.call(
       "delete_database",
       McpPrincipal.StaticKey,

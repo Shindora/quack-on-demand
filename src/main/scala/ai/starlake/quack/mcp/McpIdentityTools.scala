@@ -28,9 +28,9 @@ import io.circe.{Json, JsonObject}
 import io.circe.syntax._
 
 /** The MCP identity tier: tenants, users, groups, roles, memberships. Full-surface per spec
-  * 2026-09-10 (supersedes the 2026-08-18 deny-list): every tool delegates to the SAME REST
-  * handlers the admin UI uses, with the principal's raw bearer as `apiKey`, so superuser gates,
-  * tenant-scope checks, self/floor guards, and the audit trail behave identically to REST.
+  * 2026-09-10 (supersedes the 2026-08-18 deny-list): every tool delegates to the SAME REST handlers
+  * the admin UI uses, with the principal's raw bearer as `apiKey`, so superuser gates, tenant-scope
+  * checks, self/floor guards, and the audit trail behave identically to REST.
   */
 final class McpIdentityTools(
     tenants: TenantHandlers,
@@ -142,7 +142,7 @@ final class McpIdentityTools(
         name     <- required(args, "name")
         provider <- required(args, "auth_provider")
       yield (name, provider)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)               => IO.pure(Left(err))
         case Right((name, provider)) =>
           tenants
             .setTenantAuth(
@@ -166,7 +166,7 @@ final class McpIdentityTools(
         name     <- required(args, "name")
         disabled <- bool(args, "disabled").toRight("the 'disabled' argument is required")
       yield (name, disabled)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)               => IO.pure(Left(err))
         case Right((name, disabled)) =>
           tenants
             .setTenantDisabled(SetTenantDisabledRequest(name, disabled), keyOf(principal))(
@@ -199,9 +199,9 @@ final class McpIdentityTools(
     inputSchema = objectSchema(
       required = List("username", "password"),
       props = "username" -> strProp("Login name."),
-      "password" -> strProp("Initial password."),
-      "role"     -> strProp("user or admin (default user)."),
-      "email"    -> strProp("Optional contact email."),
+      "password"             -> strProp("Initial password."),
+      "role"                 -> strProp("user or admin (default user)."),
+      "email"                -> strProp("Optional contact email."),
       "must_change_password" -> boolProp(
         "Mark the password temporary: login refused until changed."
       ),
@@ -213,7 +213,7 @@ final class McpIdentityTools(
         username <- required(args, "username")
         password <- required(args, "password")
       yield (username, password)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                   => IO.pure(Left(err))
         case Right((username, password)) =>
           users
             .createUser(
@@ -238,9 +238,9 @@ final class McpIdentityTools(
     inputSchema = objectSchema(
       required = List("id"),
       props = "id" -> strProp("User id."),
-      "password" -> strProp("New password (omit = no rotation)."),
-      "role"     -> strProp("user or admin."),
-      "email"    -> strProp("New email; empty string clears it."),
+      "password"             -> strProp("New password (omit = no rotation)."),
+      "role"                 -> strProp("user or admin."),
+      "email"                -> strProp("New email; empty string clears it."),
       "must_change_password" -> boolProp("Mark the password temporary."),
       "enabled"              -> boolProp("false locks the account, true unlocks.")
     ),
@@ -328,7 +328,7 @@ final class McpIdentityTools(
         tenant <- tenantOf(principal, args)
         name   <- required(args, "name")
       yield (tenant, name)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)             => IO.pure(Left(err))
         case Right((tenant, name)) =>
           groups
             .createGroup(
@@ -385,7 +385,7 @@ final class McpIdentityTools(
         tenant <- tenantOf(principal, args)
         name   <- required(args, "name")
       yield (tenant, name)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)             => IO.pure(Left(err))
         case Right((tenant, name)) =>
           roles
             .createRole(
@@ -421,7 +421,7 @@ final class McpIdentityTools(
   ): IO[Either[String, Json]] =
     val done = Json.obj("ok" -> Json.True)
     required(args, "kind") match
-      case Left(err) => IO.pure(Left(err))
+      case Left(err)          => IO.pure(Left(err))
       case Right("user_role") =>
         (for
           userId <- required(args, "user_id")

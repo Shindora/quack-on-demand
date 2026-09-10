@@ -22,9 +22,9 @@ import cats.effect.IO
 import io.circe.{Json, JsonObject}
 import io.circe.syntax._
 
-/** The MCP access-control tier: role table permissions, column policies (masking), row
-  * policies, pool permissions. Full-surface per spec 2026-09-10. Same delegation contract
-  * as the other tiers: raw bearer as apiKey, REST guards and audit apply unchanged.
+/** The MCP access-control tier: role table permissions, column policies (masking), row policies,
+  * pool permissions. Full-surface per spec 2026-09-10. Same delegation contract as the other tiers:
+  * raw bearer as apiKey, REST guards and audit apply unchanged.
   */
 final class McpAccessTools(
     roles: RoleHandlers,
@@ -116,7 +116,7 @@ final class McpAccessTools(
         roleId <- required(args, "role_id")
         verb   <- required(args, "verb")
       yield (roleId, verb)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)             => IO.pure(Left(err))
         case Right((roleId, verb)) =>
           roles
             .grantPermission(
@@ -174,7 +174,7 @@ final class McpAccessTools(
         column <- required(args, "column_name")
         action <- required(args, "action")
       yield (roleId, column, action)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                       => IO.pure(Left(err))
         case Right((roleId, column, action)) =>
           columnPolicies
             .create(
@@ -207,7 +207,7 @@ final class McpAccessTools(
         id     <- required(args, "id")
         action <- required(args, "action")
       yield (id, action)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)           => IO.pure(Left(err))
         case Right((id, action)) =>
           columnPolicies
             .update(
@@ -256,7 +256,7 @@ final class McpAccessTools(
         roleId    <- required(args, "role_id")
         predicate <- required(args, "predicate_sql")
       yield (roleId, predicate)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)                  => IO.pure(Left(err))
         case Right((roleId, predicate)) =>
           rowPolicies
             .create(
@@ -286,7 +286,7 @@ final class McpAccessTools(
         id        <- required(args, "id")
         predicate <- required(args, "predicate_sql")
       yield (id, predicate)) match
-        case Left(err) => IO.pure(Left(err))
+        case Left(err)              => IO.pure(Left(err))
         case Right((id, predicate)) =>
           rowPolicies
             .update(UpdateRowPolicyRequest(id, predicate), keyOf(principal))(scopeOf)

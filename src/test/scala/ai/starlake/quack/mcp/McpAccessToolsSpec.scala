@@ -129,7 +129,7 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
   "grant_role_permission" should "grant RO on a table, list it, and revoke it" in {
     val f      = new Fixture
     val roleId = f.newRoleId()
-    val out = f.call(
+    val out    = f.call(
       "grant_role_permission",
       McpPrincipal.StaticKey,
       "role_id" -> Json.fromString(roleId),
@@ -140,16 +140,28 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
     out.isRight shouldBe true
     val permId = f.idOf(out)
     f.call("list_role_permissions", McpPrincipal.StaticKey, "role_id" -> Json.fromString(roleId))
-      .toOption.get.hcursor.downField("permissions").values.get.size shouldBe 1
+      .toOption
+      .get
+      .hcursor
+      .downField("permissions")
+      .values
+      .get
+      .size shouldBe 1
     f.call("revoke_role_permission", McpPrincipal.StaticKey, "id" -> Json.fromString(permId))
       .isRight shouldBe true
     f.call("list_role_permissions", McpPrincipal.StaticKey, "role_id" -> Json.fromString(roleId))
-      .toOption.get.hcursor.downField("permissions").values.get.size shouldBe 0
+      .toOption
+      .get
+      .hcursor
+      .downField("permissions")
+      .values
+      .get
+      .size shouldBe 0
   }
 
   "create_column_policy" should "mask a column, update to deny, then delete" in {
-    val f      = new Fixture
-    val roleId = f.newRoleId()
+    val f       = new Fixture
+    val roleId  = f.newRoleId()
     val created = f.call(
       "create_column_policy",
       McpPrincipal.StaticKey,
@@ -167,14 +179,20 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
       "action" -> Json.fromString("deny")
     ).isRight shouldBe true
     f.call("list_column_policies", McpPrincipal.StaticKey, "role_id" -> Json.fromString(roleId))
-      .toOption.get.hcursor.downField("policies").values.get.size shouldBe 1
+      .toOption
+      .get
+      .hcursor
+      .downField("policies")
+      .values
+      .get
+      .size shouldBe 1
     f.call("delete_column_policy", McpPrincipal.StaticKey, "id" -> Json.fromString(id))
       .isRight shouldBe true
   }
 
   "create_row_policy" should "install a predicate, update it, then delete" in {
-    val f      = new Fixture
-    val roleId = f.newRoleId()
+    val f       = new Fixture
+    val roleId  = f.newRoleId()
     val created = f.call(
       "create_row_policy",
       McpPrincipal.StaticKey,
@@ -190,7 +208,13 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
       "predicate_sql" -> Json.fromString("c_mktsegment = 'MACHINERY'")
     ).isRight shouldBe true
     f.call("list_row_policies", McpPrincipal.StaticKey, "role_id" -> Json.fromString(roleId))
-      .toOption.get.hcursor.downField("policies").values.get.size shouldBe 1
+      .toOption
+      .get
+      .hcursor
+      .downField("policies")
+      .values
+      .get
+      .size shouldBe 1
     f.call("delete_row_policy", McpPrincipal.StaticKey, "id" -> Json.fromString(id))
       .isRight shouldBe true
   }
@@ -198,7 +222,7 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
   "grant_pool_permission" should "grant tenant-wide access to a user and list it" in {
     val f      = new Fixture
     val userId = f.newUserId()
-    val out = f.call(
+    val out    = f.call(
       "grant_pool_permission",
       McpPrincipal.StaticKey,
       "tenant"  -> Json.fromString(Tenant0),
@@ -207,7 +231,13 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
     out.isRight shouldBe true
     val permId = f.idOf(out)
     f.call("list_pool_permissions", McpPrincipal.StaticKey, "tenant" -> Json.fromString(Tenant0))
-      .toOption.get.hcursor.downField("permissions").values.get.size shouldBe 1
+      .toOption
+      .get
+      .hcursor
+      .downField("permissions")
+      .values
+      .get
+      .size shouldBe 1
     f.call("revoke_pool_permission", McpPrincipal.StaticKey, "id" -> Json.fromString(permId))
       .isRight shouldBe true
   }
@@ -215,7 +245,7 @@ class McpAccessToolsSpec extends AnyFlatSpec with Matchers:
   it should "surface the handler error when both user_id and group_id are set" in {
     val f      = new Fixture
     val userId = f.newUserId()
-    val out = f.call(
+    val out    = f.call(
       "grant_pool_permission",
       McpPrincipal.StaticKey,
       "tenant"   -> Json.fromString(Tenant0),
