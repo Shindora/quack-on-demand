@@ -526,17 +526,49 @@ object ManagerServerHarness:
           tenantDbs,
           mcpScopeOf
         )
-        Some(
+        val identityTools = new ai.starlake.quack.mcp.McpIdentityTools(
+          tenants,
+          userHandlers,
+          groupHandlers,
+          roleHandlers,
+          membershipHandlers,
+          mcpScopeOf
+        )
+        val accessTools = new ai.starlake.quack.mcp.McpAccessTools(
+          roleHandlers,
+          columnPolicyHandlers,
+          rowPolicyHandlers,
+          poolPermHandlers,
+          mcpScopeOf
+        )
+        // platformTools needs a real PatHandlers (PatStore's Hikari pool fails fast at
+        // construction against an unreachable database, so it can't be faked in-memory the way
+        // mcpCatalog/mcpHistory are above); patHandlers is already Option[PatHandlers] gated on
+        // the harness caller supplying a (Postgres-backed) patStore, so mcp mounts only when one
+        // was supplied -- exactly like Main, where every for-bound handler must be present.
+        for pats <- patHandlers
+        yield
+          val platformTools = new ai.starlake.quack.mcp.McpPlatformTools(
+            restoreHandlers,
+            undropHandlers,
+            federated = None, // the harness never wires federation
+            manifestHandlers,
+            pats,
+            serverConfigHandlers,
+            historyApiHandlers,
+            usageHandlers,
+            mcpScopeOf
+          )
           new ai.starlake.quack.mcp.McpRoutes(
             ai.starlake.quack.McpConfig(),
             staticApiKey.filter(_.nonEmpty),
             patAuth.fold[String => Option[ai.starlake.quack.ondemand.auth.PatPrincipal]](_ => None)(
               pa => pa.resolve
             ),
-            dataTools.tools ++ adminTools.tools,
+            dataTools.tools ++ adminTools.tools ++ identityTools.tools ++
+              accessTools.tools ++ platformTools.tools,
             serverVersion = "test-harness"
           ).routes
-        )
 
     val mgr = new ManagerServer(
       mgrCfg,

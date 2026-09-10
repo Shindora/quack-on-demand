@@ -100,15 +100,15 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       * path) is immediately visible to `store.getPasswordHash` (updateUserPassword's rewrite
       * guard). This fixture deliberately decouples them (in-memory store vs. a real DuckDB
       * UserStore) for speed, so any update that doesn't rotate the password (role/email/enabled-
-      * only) needs the hash seeded here first, or `updateUserPassword` refuses with
-      * "no stored password hash".
+      * only) needs the hash seeded here first, or `updateUserPassword` refuses with "no stored
+      * password hash".
       */
     def seedPasswordHash(tenant: Option[String], username: String): Unit =
       store.upsertUserWithHash(tenant, username, "seed-hash", "user")
       ()
 
   "create_tenant" should "create a tenant as static key and echo it in list_tenants" in {
-    val f = new Fixture
+    val f       = new Fixture
     val created = f.call(
       "create_tenant",
       McpPrincipal.StaticKey,
@@ -121,14 +121,14 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   it should "refuse a tenant-scoped admin PAT (superuser_required)" in {
-    val f = new Fixture
+    val f   = new Fixture
     val out = f.call("create_tenant", adminPat(), "id" -> Json.fromString("evil"))
     out.isLeft shouldBe true
     out.left.toOption.get should include("superuser_required")
   }
 
   "delete_tenant" should "delete an empty tenant" in {
-    val f = new Fixture
+    val f   = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val out =
       f.call("delete_tenant", McpPrincipal.StaticKey, "name" -> Json.fromString("acme"))
@@ -136,7 +136,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "set_tenant_disabled" should "flip the disabled flag" in {
-    val f = new Fixture
+    val f   = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val out = f.call(
       "set_tenant_disabled",
@@ -149,7 +149,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "create_user" should "create a tenant user and list it" in {
-    val f = new Fixture
+    val f       = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val created = f.call(
       "create_user",
@@ -168,7 +168,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   it should "let a PAT create a user in its own tenant without a tenant arg... via explicit tenant" in {
-    val f = new Fixture
+    val f   = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val out = f.call(
       "create_user",
@@ -181,7 +181,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   it should "refuse a PAT creating a superuser (no tenant arg)" in {
-    val f = new Fixture
+    val f   = new Fixture
     val out = f.call(
       "create_user",
       adminPat(),
@@ -193,7 +193,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "update_user" should "disable a user by id" in {
-    val f = new Fixture
+    val f       = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val created = f.call(
       "create_user",
@@ -215,7 +215,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "delete_user" should "delete a user and surface handler guard errors verbatim" in {
-    val f = new Fixture
+    val f       = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val created = f.call(
       "create_user",
@@ -233,7 +233,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   }
 
   "user_effective_permissions" should "return the effective set for a user" in {
-    val f = new Fixture
+    val f       = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
     val created = f.call(
       "create_user",
@@ -242,7 +242,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       "username" -> Json.fromString("bob"),
       "password" -> Json.fromString("s3cret-s3cret")
     )
-    val id = f.idOf(created)
+    val id  = f.idOf(created)
     val out =
       f.call("user_effective_permissions", McpPrincipal.StaticKey, "id" -> Json.fromString(id))
     out.isRight shouldBe true
@@ -267,11 +267,23 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     )
     r.isRight shouldBe true
     f.call("list_groups", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
-      .toOption.get.hcursor.downField("groups").values.get.size shouldBe 1
+      .toOption
+      .get
+      .hcursor
+      .downField("groups")
+      .values
+      .get
+      .size shouldBe 1
     // create_tenant seeds a built-in "admin" role (PoolSupervisor.createTenant), so the tenant
     // already has 1 role before "reader" is created here.
     f.call("list_roles", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
-      .toOption.get.hcursor.downField("roles").values.get.size shouldBe 2
+      .toOption
+      .get
+      .hcursor
+      .downField("roles")
+      .values
+      .get
+      .size shouldBe 2
   }
 
   "list_roles" should "infer the tenant for a tenant-scoped PAT" in {
@@ -292,19 +304,23 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   "add_membership" should "attach a user to a role and reflect in effective permissions" in {
     val f = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
-    val u = f.idOf(f.call(
-      "create_user",
-      McpPrincipal.StaticKey,
-      "tenant"   -> Json.fromString("acme"),
-      "username" -> Json.fromString("bob"),
-      "password" -> Json.fromString("s3cret-s3cret")
-    ))
-    val r = f.idOf(f.call(
-      "create_role",
-      McpPrincipal.StaticKey,
-      "tenant" -> Json.fromString("acme"),
-      "name"   -> Json.fromString("reader")
-    ))
+    val u = f.idOf(
+      f.call(
+        "create_user",
+        McpPrincipal.StaticKey,
+        "tenant"   -> Json.fromString("acme"),
+        "username" -> Json.fromString("bob"),
+        "password" -> Json.fromString("s3cret-s3cret")
+      )
+    )
+    val r = f.idOf(
+      f.call(
+        "create_role",
+        McpPrincipal.StaticKey,
+        "tenant" -> Json.fromString("acme"),
+        "name"   -> Json.fromString("reader")
+      )
+    )
     val add = f.call(
       "add_membership",
       McpPrincipal.StaticKey,
@@ -334,18 +350,22 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   "remove_membership" should "detach a group role and list_group_role_memberships shows it" in {
     val f = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
-    val g = f.idOf(f.call(
-      "create_group",
-      McpPrincipal.StaticKey,
-      "tenant" -> Json.fromString("acme"),
-      "name"   -> Json.fromString("analysts")
-    ))
-    val r = f.idOf(f.call(
-      "create_role",
-      McpPrincipal.StaticKey,
-      "tenant" -> Json.fromString("acme"),
-      "name"   -> Json.fromString("reader")
-    ))
+    val g = f.idOf(
+      f.call(
+        "create_group",
+        McpPrincipal.StaticKey,
+        "tenant" -> Json.fromString("acme"),
+        "name"   -> Json.fromString("analysts")
+      )
+    )
+    val r = f.idOf(
+      f.call(
+        "create_role",
+        McpPrincipal.StaticKey,
+        "tenant" -> Json.fromString("acme"),
+        "name"   -> Json.fromString("reader")
+      )
+    )
     f.call(
       "add_membership",
       McpPrincipal.StaticKey,
@@ -357,7 +377,13 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       "list_group_role_memberships",
       McpPrincipal.StaticKey,
       "group_id" -> Json.fromString(g)
-    ).toOption.get.hcursor.downField("roles").values.get.size shouldBe 1
+    ).toOption
+      .get
+      .hcursor
+      .downField("roles")
+      .values
+      .get
+      .size shouldBe 1
     f.call(
       "remove_membership",
       McpPrincipal.StaticKey,
@@ -369,26 +395,76 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       "list_group_role_memberships",
       McpPrincipal.StaticKey,
       "group_id" -> Json.fromString(g)
-    ).toOption.get.hcursor.downField("roles").values.get.size shouldBe 0
+    ).toOption
+      .get
+      .hcursor
+      .downField("roles")
+      .values
+      .get
+      .size shouldBe 0
   }
 
   "delete_group and delete_role" should "delete by id" in {
     val f = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
-    val g = f.idOf(f.call(
-      "create_group",
+    val g = f.idOf(
+      f.call(
+        "create_group",
+        McpPrincipal.StaticKey,
+        "tenant" -> Json.fromString("acme"),
+        "name"   -> Json.fromString("analysts")
+      )
+    )
+    val r = f.idOf(
+      f.call(
+        "create_role",
+        McpPrincipal.StaticKey,
+        "tenant" -> Json.fromString("acme"),
+        "name"   -> Json.fromString("reader")
+      )
+    )
+    f.call("delete_group", McpPrincipal.StaticKey, "id" -> Json.fromString(g)).isRight shouldBe true
+    f.call("delete_role", McpPrincipal.StaticKey, "id" -> Json.fromString(r)).isRight shouldBe true
+  }
+
+  "tenant scoping" should "hide other tenants' users from a tenant-scoped PAT" in {
+    val f = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("umbrella"))
+    f.call(
+      "create_user",
       McpPrincipal.StaticKey,
-      "tenant" -> Json.fromString("acme"),
-      "name"   -> Json.fromString("analysts")
-    ))
-    val r = f.idOf(f.call(
-      "create_role",
-      McpPrincipal.StaticKey,
-      "tenant" -> Json.fromString("acme"),
-      "name"   -> Json.fromString("reader")
-    ))
-    f.call("delete_group", McpPrincipal.StaticKey, "id" -> Json.fromString(g))
-      .isRight shouldBe true
-    f.call("delete_role", McpPrincipal.StaticKey, "id" -> Json.fromString(r))
-      .isRight shouldBe true
+      "tenant"   -> Json.fromString("umbrella"),
+      "username" -> Json.fromString("eve"),
+      "password" -> Json.fromString("s3cret-s3cret")
+    )
+    val listed = f.call(
+      "list_users",
+      adminPat(), // scoped to acme
+      "tenant" -> Json.fromString("umbrella")
+    )
+    listed.isRight shouldBe true
+    listed.toOption.get.hcursor.downField("users").values.get.size shouldBe 0
+  }
+
+  it should "refuse a tenant-scoped PAT updating another tenant's user" in {
+    val f   = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("umbrella"))
+    val eve = f.idOf(
+      f.call(
+        "create_user",
+        McpPrincipal.StaticKey,
+        "tenant"   -> Json.fromString("umbrella"),
+        "username" -> Json.fromString("eve"),
+        "password" -> Json.fromString("s3cret-s3cret")
+      )
+    )
+    val out = f.call(
+      "update_user",
+      adminPat(), // scoped to acme
+      "id"      -> Json.fromString(eve),
+      "enabled" -> Json.False
+    )
+    out.isLeft shouldBe true
   }
