@@ -195,7 +195,7 @@ export interface ClientConfigResponse {
   // Human-readable IdP label shown in the SSO redirect card (e.g. "Keycloak", "Google").
   ssoProviderName?: string;
   // Base URL of the linked Starlake instance when the integration is on;
-  // null/absent when off. The UI hides the "Starlake" nav entry when unset.
+  // null/absent when off. The UI hides the "Workbench" nav entry when unset.
   starlakeUrl?: string | null;
 }
 

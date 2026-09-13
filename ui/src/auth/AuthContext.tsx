@@ -19,7 +19,7 @@ interface AuthState {
   // Mirrors ClientConfigResponse.telemetryEnabled; gates the History/Usage/Audit surfaces.
   telemetryEnabled: boolean;
   // Mirrors ClientConfigResponse.starlakeUrl; null/undefined = integration off
-  // and the UI hides the "Starlake" nav entry. Set = base URL to redirect to.
+  // and the UI hides the "Workbench" nav entry. Set = base URL to redirect to.
   starlakeUrl: string | null;
   login: (username: string, password: string, tenant?: string) => Promise<void>;
   logout: () => Promise<void>;
