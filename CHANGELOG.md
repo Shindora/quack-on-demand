@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.4
+
+- **The operator skill ships to users instead of living in the source
+  tree.** Two install channels: `qod skill install` bundles it in the
+  wheel and asks which LLM to install for (Claude Code, GitHub Copilot,
+  Gemini CLI; `--platform claude|copilot|gemini|all` skips the prompt,
+  `--project` targets the working directory, `--dir` names an exact
+  target), and the repo is now a Claude Code plugin marketplace
+  (`/plugin marketplace add starlake-ai/quack-on-demand`, then
+  `/plugin install quack-on-demand@quack-on-demand`). The skill itself was
+  rewritten to be checkout-free: every manager REST curl recipe is now the
+  equivalent `qod` command, booting goes through `qod setup/start/status/stop`,
+  and repo paths, sbt invocations and raw `qodstate` INSERT advice are gone.
+  curl remains only where no CLI equivalent exists (the PyPI version probe,
+  SCIM, federation YAML export/import). The operating agent also compares
+  `qod --version` against PyPI and asks the user to upgrade when stale,
+  never upgrading unprompted.
+- **Bare `USE <schema>` now resolves against the tenant database.** On a
+  node the DuckLake catalog is attached under the tenant-db name while the
+  session's current catalog is the transient memory db, so a client issuing
+  `USE star1` got "No catalog + schema named star1 found" even though
+  `<dbName>.star1` existed, with no way to learn the physical database name.
+  The edge now qualifies a bare one-part `USE x` into `USE <dbName>.x`.
+  Two-part `USE a.b`, `USE <dbName>` and `USE memory` pass through
+  untouched, so catalog switching still works.
+- **Admin UI: the Nodes page shows the last 200 statements** instead of 50.
+  The router's ring buffer holds 256 records and the endpoint caps at 500,
+  so this is a display change only.
+- **Admin UI: the "Starlake" nav entry is now labelled "Workbench".**
+
 ## 0.8.3
 
 - **Manager creates the control-plane database at startup.** The boot
