@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+- **The demo starts on arm64 instead of dying on missing Postgres
+  binaries.** `qod start --demo` failed on Linux arm64 (Graviton, ARM VMs,
+  containers on Apple Silicon) with zonky's `IllegalStateException: Missing
+  embedded postgres binaries`. The build declared only `embedded-postgres`,
+  whose transitive binary set is amd64 only, and zonky resolves binaries
+  strictly from the classpath: its single emulation fallback covers
+  Darwin/aarch64 and Windows on ARM, never Linux, so there was nothing left
+  to try. The Linux and macOS arm64 binaries are now bundled. That also
+  takes Apple Silicon off the Rosetta path, where the demo had been running
+  an emulated Postgres behind a WARN the default `QOD_LOG_LEVEL=ERROR`
+  hides, and failed outright when Rosetta was not installed. The uber-jar
+  grows by about 40 MB.
+- **`qod start --demo` no longer trips over the home a crashed run left
+  behind.** A demo killed before its teardown (SIGKILL, machine sleep, OOM,
+  or a second demo sharing the default `${TMPDIR}/qod-demo`) leaves
+  `pg/pgdata` populated, and the next run's `initdb` refuses it with
+  `directory "..." exists but is not empty`. That surfaced only as zonky's
+  opaque `IllegalStateException: Process [...initdb...] failed`, since
+  initdb's stderr goes to an INFO logger the default `QOD_LOG_LEVEL=ERROR`
+  swallows, and the failed run's own cleanup then deleted the home, so the
+  run after it succeeded and the whole thing looked random. `DemoHome.create`
+  now clears the three subdirectories the demo owns (`pg`, `ducklake`,
+  `native`, never the caller-supplied root) before creating them. Because
+  that clean is destructive it refuses to run while a demo is still live on
+  the home, keyed off Postgres's own `postmaster.pid` plus a pid-liveness
+  check, and if the clean does not take it fails fast naming the directory
+  to remove instead of landing back on the unreadable initdb error. A failed
+  embedded-Postgres start now also reports the underlying cause rather than
+  the wrapper exception.
+- **jsqltranspiler 1.12 and jsqlparser 5.4.2.** The two move in lockstep
+  because jsqltranspiler's pom pins the parser version. 1.12 carries the
+  upstream fix overriding the `PivotQuery` visit methods that the 5.3 to 5.4
+  visitor interface change required; 1.11 was built against 5.3.336 and
+  would have run that path on an interface it does not implement.
+
 ## 0.8.4
 
 - **The operator skill ships to users instead of living in the source
