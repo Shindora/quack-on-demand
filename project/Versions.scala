@@ -23,6 +23,10 @@ object Versions {
   val jbcrypt        = "0.10.2"
   val postgresql     = "42.7.4"
   val embeddedPostgres = "2.0.7"
+  // Binary set for the arm64 artifacts added explicitly in Dependencies.scala. MUST match the
+  // version `embeddedPostgres` pulls in transitively for amd64, or arm and x86 users get
+  // different Postgres majors from the same jar; DemoPostgresSpec fails when they drift.
+  val embeddedPostgresBinaries = "14.10.1"
   val wireMock       = "3.9.2"
   val blobstore      = "0.10.1"
   val starlakeJdbc   = "0.7"

@@ -60,9 +60,19 @@ object Dependencies {
   val hikariCp              = "com.zaxxer" % "HikariCP" % Versions.hikariCp
   val jbcrypt               = "at.favre.lib" % "bcrypt" % Versions.jbcrypt
   val postgresql            = "org.postgresql" % "postgresql" % Versions.postgresql
-  // Ephemeral embedded Postgres for `qod demo` - downloads a bundled native PG
+  // Ephemeral embedded Postgres for `qod demo` - unpacks a bundled native PG
   // binary on first run (see io.zonky.test.db.postgres.embedded.EmbeddedPostgres).
   val embeddedPostgres = "io.zonky.test" % "embedded-postgres" % Versions.embeddedPostgres
+  // The artifact above pulls binaries for amd64 ONLY (linux, linux-alpine, darwin, windows), and
+  // zonky resolves them strictly from the classpath: DefaultPostgresBinaryResolver falls back to
+  // x86_64 only for Darwin/aarch64 (Rosetta) and Windows on ARM, never for Linux. So without these
+  // two, `qod start --demo` dies on Linux arm64 (Graviton, ARM VMs, containers on Apple Silicon)
+  // with `IllegalStateException: Missing embedded postgres binaries`, and every Apple Silicon Mac
+  // runs the demo emulated -- or fails the same way when Rosetta is not installed.
+  val embeddedPostgresLinuxArm64 =
+    "io.zonky.test.postgres" % "embedded-postgres-binaries-linux-arm64v8" % Versions.embeddedPostgresBinaries
+  val embeddedPostgresDarwinArm64 =
+    "io.zonky.test.postgres" % "embedded-postgres-binaries-darwin-arm64v8" % Versions.embeddedPostgresBinaries
   // Liquibase applies YAML changelogs under `db/changelog/` at startup -
   // one source of truth for the `qodstate_*` control-plane schema.
   val liquibaseCore         = "org.liquibase" % "liquibase-core" % Versions.liquibase
