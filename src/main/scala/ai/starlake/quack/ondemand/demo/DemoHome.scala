@@ -11,17 +11,7 @@ final case class DemoHome(root: Path, pgDir: Path, dataPath: Path, nativeDir: Pa
   /** Best-effort recursive delete (deepest-first). Teardown must not throw on a partially-created
     * or locked tree.
     */
-  def deleteRecursively(): Unit =
-    if Files.exists(root) then
-      Files
-        .walk(root)
-        .sorted(java.util.Comparator.reverseOrder())
-        .iterator()
-        .asScala
-        .foreach(p =>
-          try Files.deleteIfExists(p)
-          catch { case _: Throwable => () }
-        )
+  def deleteRecursively(): Unit = DemoHome.wipe(root)
 
 object DemoHome:
 
@@ -57,5 +47,59 @@ object DemoHome:
     val pgDir     = root.resolve("pg")
     val dataPath  = root.resolve("ducklake")
     val nativeDir = root.resolve("native")
+    // The clean below is destructive, so refuse it while a previous demo is still LIVE on this
+    // home -- two concurrent `qod start --demo` share `${TMPDIR}/qod-demo` by default. Postgres's
+    // own `postmaster.pid` names the process holding the data directory; a dead pid is exactly the
+    // crashed run the clean exists for, so it falls through.
+    livePostmaster(pgDir).foreach(pid =>
+      sys.error(
+        s"a demo is already running on $root (postgres pid $pid) - stop it first, " +
+          "or give this run its own QOD_DEMO_HOME"
+      )
+    )
+    // Teardown normally empties the home, but a run killed before it (SIGKILL, machine sleep, OOM)
+    // leaves `pg/pgdata` populated -- and the next run's `initdb` then refuses with `directory
+    // "..." exists but is not empty`, which zonky reports only as the opaque
+    // `IllegalStateException: Process [...initdb...] failed` (its stderr goes to an INFO logger the
+    // default QOD_LOG_LEVEL=ERROR swallows). So every run starts from an empty tree. The clean is
+    // scoped to the three subdirs the demo owns, never `root` itself: `QOD_DEMO_HOME` is
+    // caller-supplied and may point at a directory holding other things.
+    List(pgDir, dataPath, nativeDir).foreach(wipe)
+    // `wipe` is best-effort by design (teardown must not throw). Here a silent failure would land
+    // right back on the unreadable initdb error, so check the one path that matters and say what
+    // to remove.
+    val stalePgData = pgDir.resolve("pgdata")
+    if Files.exists(stalePgData) then
+      sys.error(
+        s"demo home $root still holds a previous run's Postgres data directory at $stalePgData " +
+          "and it could not be removed - delete it by hand, or point QOD_DEMO_HOME elsewhere"
+      )
     List(root, pgDir, dataPath, nativeDir).foreach(Files.createDirectories(_))
     DemoHome(root, pgDir, dataPath, nativeDir)
+
+  /** The pid from `pgdata/postmaster.pid` when that process is still alive, else `None` (no file,
+    * unreadable, unparseable, or a pid that has since died).
+    */
+  private def livePostmaster(pgDir: Path): Option[Long] =
+    val pidFile = pgDir.resolve("pgdata").resolve("postmaster.pid")
+    if !Files.exists(pidFile) then None
+    else
+      scala.util
+        .Try(Files.readString(pidFile).linesIterator.next().trim.toLong)
+        .toOption
+        .filter(pid => ProcessHandle.of(pid).filter(_.isAlive).isPresent)
+
+  /** Best-effort recursive delete of one subtree, deepest-first. Never throws: it runs both on the
+    * teardown path (which must not mask the real failure) and on the pre-flight clean above.
+    */
+  private def wipe(dir: Path): Unit =
+    if Files.exists(dir) then
+      Files
+        .walk(dir)
+        .sorted(java.util.Comparator.reverseOrder())
+        .iterator()
+        .asScala
+        .foreach(p =>
+          try Files.deleteIfExists(p)
+          catch { case _: Throwable => () }
+        )
