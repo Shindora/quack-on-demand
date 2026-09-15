@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.5
 
 - **The demo starts on arm64 instead of dying on missing Postgres
   binaries.** `qod start --demo` failed on Linux arm64 (Graviton, ARM VMs,
