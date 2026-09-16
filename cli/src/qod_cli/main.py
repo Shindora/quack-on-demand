@@ -6,7 +6,12 @@ from . import __version__
 from .config import Settings, default_profile, load_settings
 from .registry import covers
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, help="quack-on-demand CLI")
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="quack-on-demand CLI. Try it: qod serve --demo. Serve your data: qod serve <target>. "
+    "Run your deployment: qod start.",
+)
 
 
 @dataclass

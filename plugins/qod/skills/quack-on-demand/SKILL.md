@@ -24,7 +24,7 @@ manager - no source checkout is needed. The pieces:
 - `qod start` / `qod stop` / `qod status` - run a manager from the released
   uber-jar (auto-downloaded and cached) against your Postgres; `qod setup`
   persists the `QOD_*` settings it needs
-- `qod start --demo` - fully self-contained evaluation stack (embedded Postgres)
+- `qod serve --demo` - fully self-contained evaluation stack (embedded Postgres)
 - `qod <noun> <verb>` - the REST control plane (tenants, databases, pools,
   nodes, RBAC, policies, telemetry)
 - `qod sql` - run SQL against the FlightSQL edge (one statement, a script, or a REPL)
@@ -81,6 +81,14 @@ anywhere you need raw JSON for scripting.
 
 ## Booting
 
+Not sure which command you want?
+
+| Command | What it is | Needs |
+|---|---|---|
+| `qod serve --demo` | throwaway showcase on sample data, insecure by design | nothing |
+| `qod serve ./your-data` | persistent gateway over your own data, secure defaults | nothing |
+| `qod start` | your deployment: your own Postgres, your config | Postgres + `qod setup` |
+
 On Kubernetes, the Helm chart is published as an OCI artifact per release:
 `helm install qod oci://ghcr.io/starlake-ai/charts/quack-on-demand --version <release>`
 (external Postgres required; see https://docs.starlake.ai/qod). Locally,
@@ -110,6 +118,47 @@ qod status
 qod stop
 ```
 
+**Serve your own data in one command.** `qod serve <target>` provisions a
+tenant, database, and pool around data the user already has, on a persistent
+embedded Postgres, so there is no external prerequisite:
+
+```bash
+qod serve ./sales.duckdb          # existing DuckDB file (kind=duckdb-file, 1 dual node)
+qod serve ./warehouse/            # directory of parquet/csv -> views (kind=memory)
+qod serve s3://bucket/sales/      # remote prefix -> a hive-partitioned view
+qod serve                         # a fresh empty DuckLake to load into
+
+qod serve ./sales.duckdb --tenant acme --name sales --pool bi
+qod serve s3://bucket/wh/ --table orders=s3://bucket/wh/orders/**/*.parquet
+```
+
+Every step is ensure-semantics (create only what is missing, never delete), so
+re-running is safe and adds a second database beside the first rather than
+replacing it. Credentials for a remote prefix come from `--access-key-id` /
+`--secret-access-key` / `--region` / `--endpoint`, else the ambient `AWS_*`
+environment.
+
+Posture, unlike `qod serve --demo` (`qod start --demo` still works too, as a
+deprecated alias): TLS on, DB auth on, ACL on, and a random admin password
+generated on the first run, printed once, and stored in the CLI config file.
+A real `QOD_ADMIN_PASSWORD` still wins. Rotate with
+`qod user update --username admin --password ...`.
+
+The embedded control plane lives at `<user-data-dir>/pg` on a fixed port
+(25432 by default, `--pg-port`), persists across restarts, and is never deleted.
+`qod status` reports its coordinates. It is a single-node evaluation and
+small-team mode: point the manager at your own Postgres (`qod setup`,
+`qod start`) for production, and HA refuses to boot with it.
+
+`qod serve` stores the generated admin password in the same `[start]` table
+`qod start` reads, so a later `qod start` seeds the same admin password. A
+`memory` database whose views point at a remote prefix carries that prefix as
+its object-store scope; under node lockdown such a database loses local file
+reads (`disabled_filesystems`), which is the intended posture for
+remote-only views. `qod status` reports the embedded control plane by probing
+its data directory; a custom `--pg-data-dir` run is only visible to `status`
+when `QOD_PG_EMBEDDED_DATA_DIR` is set (env or `qod setup --set`).
+
 `qod start` runs the manager in the foreground; Ctrl-C tears the manager and
 its nodes down gracefully (same as `qod stop` from another terminal - never
 kill the JVM directly, or DuckDB node processes are orphaned holding ports
@@ -122,12 +171,13 @@ manager logs `auth: providers configured` when DB auth is on, and
 `auth: OPEN` otherwise.
 
 **Self-contained demo.** For evaluation with no external Postgres and no
-Docker, `qod start --demo` boots everything against an embedded, ephemeral
+Docker, `qod serve --demo` boots everything against an embedded, ephemeral
 Postgres (zonky), seeds the minimal demo, and tears it all down on exit
-(`qod setup`'s stored config is deliberately not applied):
+(`qod setup`'s stored config is deliberately not applied). `qod start --demo`
+still works too, as a deprecated alias:
 
 ```bash
-qod start --demo
+qod serve --demo
 ```
 
 It creates a demo home under `/tmp/qod-demo` (override `QOD_DEMO_HOME`) holding the embedded PG data dir + the DuckLake data path, runs the whole demo config overlay (TLS off, REST open, ACL/RLS/CLS on) - a posture produced ONLY on this code path, never on a normal `qod start` boot - seeds tenant `acme` (`acme_tpch.tpch1`) with TPC-H at SF 0.1, and prints a connect banner. Seeded principals: `alice`/`demo-alice` (analyst - sees `c_phone` masked + only `BUILDING` rows), `acme-admin`/`demo-acme-admin` (full), and any ungranted table is denied. Ctrl-C stops the manager, stops the embedded PG, and deletes the demo home. Insecure by design; not for production.

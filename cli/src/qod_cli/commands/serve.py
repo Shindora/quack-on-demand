@@ -255,6 +255,8 @@ def serve(
     first. Ctrl-C tears the manager and its nodes down gracefully. With --demo,
     runs the self-contained throwaway demo (sample data, insecure by design)
     instead.
+
+    Running against your own Postgres instead? Use qod start.
     """
     if demo:
         if target is not None:

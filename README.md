@@ -16,7 +16,7 @@
 [![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/xHj9D6Rebp)
 
 ```bash
-uvx qod start --demo   # the full gateway on your laptop: no install, no Postgres
+uvx qod serve --demo   # the full gateway on your laptop: no install, no Postgres
 ```
 
 One command boots a seeded warehouse with row, column, and table security already live. Connect with `tenant=acme` + `pool=bi` (in the admin UI login, set the tenant to `acme`) and switch principals to watch the policies apply:
@@ -63,10 +63,10 @@ Quack on Demand is that part. It turns a DuckLake lakehouse into a multi-tenant 
 The command below boots a fully seeded instance against an **embedded, throwaway Postgres**. With [uv](https://docs.astral.sh/uv/) installed there are no other prerequisites - the launcher fetches everything it needs (sha256-verified against the GitHub release) and caches it under your user cache dir.
 
 ```bash
-uvx qod start --demo   # the full gateway on your laptop: no install, no Postgres
+uvx qod serve --demo   # the full gateway on your laptop: no install, no Postgres
 ```
 
-`pip install qod && qod start --demo` is equivalent.
+`pip install qod && qod serve --demo` is equivalent.
 
 ### Docker
 
@@ -79,6 +79,42 @@ docker run --rm -p 20900:20900 -p 31338:31338 starlakeai/quack-on-demand demo
 It starts an embedded ephemeral Postgres, seeds tenant `acme` (`acme_tpch.tpch1`) with a small TPC-H dataset, boots the manager REST API on `:20900` and the FlightSQL edge on `:31338` (TLS on with an auto-generated self-signed cert; clients skip verification), and prints a connect snippet. All state lives under `/tmp/qod-demo` and is deleted when you stop it with Ctrl-C.
 
 > Demo mode is insecure by design (self-signed TLS, open REST, demo credentials, ephemeral catalog). Use it to evaluate, never in production.
+
+### Serve your own data
+
+The demo is throwaway. To point the same gateway at data you already have, with
+nothing else to install (no Postgres, no Docker):
+
+```bash
+uvx qod serve ./sales.duckdb          # an existing DuckDB file
+uvx qod serve ./warehouse/            # a directory of parquet / csv
+uvx qod serve s3://bucket/sales/      # a remote prefix
+uvx qod serve                         # a fresh, empty DuckLake to load into
+```
+
+One command provisions a tenant, a database, and a pool around the target, then
+prints the JDBC / ADBC / ODBC strings. The control plane runs on a bundled
+embedded Postgres under your user data dir, and it persists: restart and
+everything is still there. Re-running adds a second database beside the first,
+so `qod serve ./other.duckdb` extends the same gateway rather than replacing it.
+
+Unlike `--demo`, this keeps the normal secure posture: TLS on, database auth on,
+ACL on, and a random admin password generated on the first run and printed once.
+
+An existing `.duckdb` file is attached read-write and served by a single node.
+Parquet and CSV targets become views (`read_parquet` / `read_csv`), so nothing is
+copied or converted.
+
+Not sure which command you want?
+
+| Command | What it is | Needs |
+|---|---|---|
+| `qod serve --demo` | throwaway showcase on sample data, insecure by design | nothing |
+| `qod serve ./your-data` | persistent gateway over your own data, secure defaults | nothing |
+| `qod start` | your deployment: your own Postgres, your config | Postgres + `qod setup` |
+
+For production, run against your own Postgres instead: see the deployment shapes
+below.
 
 ### Full multi-tenant stack (Docker)
 

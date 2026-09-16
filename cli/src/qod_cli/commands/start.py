@@ -169,7 +169,9 @@ def start(
     don't have to export them every time - a real env var still overrides it.
     With --demo, runs the self-contained demo instead (no Postgres needed,
     and qod setup's stored config is not applied - see qod setup --help).
-    Ctrl-C tears the manager and its nodes down gracefully (same as qod stop)."""
+    Ctrl-C tears the manager and its nodes down gracefully (same as qod stop).
+
+    No Postgres and just want to serve local data? Use qod serve."""
     if demo:
         from .demo import run_demo
 
