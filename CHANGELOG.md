@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+The `qod serve` connect card tightened up: the credential block (admin user, password, storage key, rotation) is one contiguous highlighted unit, the rotate hint names `qod auth change-password --username admin` - a command that works exactly as pasted, with no user-id lookup - and the add-a-user / serve-more-data hints moved out of the banner into the docs.
+
 ## 0.9.0
 
 The `qod serve` banner grew into a proper connect card: a titled section under the manager's boot box, the embedded Postgres data directory with how to relocate it (`--pg-data-dir` / `QOD_PG_EMBEDDED_DATA_DIR`, and the warning that a new directory starts a fresh control plane), the admin password's storage key named explicitly (`QOD_ADMIN_PASSWORD` in the CLI config's `[start]` table), password lines highlighted so they cannot blend into scrollback, and the rotate hint renamed to `rotate password`.
