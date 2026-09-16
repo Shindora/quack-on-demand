@@ -13,6 +13,9 @@ tier rather than failing:
      `/api/pool/list` when an API key or session token is available;
      silently omitted otherwise.
   4. Stored `qod setup` config - how many vars, and where.
+  5. Embedded control plane - filesystem ground truth from the pgdata
+     directory `qod serve` provisions: presence, the port from its
+     `postmaster.pid`, and a TCP liveness probe of that port.
 
 Exit code: 0 when the manager REST answers `/health`, 1 when it does not,
 so scripts can `qod status && ...`.
@@ -89,7 +92,8 @@ def status(ctx: typer.Context):
     Probes the active profile's manager URL (unauthenticated /health and
     /ready, the public FlightSQL coordinates, and a TCP check of the edge
     port), lists local manager pids on this machine, adds per-pool node
-    health when logged in, and reports the stored `qod setup` config.
+    health when logged in, reports the stored `qod setup` config, and
+    probes the embedded control plane's pgdata directory for a live port.
     Exits 1 when the manager is unreachable."""
     settings = load_settings()
     base = settings.manager_url.rstrip("/")
@@ -150,16 +154,24 @@ def status(ctx: typer.Context):
     if pool_rows:
         out["poolDetail"] = pool_rows
 
-    # Ground truth from the pgdata directory itself rather than stored config: the
-    # moment this line matters most is when the manager (and so its persisted
-    # config) is NOT running. QOD_PG_EMBEDDED_DATA_DIR mirrors the resolution
-    # `qod serve` / EmbeddedControlPlane.resolveDataDir use, falling back to the
-    # same default_data_dir()/pg. Liveness is a TCP probe, not os.kill(pid, 0):
-    # on Windows any non-CTRL signal value TERMINATES the target process, so a
-    # "liveness check" there would kill the server.
-    embedded_dir = os.environ.get("QOD_PG_EMBEDDED_DATA_DIR") or str(
-        default_data_dir() / "pg"
-    )
+    start_env = load_start_env()
+
+    # `qod serve` persists only QOD_ADMIN_PASSWORD to the [start] table, so there is
+    # no stored QOD_PG_EMBEDDED* state to read here - the filesystem is the only
+    # ground truth, and it is also the one source that still answers when the
+    # manager (and so the process that would have reported its own coordinates) is
+    # NOT running, which is the moment this line matters most. The dir itself is
+    # still resolved with the same precedence `qod serve` uses - a real env var over
+    # a value `qod setup` persisted - so a `qod setup --set QOD_PG_EMBEDDED_DATA_DIR`
+    # followed by `qod serve` in a fresh shell is still found. Liveness is a TCP
+    # probe, not os.kill(pid, 0): on Windows any non-CTRL signal value TERMINATES
+    # the target process, so a "liveness check" there would kill the server. A
+    # stale postmaster.pid surviving an unclean shutdown, with some unrelated
+    # process now listening on that port, reads as "running" - an accepted false
+    # positive, not worth a second liveness signal to close.
+    merged = {**start_env, **os.environ}
+    raw_embedded_dir = (merged.get("QOD_PG_EMBEDDED_DATA_DIR") or "").strip()
+    embedded_dir = raw_embedded_dir or str(default_data_dir() / "pg")
     pgdata = Path(embedded_dir) / "pgdata"
     if pgdata.is_dir():
         port = _embedded_postgres_port(pgdata)
@@ -170,7 +182,6 @@ def status(ctx: typer.Context):
         )
         out["embeddedPostgresDir"] = embedded_dir
 
-    start_env = load_start_env()
     out["setupVars"] = len(start_env)
     out["configFile"] = str(config_path())
 

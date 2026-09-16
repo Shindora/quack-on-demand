@@ -196,6 +196,35 @@ def test_status_reports_a_stopped_embedded_control_plane(
     assert payload["embeddedPostgresDir"] == str(pg_dir)
 
 
+def test_status_finds_the_embedded_dir_persisted_by_qod_setup(
+    runner, respx_mock, monkeypatch, tmp_path
+):
+    """qod serve resolves its data dir from {**load_start_env(), **os.environ} (a
+    real env var wins, but a value `qod setup --set` persisted to [start] is found
+    too) - status must use the same precedence, or a value persisted that way is
+    invisible to it in a fresh shell with no matching env var set."""
+    from qod_cli.config import save_start_env
+    from qod_cli.main import app
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("localhost", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    pg_dir = tmp_path / "pg"
+    _write_postmaster_pid(pg_dir / "pgdata", port)
+    save_start_env({"QOD_PG_EMBEDDED_DATA_DIR": str(pg_dir)})
+    # Deliberately no monkeypatch.setenv: the value must be found via load_start_env.
+    _stub_listening_pid(monkeypatch)
+    _mock_embedded_probe(respx_mock)
+
+    result = runner.invoke(app, ["--json", "status"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["embeddedPostgres"] == "stopped (data preserved)"
+    assert payload["embeddedPostgresDir"] == str(pg_dir)
+
+
 def test_status_omits_the_embedded_line_for_an_external_postgres(
     runner, respx_mock, monkeypatch, tmp_path
 ):
