@@ -258,6 +258,12 @@ def _banner(
                 fg=typer.colors.YELLOW,
             )
         )
+    lines.append(
+        typer.style(
+            f"  rotate password: qod auth change-password --username {_ADMIN_USER}",
+            fg=typer.colors.YELLOW,
+        )
+    )
     lines += [
         "",
         typer.style(f"  JDBC {jdbc}", fg="cyan", bold=True),
@@ -265,10 +271,6 @@ def _banner(
         typer.style(f"  ODBC {odbc}", fg="cyan", bold=True),
         typer.style(f"  UI   {manager_url.rstrip('/')}/ui/", fg="cyan", bold=True),
         "",
-        typer.style(
-            f"  rotate password: qod auth change-password --username {_ADMIN_USER}",
-            fg=typer.colors.YELLOW,
-        ),
         "  Ctrl-C to stop.",
         "",
     ]
