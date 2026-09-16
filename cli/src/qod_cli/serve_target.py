@@ -79,6 +79,21 @@ def composed_db_name(tenant: str, suffix: str) -> str:
     return s if s.startswith(t + "_") else f"{t}_{s}"
 
 
+# Mirror of ai.starlake.quack.model.TenantDb.DataPathForbiddenChars. After
+# .as_posix() a backslash can no longer occur from a path separator, so a
+# backslash reaching here means the target's own name is genuinely hostile.
+_DATA_PATH_FORBIDDEN_CHARS = "'\";\\\n\r"
+
+
+def _check_data_path(value: str) -> str:
+    for ch in _DATA_PATH_FORBIDDEN_CHARS:
+        if ch in value:
+            raise TargetError(
+                f"the server rejects dataPath containing {ch!r}; rename the target or move it"
+            )
+    return value
+
+
 def _sql_str(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -178,7 +193,7 @@ def _as_ducklake(display: str, data_path: str, db: str, object_store: dict) -> S
     return ServeTarget(
         kind="ducklake",
         name=db,
-        data_path=data_path,
+        data_path=_check_data_path(data_path),
         object_store=dict(object_store),
         description=f"DuckLake warehouse at {display}",
     )
@@ -201,7 +216,7 @@ def _resolve_remote(
         # NOT a catalog: the spawn script's `memory)` arm never ATTACHes or mkdirs
         # this. It is the SCOPE for the per-database CREATE SECRET, which
         # ObjectStoreSecret.sql derives from dataPath and omits without one.
-        data_path=prefix + "/",
+        data_path=_check_data_path(prefix + "/"),
         object_store=dict(object_store),
         init_sql="\n".join(stmts),
         description=f"{len(stmts)} view(s) over {prefix}",
@@ -264,7 +279,7 @@ def _resolve_local(
         return ServeTarget(
             kind="duckdb-file",
             name=db,
-            data_path=path.resolve().as_posix(),
+            data_path=_check_data_path(path.resolve().as_posix()),
             metastore={"dbName": db, "schemaName": schema},
             description=f"DuckDB file {path.resolve()} (single node, read-write)",
         )
@@ -312,7 +327,7 @@ def resolve(
         return ServeTarget(
             kind="ducklake",
             name=db,
-            data_path=root.resolve().as_posix(),
+            data_path=_check_data_path(root.resolve().as_posix()),
             description=f"new DuckLake warehouse at {root}",
         )
     if target.lower().startswith(_REMOTE_SCHEMES):

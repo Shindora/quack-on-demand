@@ -14,7 +14,7 @@ def test_bare_target_is_a_fresh_ducklake(tmp_path):
     t = resolve(None, data_root=tmp_path)
     assert t.kind == "ducklake"
     assert t.name == "main"
-    assert t.data_path == str((tmp_path / "ducklake" / "main").resolve())
+    assert t.data_path == (tmp_path / "ducklake" / "main").resolve().as_posix()
     assert t.metastore == {}
     assert t.init_sql == ""
 
@@ -25,7 +25,7 @@ def test_duckdb_file_target(tmp_path):
     t = resolve(str(f), data_root=tmp_path)
     assert t.kind == "duckdb-file"
     assert t.name == "sales"
-    assert t.data_path == str(f.resolve())
+    assert t.data_path == f.resolve().as_posix()
     assert t.metastore == {"dbName": "sales", "schemaName": "main"}
 
 
@@ -164,7 +164,7 @@ def test_kind_ducklake_on_a_local_directory(tmp_path):
     t = resolve(str(lake), kind="ducklake", data_root=tmp_path)
     assert t.kind == "ducklake"
     assert t.name == "lakedata"
-    assert t.data_path == str(lake.resolve())
+    assert t.data_path == lake.resolve().as_posix()
     assert t.init_sql == ""
 
 
@@ -211,7 +211,7 @@ def test_relative_glob_is_absolutized_in_the_view(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     t = resolve("d/*.parquet", name="t", data_root=tmp_path)
     assert "'d/*.parquet'" not in t.init_sql
-    assert str((tmp_path / "d" / "*.parquet").resolve()) in t.init_sql
+    assert (tmp_path / "d" / "*.parquet").resolve().as_posix() in t.init_sql
 
 
 def test_local_paths_are_posix_styled(tmp_path):
@@ -235,6 +235,15 @@ def test_local_paths_are_posix_styled(tmp_path):
     (data / "orders.parquet").write_bytes(b"")
     directory_target = resolve(str(data), data_root=tmp_path)
     assert "\\" not in directory_target.init_sql
+
+
+def test_data_path_rejects_server_forbidden_characters(tmp_path):
+    # Mirror of the server's TenantDb.DataPathForbiddenChars: a data_path built
+    # from a hostile directory name must be refused here, not 400 at the manager.
+    odd = tmp_path / "it's data"
+    odd.mkdir()
+    with pytest.raises(TargetError, match="'"):
+        resolve(str(odd), kind="ducklake", name="odd", data_root=tmp_path)
 
 
 def test_unnameable_directory_entries_are_skipped(tmp_path):
