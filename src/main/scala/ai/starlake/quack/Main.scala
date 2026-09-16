@@ -167,7 +167,8 @@ object Main extends IOApp with LazyLogging:
     *
     * With it enabled, a persistent embedded Postgres is started first, the control-plane database
     * is ensured, and ONLY the five Postgres coordinates are projected onto the config. The server
-    * is stopped (never deleted) on every exit path via `guarantee`, including a failed boot.
+    * is stopped (never deleted) on every exit path via `guarantee`, including a failed boot,
+    * including a failure in the control-plane database ensure step.
     *
     * This is deliberately NOT `DemoConfig.overlay`: it does not touch `apiKey`, `runtimeType`,
     * `nativeClient`, TLS, auth, or ACL, so a persistent embedded install keeps the normal secure
@@ -178,14 +179,12 @@ object Main extends IOApp with LazyLogging:
   )(boot: ManagerConfig => IO[ExitCode]): IO[ExitCode] =
     if !mgrCfg.embeddedPostgres.enabled then boot(mgrCfg)
     else
-      IO.blocking {
-        val cp = ai.starlake.quack.boot.EmbeddedControlPlane.start(mgrCfg.embeddedPostgres)
-        cp.ensureDatabase(mgrCfg.defaultMetastore.dbName)
-        cp
-      }.flatMap { cp =>
-        boot(ai.starlake.quack.boot.EmbeddedControlPlane.applyCoordinates(mgrCfg, cp))
-          .guarantee(IO.blocking(cp.stop()))
-      }
+      IO.blocking(ai.starlake.quack.boot.EmbeddedControlPlane.start(mgrCfg.embeddedPostgres))
+        .flatMap { cp =>
+          (IO.blocking(cp.ensureDatabase(mgrCfg.defaultMetastore.dbName)) *>
+            boot(ai.starlake.quack.boot.EmbeddedControlPlane.applyCoordinates(mgrCfg, cp)))
+            .guarantee(IO.blocking(cp.stop()))
+        }
 
   private def normalManagerRun: IO[ExitCode] =
     val source      = ConfigSource.default

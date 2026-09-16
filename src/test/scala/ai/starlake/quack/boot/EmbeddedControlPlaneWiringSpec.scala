@@ -66,3 +66,26 @@ class EmbeddedControlPlaneWiringSpec extends AnyFlatSpec with Matchers:
         .unsafeRunSync()
     val probe = new java.net.ServerSocket(port)
     probe.close()
+
+  it should "stop the server when ensureDatabase itself fails" in:
+    val dir  = Files.createTempDirectory("qod-embedded-wiring-ensuredb-fail")
+    val port = freePort()
+    // The embedded double quote makes `CREATE DATABASE "qod"bad"` a syntax error: the
+    // pg_database probe (a prepared statement) passes, so start() succeeds and the CREATE
+    // fails inside ensureDatabase, after the server is already up.
+    val cfg = base.copy(
+      embeddedPostgres =
+        EmbeddedPostgresConfig(enabled = true, port = port, dataDir = dir.toString),
+      defaultMetastore = base.defaultMetastore.copy(dbName = "qod\"bad")
+    )
+    an[Exception] should be thrownBy
+      Main
+        .withEmbeddedControlPlane(cfg)(_ => cats.effect.IO.pure(ExitCode.Success))
+        .unsafeRunSync()
+    // The port is free again, so stop() ran even though ensureDatabase threw before boot ran.
+    // Bound to the loopback address explicitly (not the wildcard address a bare
+    // `new ServerSocket(port)` would use): EmbeddedControlPlane itself binds to "localhost",
+    // and on this platform a wildcard bind does not reliably conflict with that specific
+    // address, so it would not have caught a still-running server.
+    val probe = new java.net.ServerSocket(port, 50, java.net.InetAddress.getByName("localhost"))
+    probe.close()
