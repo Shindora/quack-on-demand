@@ -30,12 +30,12 @@ Both routes install the `qod` console script. With [uv](https://docs.astral.sh/u
 no install step is needed at all:
 
 ```bash
-uvx qod start --demo
+uvx qod serve --demo
 ```
 
 ## Demo
 
-`qod start --demo` runs the self-contained manager demo (embedded Postgres, seeded
+`qod serve --demo` runs the self-contained manager demo (embedded Postgres, seeded
 TPC-H sample, RLS/CLS showcase) without any local checkout: it downloads the
 manager jar for the latest release from GitHub Releases (falling back to the
 release stamped into the CLI build when the lookup fails and a cached jar
@@ -44,7 +44,8 @@ cache dir, and launches QoD with the required settings. If no Java 21+ is
 found it downloads a cached Temurin 21 JRE (announced, never prompted).
 `--jar <path>` runs a local jar instead; `--version X.Y.Z`
 pins a different release; extra arguments are passed through to the jar's
-demo subcommand.
+demo subcommand. To serve your own data instead (persistent, secure defaults,
+no external Postgres), use `qod serve <target>`.
 
 ## Run a manager
 
@@ -78,9 +79,9 @@ qod setup --unset QOD_API_KEY --non-interactive
 
 `qod start` merges this file UNDER the real process env, so an actual shell
 `export QOD_PG_HOST=...` still wins - `qod setup` only fills in what you
-haven't exported. `qod start --demo` ignores it: the demo is intentionally
-self-contained (embedded ephemeral Postgres), so a stored external-Postgres
-config would be surprising there.
+haven't exported. `qod serve --demo` (and its deprecated alias `qod start --demo`) ignores it:
+the demo is intentionally self-contained (embedded ephemeral Postgres), so a
+stored external-Postgres config would be surprising there.
 
 ## Quick start
 
