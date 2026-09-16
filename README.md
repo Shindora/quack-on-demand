@@ -72,7 +72,7 @@ The command below boots a fully seeded instance against an **embedded, throwaway
 uvx qod serve --demo   # the full gateway on your laptop: no install, no Postgres
 ```
 
-`pip install qod && qod serve --demo` is equivalent.
+`pip install qod && qod serve --demo` is equivalent. Ran `uvx qod` before? uvx freezes the version it first resolved - `uvx qod@latest ...` picks up the current release.
 
 ### Docker
 
