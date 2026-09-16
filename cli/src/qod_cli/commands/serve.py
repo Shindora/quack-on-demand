@@ -229,17 +229,24 @@ def _banner(
         lines.append(
             typer.style(
                 f"  password      : {password}   (generated, shown once)",
-                fg="yellow", bold=True,
+                fg=typer.colors.YELLOW,
+                bold=True,
             )
         )
         lines.append(
-            f"                  stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}"
+            typer.style(
+                f"                  stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}",
+                fg=typer.colors.YELLOW,
+            )
         )
     else:
         # No preceding "password :" line to hang off of here, so this is its own
         # aligned row rather than a continuation.
         lines.append(
-            f"  password      : stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}"
+            typer.style(
+                f"  password      : stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}",
+                fg=typer.colors.YELLOW,
+            )
         )
     lines += [
         "",
@@ -254,7 +261,10 @@ def _banner(
         "                   that user connects WITHOUT superuser=true (it selects the "
         "system auth realm; only the seeded admin above needs it)",
         "  serve more data: qod serve ./other.duckdb",
-        f"  rotate admin   : qod user update --username {_ADMIN_USER} --password ...",
+        typer.style(
+            f"  rotate password: qod user update --username {_ADMIN_USER} --password ...",
+            fg=typer.colors.YELLOW,
+        ),
         "  Ctrl-C to stop.",
         "",
     ]

@@ -1,6 +1,7 @@
 import pathlib
 
 import httpx
+from click import unstyle
 import pytest
 
 from qod_cli import launcher
@@ -436,6 +437,7 @@ def test_stored_password_is_not_reprinted(respx_mock, tmp_path):
         edge_host="localhost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
+    banner = unstyle(banner)
     assert "secret" not in banner
     assert "qod user update" in banner
     # M-2: the "stored in <config_path>" line must survive even when this run did
@@ -457,6 +459,7 @@ def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tm
         edge_host="localhost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
+    banner = unstyle(banner)
     assert "password      : secret" in banner
     assert f"stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}" in banner
 
@@ -472,6 +475,7 @@ def test_banner_gives_a_two_step_hint_for_adding_a_user_under_acl(respx_mock, tm
         edge_host="localhost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
+    banner = unstyle(banner)
     assert "qod user create" in banner
     assert "grant access" in banner
     # F3: the real command is `qod role permission grant` (grant is mounted under
@@ -493,6 +497,7 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
         generated=False, edge_host="edgehost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
+    banner = unstyle(banner)
     # Connect lines are styled for readability (see the highlighting test below),
     # so match on the ANSI-stripped content rather than a raw prefix.
     plain = click.unstyle(banner)
