@@ -17,6 +17,15 @@ class EmbeddedControlPlaneWiringSpec extends AnyFlatSpec with Matchers:
     try s.getLocalPort
     finally s.close()
 
+  /** Proves a port is free by binding to the SAME address `EmbeddedControlPlane` binds to
+    * ("localhost"), not the wildcard address a bare `new ServerSocket(port)` would use. On some
+    * platforms (observed on macOS) a wildcard bind does not conflict with a still-live process
+    * bound specifically to "localhost", so it would not catch a server that failed to stop.
+    */
+  private def assertPortFree(port: Int): Unit =
+    val probe = new java.net.ServerSocket(port, 50, java.net.InetAddress.getByName("localhost"))
+    probe.close()
+
   private def base: ManagerConfig =
     ConfigSource.default.at("quack-on-demand").loadOrThrow[ManagerConfig]
 
@@ -51,8 +60,7 @@ class EmbeddedControlPlaneWiringSpec extends AnyFlatSpec with Matchers:
     seen.get.runtimeType shouldBe cfg.runtimeType
     seen.get.defaultMetastore.dataPath shouldBe cfg.defaultMetastore.dataPath
     // The port is free again, so stop() ran.
-    val probe = new java.net.ServerSocket(port)
-    probe.close()
+    assertPortFree(port)
 
   it should "stop the server even when the boot body fails" in:
     val dir  = Files.createTempDirectory("qod-embedded-wiring-fail")
@@ -64,8 +72,7 @@ class EmbeddedControlPlaneWiringSpec extends AnyFlatSpec with Matchers:
       Main
         .withEmbeddedControlPlane(cfg)(_ => cats.effect.IO.raiseError(new RuntimeException("boom")))
         .unsafeRunSync()
-    val probe = new java.net.ServerSocket(port)
-    probe.close()
+    assertPortFree(port)
 
   it should "stop the server when ensureDatabase itself fails" in:
     val dir  = Files.createTempDirectory("qod-embedded-wiring-ensuredb-fail")
@@ -83,9 +90,4 @@ class EmbeddedControlPlaneWiringSpec extends AnyFlatSpec with Matchers:
         .withEmbeddedControlPlane(cfg)(_ => cats.effect.IO.pure(ExitCode.Success))
         .unsafeRunSync()
     // The port is free again, so stop() ran even though ensureDatabase threw before boot ran.
-    // Bound to the loopback address explicitly (not the wildcard address a bare
-    // `new ServerSocket(port)` would use): EmbeddedControlPlane itself binds to "localhost",
-    // and on this platform a wildcard bind does not reliably conflict with that specific
-    // address, so it would not have caught a still-running server.
-    val probe = new java.net.ServerSocket(port, 50, java.net.InetAddress.getByName("localhost"))
-    probe.close()
+    assertPortFree(port)
