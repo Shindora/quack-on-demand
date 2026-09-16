@@ -107,16 +107,16 @@ def _banner(
         f"  admin         : {_ADMIN_USER}",
     ]
     if generated:
-        lines += [
-            f"  password      : {password}   (generated, shown once)",
-            f"                  stored in {config_path()}",
-        ]
+        lines.append(f"  password      : {password}   (generated, shown once)")
+    lines.append(f"                  password stored in {config_path()}")
     lines += [
         "",
         f"  JDBC {jdbc}",
         f"  UI   {manager_url.rstrip('/')}/ui/",
         "",
         f"  add a user     : qod user create --tenant {tenant} --username alice --password ...",
+        "                   then grant access: qod role create / qod role grant + "
+        "qod membership add (see qod role --help)",
         "  serve more data: qod serve ./other.duckdb",
         f"  rotate admin   : qod user update --username {_ADMIN_USER} --password ...",
         "  Ctrl-C to stop.",
@@ -145,14 +145,15 @@ def _provision(
         login = client.request(
             "POST", "/api/auth/login", body={"username": _ADMIN_USER, "password": password}
         )
-        settings.token = login["token"]
+        token = login["token"]
+        settings.token = token
         client = RestClient(settings)
         ensure_tenant(client, tenant)
         ensure_database(client, tenant, target)
         db_full = composed_db_name(tenant, target.name)
         ensure_pool(client, tenant, db_full, pool, size)
         edge = client.request("GET", "/api/config/client") or {}
-        edge_host = edge.get("flightSqlHost", "")
+        edge_host = edge.get("flightSqlHost") or ""
         if edge_host in ("", "0.0.0.0"):
             edge_host = urlparse(manager_url).hostname or "localhost"
         edge_port = int(edge.get("flightSqlPort", 31338))
@@ -160,7 +161,7 @@ def _provision(
             profile,
             {
                 "manager_url": manager_url,
-                "token": login["token"],
+                "token": token,
                 "sql_user": _ADMIN_USER,
                 "tenant": tenant,
                 "pool": pool,
@@ -184,6 +185,9 @@ def _provision(
         echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
     except ApiError as exc:
         echo(f"\nqod serve: provisioning failed: {exc}")
+        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+    except Exception as exc:  # noqa: BLE001 - never raises, see the docstring above.
+        echo(f"\nqod serve: provisioning failed unexpectedly: {exc!r}")
         echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
 
 
@@ -218,9 +222,12 @@ def serve(
     secret_access_key: str = typer.Option(None, "--secret-access-key", help="Object-store secret."),
     region: str = typer.Option(None, "--region", help="Object-store region."),
     endpoint: str = typer.Option(None, "--endpoint", help="S3-compatible endpoint (e.g. MinIO)."),
-    pg_port: int = typer.Option(25432, "--pg-port", help="Embedded Postgres port."),
+    pg_port: int = typer.Option(
+        None, "--pg-port", help="Embedded Postgres port. Default 25432, or QOD_PG_EMBEDDED_PORT."
+    ),
     pg_data_dir: str = typer.Option(
-        None, "--pg-data-dir", help="Embedded Postgres data dir; default <data-dir>/pg."
+        None, "--pg-data-dir", help="Embedded Postgres data dir; default <data-dir>/pg, "
+        "or QOD_PG_EMBEDDED_DATA_DIR.",
     ),
     ready_timeout: float = typer.Option(
         180.0, "--ready-timeout", help="Seconds to wait for the manager before giving up."
@@ -261,6 +268,18 @@ def serve(
         )
         raise typer.Exit(1)
 
+    # DuckDB's file lock is single-writer: a second node attaching the same
+    # .duckdb file read-write would fail to attach at all. Caught here so the
+    # failure costs no JVM boot, same as the tenant-name check above.
+    if resolved.kind == "duckdb-file" and size > 1:
+        typer.echo(
+            f"error: --size {size} is not possible for a .duckdb file target: DuckDB's "
+            "single-writer file lock means only one node can attach it read-write. Use "
+            "--size 1, or serve the data as a DuckLake to scale out.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     java = resolve_java()
     jar_path = jar.resolve() if jar is not None else resolve_jar(version)
 
@@ -275,7 +294,6 @@ def serve(
 
     state_dir = launcher.default_data_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
-    resolved_pg_dir = pg_data_dir or str(state_dir / "pg")
 
     password, generated = _resolve_admin_password()
     if generated:
@@ -283,18 +301,42 @@ def serve(
         # restart, or the banner's credentials stop working on the second run.
         save_start_env({"QOD_ADMIN_PASSWORD": password})
 
+    # Precedence for --pg-port/--pg-data-dir mirrors the rest of the CLI: explicit
+    # flag > real env var / a value persisted by `qod setup` > built-in default.
+    # The flags default to None so a value already present in base_env is not
+    # silently clobbered by an indistinguishable flag default.
     base_env = {**load_start_env(), **os.environ}
+    effective_pg_port = (
+        pg_port if pg_port is not None else int(base_env.get("QOD_PG_EMBEDDED_PORT", "25432"))
+    )
+    effective_pg_dir = (
+        pg_data_dir
+        if pg_data_dir is not None
+        else base_env.get("QOD_PG_EMBEDDED_DATA_DIR", str(state_dir / "pg"))
+    )
+
     env = launcher.runtime_env(
         base_env, app_home, duckdb_bin, spawn_sh, spawn_ps1, libduckdb_lib=libduckdb
     )
     env.setdefault("QOD_DUCKLAKE_DATA_PATH", str(state_dir / "ducklake" / "data"))
     env["QOD_PG_EMBEDDED"] = "true"
-    env["QOD_PG_EMBEDDED_PORT"] = str(pg_port)
-    env["QOD_PG_EMBEDDED_DATA_DIR"] = resolved_pg_dir
+    env["QOD_PG_EMBEDDED_PORT"] = str(effective_pg_port)
+    env["QOD_PG_EMBEDDED_DATA_DIR"] = effective_pg_dir
     env["QOD_ADMIN_PASSWORD"] = password
     # quack-on-demand.acl.enabled defaults to FALSE, so a persistent install has to
-    # ask for it. TLS and DB auth are already on by default. A real env var wins.
+    # ask for it. TLS and DB auth are already on by default. A real env var or a
+    # persisted `qod setup` value wins over this default.
     env.setdefault("QOD_ACL_ENABLED", "true")
+    if env.get("QOD_ACL_ENABLED", "true").lower() != "true":
+        typer.echo(
+            f"WARN: ACL is disabled by QOD_ACL_ENABLED={env['QOD_ACL_ENABLED']} (from the "
+            "environment or qod setup); this gateway will not enforce table permissions.",
+            err=True,
+        )
+
+    # chdir is process-global; do it before spawning the provisioning thread so
+    # that thread never observes a cwd flip mid-run.
+    os.chdir(state_dir)
 
     _spawn_provisioning(
         manager_url=ctx.obj.settings.manager_url,
@@ -306,12 +348,11 @@ def serve(
         profile=ctx.obj.profile,
         generated=generated,
         ready_timeout=ready_timeout,
-        pg_port=pg_port,
-        pg_data_dir=resolved_pg_dir,
+        pg_port=effective_pg_port,
+        pg_data_dir=effective_pg_dir,
         echo=lambda line: typer.echo(line, err=True),
     )
 
-    os.chdir(state_dir)
     _exec(
         launcher.build_jar_command(
             java, str(jar_path), list(ctx.args), java_opts=env.get("JAVA_OPTS")

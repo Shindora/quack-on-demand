@@ -115,6 +115,41 @@ def test_serve_honors_the_port_and_data_dir_flags(runner, wired, tmp_path):
     assert wired["env"]["QOD_PG_EMBEDDED_DATA_DIR"] == "/custom/pg"
 
 
+def test_serve_honors_pg_port_env_var_over_default(runner, wired, tmp_path, monkeypatch):
+    # M-3: explicit flag > env var > persisted qod-setup value > default. With no
+    # flag, a real QOD_PG_EMBEDDED_PORT must not be clobbered by the flag's default.
+    monkeypatch.setenv("QOD_PG_EMBEDDED_PORT", "26500")
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    _invoke(runner, wired, str(f))
+    assert wired["env"]["QOD_PG_EMBEDDED_PORT"] == "26500"
+
+
+def test_serve_warns_loudly_when_acl_is_overridden_off(runner, wired, tmp_path):
+    # I-1: a QOD_ACL_ENABLED=false persisted by `qod setup` outranks serve's
+    # setdefault silently today; it must at least warn.
+    from qod_cli.config import save_start_env
+
+    save_start_env({"QOD_ACL_ENABLED": "false"})
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    result = _invoke(runner, wired, str(f))
+    assert wired["env"]["QOD_ACL_ENABLED"] == "false"
+    assert "WARN" in result.output
+    assert "QOD_ACL_ENABLED=false" in result.output
+
+
+def test_serve_rejects_size_greater_than_1_for_a_duckdb_file(runner, wired, tmp_path):
+    # M-1: DuckDB's single-writer file lock means only one node can attach a
+    # .duckdb file read-write.
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    result = _invoke(runner, wired, str(f), "--size", "2")
+    assert result.exit_code == 1
+    assert "single-writer" in result.output
+    assert "cmd" not in wired
+
+
 def test_serve_fails_before_launching_on_a_missing_target(runner, wired, tmp_path):
     result = _invoke(runner, wired, str(tmp_path / "nope.duckdb"))
     assert result.exit_code == 1
@@ -253,3 +288,102 @@ def test_stored_password_is_not_reprinted(respx_mock, tmp_path):
     )
     assert "secret" not in banner
     assert "qod user update" in banner
+    # M-2: the "stored in <config_path>" line must survive even when this run did
+    # not generate the password, so a JVM death before the generating run's banner
+    # doesn't strand the user with zero mention of where the password lives.
+    from qod_cli.config import config_path
+
+    assert f"password stored in {config_path()}" in banner
+
+
+def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tmp_path):
+    from qod_cli.commands.serve import _banner
+    from qod_cli.config import config_path
+
+    banner = _banner(
+        tenant="default", db="sales", pool="bi", size=1, password="secret", generated=True,
+        edge_host="localhost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    )
+    assert "password      : secret" in banner
+    assert f"password stored in {config_path()}" in banner
+
+
+def test_banner_gives_a_two_step_hint_for_adding_a_user_under_acl(respx_mock, tmp_path):
+    # M-5: ACL is forced on, so a bare `qod user create` principal is denied on
+    # every table (only superusers bypass) - the banner must not send users into
+    # that dead end without pointing at role/membership.
+    from qod_cli.commands.serve import _banner
+
+    banner = _banner(
+        tenant="default", db="sales", pool="bi", size=1, password="secret", generated=False,
+        edge_host="localhost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    )
+    assert "qod user create" in banner
+    assert "grant access" in banner
+    assert "qod role" in banner
+    assert "qod membership add" in banner
+
+
+def test_provisioning_never_raises_on_a_tokenless_login(respx_mock, tmp_path):
+    # I-2: an uncaught KeyError on login["token"] would surface as a raw
+    # traceback on the daemon thread, interleaved with the manager log.
+    from qod_cli.commands.serve import _provision
+    from qod_cli.serve_target import resolve
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.post(f"{BASE}/api/auth/login").mock(return_value=httpx.Response(200, json={}))
+
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    lines = []
+    _provision(
+        manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
+        pool="bi", size=1, password="pw", profile="default", generated=True,
+        ready_timeout=5, pg_port=25432, pg_data_dir=str(tmp_path / "pg"), echo=lines.append,
+    )
+    out = "\n".join(lines)
+    assert "provisioning failed unexpectedly" in out
+    assert "still running" in out
+
+
+def test_provisioning_substitutes_a_null_flight_sql_host(respx_mock, tmp_path):
+    # I-2: a JSON-null flightSqlHost must take the same substitution branch as
+    # "" and "0.0.0.0", not land None in the JDBC connection string.
+    from qod_cli.commands.serve import _provision
+    from qod_cli.serve_target import resolve
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.post(f"{BASE}/api/auth/login").mock(
+        return_value=httpx.Response(200, json={"token": "jwt-1"})
+    )
+    respx_mock.get(f"{BASE}/api/tenant/list").mock(
+        return_value=httpx.Response(200, json={"tenants": []})
+    )
+    respx_mock.post(f"{BASE}/api/tenant/create").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.get(f"{BASE}/api/database/list").mock(
+        return_value=httpx.Response(200, json={"tenantDbs": []})
+    )
+    respx_mock.post(f"{BASE}/api/database/create").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.get(f"{BASE}/api/pool/list").mock(
+        return_value=httpx.Response(200, json={"pools": []})
+    )
+    respx_mock.post(f"{BASE}/api/pool/create").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.get(f"{BASE}/api/config/client").mock(
+        return_value=httpx.Response(
+            200, json={"flightSqlHost": None, "flightSqlPort": 31338, "flightSqlTls": True}
+        )
+    )
+
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    lines = []
+    _provision(
+        manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
+        pool="bi", size=1, password="pw", profile="default", generated=True,
+        ready_timeout=5, pg_port=25432, pg_data_dir=str(tmp_path / "pg"), echo=lines.append,
+    )
+    banner = "\n".join(lines)
+    assert "jdbc:arrow-flight-sql://localhost:31338/" in banner
+    assert "None" not in banner
