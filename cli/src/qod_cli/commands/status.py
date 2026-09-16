@@ -133,6 +133,14 @@ def status(ctx: typer.Context):
         out["poolDetail"] = pool_rows
 
     start_env = load_start_env()
+    # `qod serve` persists its launch env here, so the control-plane coordinates are
+    # readable without a side-channel port file. Reported only when embedded: an
+    # external Postgres is the operator's own and they already know where it is.
+    if start_env.get("QOD_PG_EMBEDDED", "").lower() == "true":
+        out["embeddedPostgres"] = f"localhost:{start_env.get('QOD_PG_EMBEDDED_PORT', '25432')}"
+        embedded_dir = start_env.get("QOD_PG_EMBEDDED_DATA_DIR", "")
+        if embedded_dir:
+            out["embeddedPostgresDir"] = embedded_dir
     out["setupVars"] = len(start_env)
     out["configFile"] = str(config_path())
 

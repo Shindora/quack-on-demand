@@ -1,5 +1,7 @@
 import json
 
+import httpx
+
 BASE = "http://localhost:20900"
 
 
@@ -112,3 +114,45 @@ def test_status_auth_failure_degrades_silently(runner, respx_mock, monkeypatch):
     payload = json.loads(result.stdout)
     assert "poolDetail" not in payload
     assert payload["pools"] == 2  # unauthenticated summary still present
+
+
+def test_status_reports_the_embedded_control_plane(runner, respx_mock, monkeypatch):
+    from qod_cli.config import save_start_env
+    from qod_cli.main import app
+
+    save_start_env({
+        "QOD_PG_EMBEDDED": "true",
+        "QOD_PG_EMBEDDED_PORT": "25432",
+        "QOD_PG_EMBEDDED_DATA_DIR": "/data/qod/pg",
+    })
+    _quiet_local(monkeypatch)
+    respx_mock.get("http://localhost:20900/health").mock(
+        return_value=httpx.Response(200, json={"poolsCount": 1, "nodesCount": 1})
+    )
+    respx_mock.get("http://localhost:20900/ready").mock(return_value=httpx.Response(200))
+    respx_mock.get("http://localhost:20900/api/config/client").mock(
+        return_value=httpx.Response(404)
+    )
+    result = runner.invoke(app, ["--json", "status"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["embeddedPostgres"] == "localhost:25432"
+    assert payload["embeddedPostgresDir"] == "/data/qod/pg"
+
+
+def test_status_omits_the_embedded_line_for_an_external_postgres(
+    runner, respx_mock, monkeypatch
+):
+    from qod_cli.main import app
+
+    _quiet_local(monkeypatch)
+    respx_mock.get("http://localhost:20900/health").mock(
+        return_value=httpx.Response(200, json={"poolsCount": 0, "nodesCount": 0})
+    )
+    respx_mock.get("http://localhost:20900/ready").mock(return_value=httpx.Response(200))
+    respx_mock.get("http://localhost:20900/api/config/client").mock(
+        return_value=httpx.Response(404)
+    )
+    result = runner.invoke(app, ["--json", "status"])
+    payload = json.loads(result.output)
+    assert "embeddedPostgres" not in payload
