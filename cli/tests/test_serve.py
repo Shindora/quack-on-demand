@@ -496,15 +496,25 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
     # Connect lines are styled for readability (see the highlighting test below),
     # so match on the ANSI-stripped content rather than a raw prefix.
     plain = click.unstyle(banner)
+    jdbc_line = next(line for line in plain.splitlines() if line.strip().startswith("JDBC"))
     adbc_line = next(line for line in plain.splitlines() if line.strip().startswith("ADBC"))
     odbc_line = next(line for line in plain.splitlines() if line.strip().startswith("ODBC"))
 
+    # The seeded admin is a SUPERUSER row (tenant IS NULL); without a superuser
+    # flag on the connect string the FlightSQL edge picks the TENANT auth realm
+    # (tenant= is present), where no admin row exists, and login fails with
+    # "Invalid password" for the exact string the banner just advertised.
+    assert "user=admin" in jdbc_line
+    assert "&superuser=true" in jdbc_line
+
     assert "grpc+tls://edgehost:31338" in adbc_line
     assert "tenant=default, pool=bi" in adbc_line
+    assert "superuser=true" in adbc_line
 
     assert "TENANT=default;POOL=bi" in odbc_line
     assert "UID=admin" in odbc_line
     assert "PWD=<password>" in odbc_line
+    assert "SUPERUSER=true" in odbc_line
 
     # The real password must appear at most once per credential lifetime (the
     # generated-run line) - never baked into a connect string printed on every boot.

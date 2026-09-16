@@ -183,10 +183,17 @@ def _banner(
     output and CI logs stay plain text."""
     from ..config import config_path
 
+    # The seeded admin is a SUPERUSER row (tenant IS NULL): the FlightSQL edge picks
+    # the auth realm off a "superuser" header (JDBC/ADBC/ODBC params become gRPC
+    # headers), and with tenant= present but no superuser flag it auths in the
+    # TENANT realm instead, where no admin row exists - "Invalid password" for the
+    # exact string this banner just handed the user. Only the seeded admin needs
+    # it; tenant users created later connect without it (see the add-a-user hint
+    # below).
     jdbc = (
         f"jdbc:arrow-flight-sql://{edge_host}:{edge_port}/"
         f"?tenant={tenant}&pool={pool}&user={_ADMIN_USER}"
-        "&useEncryption=true&disableCertificateVerification=true"
+        "&useEncryption=true&disableCertificateVerification=true&superuser=true"
     )
     # ADBC/ODBC mirror the manager's own boot box (Banner.scala), but with the
     # real tenant/pool/user filled in instead of <placeholder>s. The password
@@ -197,13 +204,13 @@ def _banner(
     adbc = (
         f"uri=grpc+tls://{edge_host}:{edge_port}  (adbc_driver_flightsql; "
         f"db_kwargs: username={_ADMIN_USER}, password, plus grpc headers "
-        f"tenant={tenant}, pool={pool})"
+        f"tenant={tenant}, pool={pool}, superuser=true)"
     )
     odbc = (
         "Driver={Arrow Flight SQL ODBC Driver};"
         f"Host={edge_host};Port={edge_port};UseEncryption=true;"
         f"DisableCertificateVerification=true;UID={_ADMIN_USER};PWD=<password>;"
-        f"TENANT={tenant};POOL={pool}"
+        f"SUPERUSER=true;TENANT={tenant};POOL={pool}"
     )
     lines = [
         "",
@@ -240,6 +247,8 @@ def _banner(
         f"  add a user     : qod user create --tenant {tenant} --username alice --password ...",
         "                   then grant access: qod role create / qod role permission grant + "
         "qod membership add (see qod role --help)",
+        "                   that user connects WITHOUT superuser=true (it selects the "
+        "system auth realm; only the seeded admin above needs it)",
         "  serve more data: qod serve ./other.duckdb",
         f"  rotate admin   : qod user update --username {_ADMIN_USER} --password ...",
         "  Ctrl-C to stop.",
