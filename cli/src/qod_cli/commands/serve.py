@@ -183,6 +183,23 @@ def _banner(
         f"?tenant={tenant}&pool={pool}&user={_ADMIN_USER}"
         "&useEncryption=true&disableCertificateVerification=true"
     )
+    # ADBC/ODBC mirror the manager's own boot box (Banner.scala), but with the
+    # real tenant/pool/user filled in instead of <placeholder>s. The password
+    # itself stays out of both: ADBC keeps the bare "password" keyword and ODBC
+    # keeps the literal "<password>" placeholder, matching the JDBC/password
+    # rule above - the plaintext must appear at most once per credential
+    # lifetime, not on every boot's connect strings.
+    adbc = (
+        f"uri=grpc+tls://{edge_host}:{edge_port}  (adbc_driver_flightsql; "
+        f"db_kwargs: username={_ADMIN_USER}, password, plus grpc headers "
+        f"tenant={tenant}, pool={pool})"
+    )
+    odbc = (
+        "Driver={Arrow Flight SQL ODBC Driver};"
+        f"Host={edge_host};Port={edge_port};UseEncryption=true;"
+        f"DisableCertificateVerification=true;UID={_ADMIN_USER};PWD=<password>;"
+        f"TENANT={tenant};POOL={pool}"
+    )
     lines = [
         "",
         f"  control plane : embedded postgres ({pg_data_dir}, port {pg_port})",
@@ -200,6 +217,8 @@ def _banner(
     lines += [
         "",
         f"  JDBC {jdbc}",
+        f"  ADBC {adbc}",
+        f"  ODBC {odbc}",
         f"  UI   {manager_url.rstrip('/')}/ui/",
         "",
         f"  add a user     : qod user create --tenant {tenant} --username alice --password ...",

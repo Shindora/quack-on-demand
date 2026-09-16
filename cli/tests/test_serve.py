@@ -480,6 +480,33 @@ def test_banner_gives_a_two_step_hint_for_adding_a_user_under_acl(respx_mock, tm
     assert "qod membership add" in banner
 
 
+def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path):
+    # The manager's own boot box prints JDBC/ADBC/ODBC with <tenant>/<pool>/<user>
+    # placeholders; serve's banner has the real provisioned values in hand and
+    # should print all three protocols copy-paste ready, not just JDBC.
+    from qod_cli.commands.serve import _banner
+
+    banner = _banner(
+        tenant="default", db="sales", pool="bi", size=1, password="sup3rs3cret",
+        generated=False, edge_host="edgehost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    )
+    adbc_line = next(line for line in banner.splitlines() if line.strip().startswith("ADBC"))
+    odbc_line = next(line for line in banner.splitlines() if line.strip().startswith("ODBC"))
+
+    assert "grpc+tls://edgehost:31338" in adbc_line
+    assert "tenant=default, pool=bi" in adbc_line
+
+    assert "TENANT=default;POOL=bi" in odbc_line
+    assert "UID=admin" in odbc_line
+    assert "PWD=<password>" in odbc_line
+
+    # The real password must appear at most once per credential lifetime (the
+    # generated-run line) - never baked into a connect string printed on every boot.
+    assert "sup3rs3cret" not in adbc_line
+    assert "sup3rs3cret" not in odbc_line
+
+
 def test_provisioning_never_raises_on_a_tokenless_login(respx_mock, tmp_path):
     # I-2: an uncaught KeyError on login["token"] would surface as a raw
     # traceback on the daemon thread, interleaved with the manager log.
