@@ -1448,6 +1448,26 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     sup.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
     backend.specs.head.objectStoreSql shouldBe ""
 
+  it should
+    "produce a node spec with objectStoreSql for an InMemory tenant-db with objectStore + s3 dataPath" in:
+    val (sup, backend) = freshSupervisorWithBackend()
+    sup.createTenant(Tenant("acme")).unsafeRunSync()
+    sup.createTenantDb("acme", "objmem",
+      TenantDbKind.InMemory,
+      Map.empty,
+      dataPath = "s3://bucket/mem/",
+      objectStore = Map(
+        "s3_access_key_id" -> "k",
+        "s3_secret_access_key" -> "s",
+        "s3_region" -> "us-east-1"
+      )
+    ).unsafeRunSync()
+    val memKey = PoolKey("acme", "acme_objmem", "sales")
+    sup.createPool(memKey, RoleDistribution(0, 0, 1)).unsafeRunSync()
+    val spec = backend.specs.head
+    spec.objectStoreSql should include("CREATE OR REPLACE SECRET qod_db_store")
+    spec.objectStoreSql should include("SCOPE 's3://bucket/mem/'")
+
   // ---------- maintenanceNodeSpec: no-donor s3 fallback ----------
 
   "PoolSupervisor.maintenanceNodeSpec" should

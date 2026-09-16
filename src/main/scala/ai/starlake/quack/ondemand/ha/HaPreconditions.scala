@@ -1,8 +1,9 @@
 package ai.starlake.quack.ondemand.ha
 
 /** Config-load-time gates for HA mode. HA requires the Kubernetes backend (the local backend's port
-  * allocator and child processes are per-JVM) and an explicit session JWT secret (sessions must
-  * verify on every replica, so the boot-generated per-replica fallback is refused).
+  * allocator and child processes are per-JVM), an explicit session JWT secret (sessions must verify
+  * on every replica, so the boot-generated per-replica fallback is refused), and an external
+  * Postgres (a single embedded server cannot back N replicas).
   */
 object HaPreconditions:
 

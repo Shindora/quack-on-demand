@@ -25,3 +25,9 @@ class EmbeddedPostgresConfigSpec extends AnyFlatSpec with Matchers:
   it should "refuse an out-of-range port" in:
     an[IllegalArgumentException] should be thrownBy EmbeddedPostgresConfig(port = 0)
     an[IllegalArgumentException] should be thrownBy EmbeddedPostgresConfig(port = 70000)
+
+  it should "default the case class itself independent of the environment" in:
+    val cfg = EmbeddedPostgresConfig()
+    cfg.enabled shouldBe false
+    cfg.port shouldBe 25432
+    cfg.dataDir shouldBe ""

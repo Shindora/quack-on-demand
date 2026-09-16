@@ -1,6 +1,7 @@
 package ai.starlake.quack.boot
 
 import ai.starlake.quack.{EmbeddedPostgresConfig, ManagerConfig}
+import ai.starlake.quack.edge.config.AuthenticationConfig
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 
 import java.nio.file.{Files, Path, Paths}
@@ -126,6 +127,33 @@ object EmbeddedControlPlane:
         pgPort = cp.port.toString,
         pgUser = cp.user,
         pgPassword = cp.password
+      )
+    )
+
+  /** The `auth.database` block's `jdbcUrl`/`username`/`password` are HOCON-substituted from
+    * `defaultMetastore` at CONFIG-LOAD time, before this embedded server exists, so they still
+    * point at the config-file coordinates rather than the live embedded server. Re-anchor them to
+    * the live server, per key, unless the operator explicitly overrode that key via its own env var
+    * (`QOD_AUTH_DB_JDBC_URL` / `_USER` / `_PASSWORD`) -- an explicit override is a deliberate
+    * decision to authenticate against a different database and must keep winning. `dbName` is
+    * passed in rather than read off `cp`/`authCfg` because it is the caller's already-resolved
+    * control-plane database name (the same one `ensureDatabase` was called with), not a field this
+    * class or the auth config carries. Only the `database` sub-block moves; every other auth field
+    * (oidc, jwt, queries, the `enabled` flag) is untouched.
+    */
+  def applyAuthCoordinates(
+      authCfg: AuthenticationConfig,
+      cp: EmbeddedControlPlane,
+      dbName: String,
+      env: String => Option[String]
+  ): AuthenticationConfig =
+    val db = authCfg.database
+    authCfg.copy(database =
+      db.copy(
+        jdbcUrl = env("QOD_AUTH_DB_JDBC_URL")
+          .getOrElse(s"jdbc:postgresql://${cp.host}:${cp.port}/$dbName"),
+        username = env("QOD_AUTH_DB_USER").getOrElse(cp.user),
+        password = env("QOD_AUTH_DB_PASSWORD").getOrElse(cp.password)
       )
     )
 
