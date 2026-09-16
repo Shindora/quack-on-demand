@@ -70,15 +70,20 @@ object EmbeddedControlPlane:
     * `qod serve` reports in its banner: `platformdirs.user_data_dir("qod")` on the Python side.
     */
   def resolveDataDir(configured: String): Path =
-    if configured.nonEmpty then Paths.get(configured)
+    val trimmed = configured.trim
+    if trimmed.nonEmpty then Paths.get(trimmed)
     else
       val home = System.getProperty("user.home")
       val base = System.getProperty("os.name").toLowerCase match
         case os if os.contains("mac") => Paths.get(home, "Library", "Application Support", "qod")
         case os if os.contains("win") =>
+          // platformdirs on Windows appends appauthor/appname, and appauthor defaults to the
+          // appname, so user_data_dir("qod") resolves to LOCALAPPDATA\qod\qod. The CLI's
+          // default_data_dir() already anchors `qod start` state there, so this must agree.
           Option(System.getenv("LOCALAPPDATA"))
-            .map(Paths.get(_, "qod"))
-            .getOrElse(Paths.get(home, "AppData", "Local", "qod"))
+            .filter(_.nonEmpty)
+            .map(Paths.get(_, "qod", "qod"))
+            .getOrElse(Paths.get(home, "AppData", "Local", "qod", "qod"))
         case _ =>
           Option(System.getenv("XDG_DATA_HOME"))
             .filter(_.nonEmpty)
@@ -107,12 +112,12 @@ object EmbeddedControlPlane:
           .setPort(cfg.port)
           .start()
       catch case scala.util.control.NonFatal(t) => throw startFailure(t, pgData)
-    new EmbeddedControlPlane(instance, "localhost", cfg.port, User, Password)
+    new EmbeddedControlPlane(instance, "localhost", instance.getPort, User, Password)
 
-  /** Copy the live coordinates onto the manager config. Touches ONLY the five Postgres fields of
-    * `defaultMetastore`: `dataPath`, `schemaName`, `apiKey`, `runtimeType`, TLS, auth, and ACL all
-    * keep whatever the normal config resolution produced. This is what keeps the persistent
-    * embedded mode outside the demo posture.
+  /** Copy the live coordinates onto the manager config. Touches ONLY the Postgres coordinate fields
+    * of `defaultMetastore` (pgHost, pgPort, pgUser, pgPassword); `dbName` deliberately stays as
+    * configured, and nothing else on the config moves. This is what keeps the persistent embedded
+    * mode outside the demo posture.
     */
   def applyCoordinates(mgrCfg: ManagerConfig, cp: EmbeddedControlPlane): ManagerConfig =
     mgrCfg.copy(defaultMetastore =

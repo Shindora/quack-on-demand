@@ -65,7 +65,7 @@ class EmbeddedControlPlaneSpec extends AnyFlatSpec with Matchers:
       noException should be thrownBy cp.ensureDatabase("qod")
     finally cp.stop()
 
-  it should "project only the five Postgres coordinates onto ManagerConfig" in:
+  it should "project only the Postgres coordinate fields onto ManagerConfig" in:
     val dir = Files.createTempDirectory("qod-embedded-coords")
     val cp  = EmbeddedControlPlane.start(
       EmbeddedPostgresConfig(enabled = true, port = freePort(), dataDir = dir.toString)
@@ -88,7 +88,63 @@ class EmbeddedControlPlaneSpec extends AnyFlatSpec with Matchers:
     finally cp.stop()
 
   it should "default the data dir to the platform user-data dir when unconfigured" in:
-    EmbeddedControlPlane.resolveDataDir("").toString should endWith("pg")
+    val resolved = EmbeddedControlPlane.resolveDataDir("")
+    resolved.isAbsolute shouldBe true
+    resolved.getFileName.toString shouldBe "pg"
+    resolved.getParent.getFileName.toString shouldBe "qod"
 
   it should "honor an explicit data dir" in:
     EmbeddedControlPlane.resolveDataDir("/tmp/custom-qod").toString shouldBe "/tmp/custom-qod"
+
+  it should "recover a data directory left behind with a stale postmaster.pid" in:
+    val dir  = Files.createTempDirectory("qod-embedded-stale-pid")
+    val port = freePort()
+    val cfg  = EmbeddedPostgresConfig(enabled = true, port = port, dataDir = dir.toString)
+
+    val first = EmbeddedControlPlane.start(cfg)
+    try
+      first.ensureDatabase("qod")
+      val conn = DriverManager.getConnection(
+        s"jdbc:postgresql://${first.host}:${first.port}/qod",
+        first.user,
+        first.password
+      )
+      try
+        val st = conn.createStatement()
+        try
+          st.executeUpdate("CREATE TABLE persisted2 (id int)")
+          st.executeUpdate("INSERT INTO persisted2 VALUES (43)")
+        finally st.close()
+      finally conn.close()
+    finally first.stop()
+
+    val p = new ProcessBuilder(java.util.List.of("true")).start()
+    p.waitFor()
+    val deadPid = p.pid()
+    Files.writeString(dir.resolve("pgdata").resolve("postmaster.pid"), s"$deadPid\n")
+
+    val second = EmbeddedControlPlane.start(cfg)
+    try
+      val conn = DriverManager.getConnection(
+        s"jdbc:postgresql://${second.host}:${second.port}/qod",
+        second.user,
+        second.password
+      )
+      try
+        val rs = conn.createStatement().executeQuery("SELECT id FROM persisted2")
+        rs.next() shouldBe true
+        rs.getInt("id") shouldBe 43
+      finally conn.close()
+    finally second.stop()
+
+  it should "refuse to start while another instance owns the data directory" in:
+    val dir  = Files.createTempDirectory("qod-embedded-live-pid")
+    val cfg1 = EmbeddedPostgresConfig(enabled = true, port = freePort(), dataDir = dir.toString)
+
+    val first = EmbeddedControlPlane.start(cfg1)
+    try
+      val cfg2 = EmbeddedPostgresConfig(enabled = true, port = freePort(), dataDir = dir.toString)
+      val ex   = the[RuntimeException] thrownBy EmbeddedControlPlane.start(cfg2)
+      ex.getMessage should include("already owns")
+      ex.getMessage should include(dir.resolve("pgdata").toString)
+    finally first.stop()
