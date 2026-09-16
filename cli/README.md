@@ -30,7 +30,7 @@ Both routes install the `qod` console script. With [uv](https://docs.astral.sh/u
 no install step is needed at all:
 
 ```bash
-uvx qod serve --demo
+uvx qod@latest serve --demo
 ```
 
 ## Demo

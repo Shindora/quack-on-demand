@@ -16,13 +16,13 @@
 [![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/xHj9D6Rebp)
 
 ```bash
-uvx qod serve --demo             # the full gateway on your laptop: no install, no Postgres
-uvx qod serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persistent + secured
-uvx qod serve ./warehouse/       # ...or a directory of parquet / csv
-uvx qod serve s3://bucket/data/  # ...or a remote prefix
+uvx qod@latest serve --demo             # the full gateway on your laptop: no install, no Postgres
+uvx qod@latest serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persistent + secured
+uvx qod@latest serve ./warehouse/       # ...or a directory of parquet / csv
+uvx qod@latest serve s3://bucket/data/  # ...or a remote prefix
 
 # admin UI: http://localhost:20900/ui/ - FlightSQL edge: localhost:31338
-# Ctrl-C stops the gateway and its nodes; so does `uvx qod stop` from another terminal
+# Ctrl-C stops the gateway and its nodes; so does `uvx qod@latest stop` from another terminal
 ```
 
 One command boots a seeded warehouse with row, column, and table security already live. Connect with `tenant=acme` + `pool=bi` (in the admin UI login, set the tenant to `acme`) and switch principals to watch the policies apply:
@@ -69,10 +69,10 @@ Quack on Demand is that part. It turns a DuckLake lakehouse into a multi-tenant 
 The command below boots a fully seeded instance against an **embedded, throwaway Postgres**. With [uv](https://docs.astral.sh/uv/) installed there are no other prerequisites - the launcher fetches everything it needs (sha256-verified against the GitHub release) and caches it under your user cache dir.
 
 ```bash
-uvx qod serve --demo   # the full gateway on your laptop: no install, no Postgres
+uvx qod@latest serve --demo   # the full gateway on your laptop: no install, no Postgres
 ```
 
-`pip install qod && qod serve --demo` is equivalent. Ran `uvx qod` before? uvx freezes the version it first resolved - `uvx qod@latest ...` picks up the current release.
+`pip install qod && qod serve --demo` is equivalent. The `@latest` matters: uvx otherwise freezes on the first version it ever resolved.
 
 ### Docker
 
@@ -92,10 +92,10 @@ The demo is throwaway. To point the same gateway at data you already have, with
 nothing else to install (no Postgres, no Docker):
 
 ```bash
-uvx qod serve ./sales.duckdb          # an existing DuckDB file
-uvx qod serve ./warehouse/            # a directory of parquet / csv
-uvx qod serve s3://bucket/sales/      # a remote prefix
-uvx qod serve                         # a fresh, empty DuckLake to load into
+uvx qod@latest serve ./sales.duckdb          # an existing DuckDB file
+uvx qod@latest serve ./warehouse/            # a directory of parquet / csv
+uvx qod@latest serve s3://bucket/sales/      # a remote prefix
+uvx qod@latest serve                         # a fresh, empty DuckLake to load into
 ```
 
 One command provisions a tenant, a database, and a pool around the target, then

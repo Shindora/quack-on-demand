@@ -47,7 +47,7 @@ curl -s https://pypi.org/pypi/qod/json | python3 -c "import sys,json; print(json
 ```
 
 - Not installed - install it: `uv tool install qod` when `uv` is available,
-  else `pip install qod`. (`uvx qod ...` also works for one-off runs with no
+  else `pip install qod`. (`uvx qod@latest ...` also works for one-off runs with no
   install.)
 - Versions equal, or the installed one ends in `.dev0` (a source checkout) -
   proceed.
