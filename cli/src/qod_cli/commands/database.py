@@ -46,11 +46,21 @@ def create(
         help="Provision a managed data path (exclusive with --data-path/--object-store)",
     ),
 ):
+    meta = kv_pairs(metastore)
+    if kind == "duckdb-file":
+        # TenantDb.DuckDbFileRequiredKeys is {dbName, schemaName} and the server refuses
+        # without them, but neither is a choice for a plain file: the catalog alias is the
+        # database's own name and DuckDB's default schema is `main`. Requiring the caller to
+        # spell out DuckLake vocabulary to attach a file was pure friction. Anything the
+        # caller passed still wins. The server already defaults dbName the same way (see
+        # PoolSupervisorSpec "default a duckdb-file tenant-db's dbName to the tenant-db name").
+        meta.setdefault("dbName", name)
+        meta.setdefault("schemaName", "main")
     body = {
         "tenant": tenant,
         "name": name,
         "kind": kind,
-        "metastore": kv_pairs(metastore),
+        "metastore": meta,
         "dataPath": data_path,
         "objectStore": kv_pairs(object_store),
         "initSql": init_sql,
