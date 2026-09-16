@@ -119,6 +119,12 @@ from .commands import start, status as status_cmd, stop  # noqa: E402
 app.command(
     "start", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )(start.start)
+
+from .commands import serve as serve_cmd  # noqa: E402
+
+app.command(
+    "serve", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)(serve_cmd.serve)
 app.command("stop")(stop.stop)
 app.command("setup")(setup_cmd.setup)
 app.command("status")(status_cmd.status)
