@@ -227,7 +227,7 @@ def _banner(
         "your tenants)",
         f"  serving       : {description}",
         f"  tenant/db/pool: {tenant} / {db} / {pool}  ({size} dual node)",
-        f"  admin         : {_ADMIN_USER}",
+        typer.style(f"  admin user    : {_ADMIN_USER}", fg=typer.colors.YELLOW),
     ]
     if generated:
         # Bold+yellow so the one-time plaintext doesn't blend into the rest of the
