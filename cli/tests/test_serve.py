@@ -125,6 +125,44 @@ def test_serve_honors_pg_port_env_var_over_default(runner, wired, tmp_path, monk
     assert wired["env"]["QOD_PG_EMBEDDED_PORT"] == "26500"
 
 
+def test_serve_canonicalizes_tenant_case(runner, wired, tmp_path):
+    # F4: the server stores tenants lowercase (HandlerResolvers.resolveTenantId).
+    # Keeping the raw case through ensure_pool's client-side match, the banner,
+    # the JDBC string, and the saved profile means a re-run with mixed case misses
+    # the existing pool and hits a server "already exists" error instead of a noop.
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    _invoke(runner, wired, str(f), "--tenant", "Acme")
+    assert wired["provision"]["tenant"] == "acme"
+
+
+def test_serve_rejects_a_non_numeric_pg_port_cleanly(runner, wired, tmp_path, monkeypatch):
+    # F6/N1: a malformed QOD_PG_EMBEDDED_PORT (env or a `qod setup` typo) must be a
+    # clean pre-flight refusal, not a raw ValueError traceback.
+    monkeypatch.setenv("QOD_PG_EMBEDDED_PORT", "not-a-port")
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 1
+    assert "QOD_PG_EMBEDDED_PORT" in result.output
+    assert "not-a-port" in result.output
+    assert "Traceback" not in result.output
+    assert "cmd" not in wired
+
+
+def test_serve_falls_back_to_the_default_pg_data_dir_on_an_empty_env_value(
+    runner, wired, tmp_path, monkeypatch
+):
+    # F6/N2: an empty-string QOD_PG_EMBEDDED_DATA_DIR (a plausible `export
+    # QOD_PG_EMBEDDED_DATA_DIR=` typo) must fall to the built-in default, not land
+    # the pgdata in cwd-relative nonsense.
+    monkeypatch.setenv("QOD_PG_EMBEDDED_DATA_DIR", "")
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    _invoke(runner, wired, str(f))
+    assert wired["env"]["QOD_PG_EMBEDDED_DATA_DIR"] == str(tmp_path / "state" / "pg")
+
+
 def test_serve_warns_loudly_when_acl_is_overridden_off(runner, wired, tmp_path):
     # I-1: a QOD_ACL_ENABLED=false persisted by `qod setup` outranks serve's
     # setdefault silently today; it must at least warn.
@@ -187,6 +225,66 @@ def test_serve_falls_back_to_ambient_aws_env(runner, wired, monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "envSK")
     _invoke(runner, wired, "s3://bucket/sales/")
     assert wired["provision"]["target"].object_store["s3_access_key_id"] == "envAK"
+
+
+def test_serve_gs_target_uses_gcs_hmac_credentials(runner, wired):
+    # F1: ObjectStoreSecret.sql reads gcs_hmac_key_id/gcs_hmac_secret for a gs://
+    # dataPath, not the s3_* vocabulary.
+    result = _invoke(
+        runner, wired, "gs://bucket/sales/",
+        "--access-key-id", "GOOGID", "--secret-access-key", "GOOGSECRET",
+    )
+    assert result.exit_code == 0, result.output
+    target = wired["provision"]["target"]
+    assert target.object_store == {
+        "gcs_hmac_key_id": "GOOGID",
+        "gcs_hmac_secret": "GOOGSECRET",
+    }
+
+
+def test_serve_gs_target_has_no_aws_env_fallback(runner, wired, monkeypatch):
+    # gs has no equivalent to the AWS_* convention; ambient AWS_* credentials must
+    # not leak into a gcs secret, and the empty result must be flagged, not silent.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "envAK")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "envSK")
+    result = _invoke(runner, wired, "gs://bucket/sales/")
+    assert result.exit_code == 0, result.output
+    assert wired["provision"]["target"].object_store == {}
+    assert "note: no object-store credentials given for gs" in result.output
+
+
+def test_serve_gs_target_refuses_region(runner, wired):
+    # The gcs secret ObjectStoreSecret emits has no region field.
+    result = _invoke(runner, wired, "gs://bucket/sales/", "--region", "eu-west-1")
+    assert result.exit_code == 1
+    assert "gs://" in result.output
+    assert "cmd" not in wired
+
+
+def test_serve_az_target_maps_both_flags_to_the_azure_account_pair(runner, wired):
+    result = _invoke(
+        runner, wired, "az://container/sales/",
+        "--access-key-id", "myaccount", "--secret-access-key", "myaccountkey",
+    )
+    assert result.exit_code == 0, result.output
+    target = wired["provision"]["target"]
+    assert target.object_store == {
+        "azure_account": "myaccount",
+        "azure_account_key": "myaccountkey",
+    }
+
+
+def test_serve_az_target_refuses_a_single_credential_flag(runner, wired):
+    result = _invoke(runner, wired, "az://container/sales/", "--access-key-id", "myaccount")
+    assert result.exit_code == 1
+    assert "BOTH" in result.output
+    assert "cmd" not in wired
+
+
+def test_serve_gcs_alias_normalizes_end_to_end(runner, wired):
+    result = _invoke(runner, wired, "gcs://bucket/sales/")
+    assert result.exit_code == 0, result.output
+    assert wired["provision"]["target"].data_path.startswith("gs://")
 
 
 def test_serve_kind_override_reaches_resolution(runner, wired):
@@ -291,9 +389,11 @@ def test_stored_password_is_not_reprinted(respx_mock, tmp_path):
     # M-2: the "stored in <config_path>" line must survive even when this run did
     # not generate the password, so a JVM death before the generating run's banner
     # doesn't strand the user with zero mention of where the password lives.
+    # F7: with generated=False there is no preceding "password :" line for it to
+    # hang off of, so it renders as its own aligned row instead of a continuation.
     from qod_cli.config import config_path
 
-    assert f"password stored in {config_path()}" in banner
+    assert f"password      : stored in {config_path()}" in banner
 
 
 def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tmp_path):
@@ -322,7 +422,9 @@ def test_banner_gives_a_two_step_hint_for_adding_a_user_under_acl(respx_mock, tm
     )
     assert "qod user create" in banner
     assert "grant access" in banner
-    assert "qod role" in banner
+    # F3: the real command is `qod role permission grant` (grant is mounted under
+    # role.py's `permission` sub-typer); a bare `qod role grant` is "No such command".
+    assert "qod role permission grant" in banner
     assert "qod membership add" in banner
 
 

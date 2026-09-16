@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- **`qod serve <target>` takes you from your own data to a queryable gateway
+  in one command.** Point it at a `.duckdb` file, a parquet/csv file, a
+  directory or glob of them, an `s3://`/`gs://`/`az://` prefix, or nothing at
+  all for a fresh empty DuckLake, and it provisions a tenant, database, and
+  pool around it, then prints the client connection strings. Every step is
+  ensure-semantics (create only what is missing), so a failed or interrupted
+  run just resumes on re-run, and `qod serve ./other.duckdb` adds a second
+  database beside the first instead of replacing it. Unlike `qod serve
+  --demo`, this path is persistent and keeps the normal secure posture: TLS
+  on, DB auth on, ACL forced on, and a random admin password generated on the
+  first run, printed once, and stored in the CLI config file (a real
+  `QOD_ADMIN_PASSWORD` still wins).
+- **The manager can run its control plane on a persistent embedded Postgres**
+  (`QOD_PG_EMBEDDED`, single-node only - HA refuses to boot with it set)
+  instead of requiring an external Postgres already running, which is what
+  lets `qod serve` need nothing but a JVM. It lives at a fixed data
+  directory and port (`--pg-port`/`--pg-data-dir` or
+  `QOD_PG_EMBEDDED_PORT`/`QOD_PG_EMBEDDED_DATA_DIR`), persists across
+  restarts, and is never deleted. `qod status` now live-probes it instead of
+  just reading a pidfile.
+- **`qod serve --demo` is now the canonical form of the self-contained demo**
+  (embedded ephemeral Postgres, seeded TPC-H, deliberately insecure); `qod
+  start --demo` still works, as a deprecated alias.
+- **`qod database create --kind duckdb-file` defaults `dbName`/`schemaName`**
+  to the database's own name and `main`, since neither is a real choice for a
+  plain file - the DuckLake vocabulary was pure friction there. Anything the
+  caller passes still wins.
+- Fixed: `objectStoreSql` was only ever emitted for DuckLake tenant-dbs; every
+  kind (including `duckdb-file` and `memory`) now gets its per-database
+  `CREATE SECRET` when it carries object-store credentials.
+- Fixed: a `memory`-kind tenant-db (loose parquet/csv views, no catalog) can
+  now carry an object-store scope, needed for `qod serve` targets that serve
+  views over a remote prefix.
+
 ## 0.8.5
 
 - **The demo starts on arm64 instead of dying on missing Postgres

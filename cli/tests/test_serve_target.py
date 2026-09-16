@@ -180,6 +180,39 @@ def test_unknown_kind_is_an_error(tmp_path):
         resolve("s3://bucket/x/", kind="sqlite", data_root=tmp_path)
 
 
+def test_unsupported_kind_is_refused_on_a_directory(tmp_path):
+    # F5: _resolve_local's directory arm only understands kind=="ducklake"; any
+    # OTHER non-None kind must be refused rather than silently degrading to
+    # memory views (which is what "duckdb-file" on a directory did before). The
+    # match string deliberately avoids "ducklake": tmp_path embeds the test's own
+    # name, and "ducklake" would spuriously self-match through a directory path
+    # like .../test_.../lakedata.
+    lake = tmp_path / "lakedata"
+    lake.mkdir()
+    with pytest.raises(TargetError, match="only applies"):
+        resolve(str(lake), kind="duckdb-file", data_root=tmp_path)
+
+
+def test_kind_memory_is_accepted_on_a_remote_prefix(tmp_path):
+    # kind="memory" is the default behavior spelled out explicitly, not an error.
+    t = resolve("s3://bucket/sales/", kind="memory", data_root=tmp_path)
+    assert t.kind == "memory"
+    assert "s3://bucket/sales/**/*.parquet" in t.init_sql
+
+
+def test_unsupported_kind_is_refused_on_a_remote_prefix(tmp_path):
+    with pytest.raises(TargetError, match="only applies"):
+        resolve("s3://bucket/sales/", kind="duckdb-file", data_root=tmp_path)
+
+
+def test_gcs_alias_normalizes_to_gs(tmp_path):
+    # DuckDB and ObjectStoreSecret both speak "gs"; "gcs" is accepted as a
+    # user-friendly alias and normalized to "gs" before it becomes the dataPath.
+    t = resolve("gcs://bucket/x/", data_root=tmp_path)
+    assert t.data_path == "gs://bucket/x/"
+    assert "gs://bucket/x/**/*.parquet" in t.init_sql
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [("sales", "sales"), ("My-Data", "my_data"), ("2024", "db_2024"), ("a.b.c", "a_b_c")],

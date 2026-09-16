@@ -202,11 +202,21 @@ def _as_ducklake(display: str, data_path: str, db: str, object_store: dict) -> S
 def _resolve_remote(
     target: str, name: str | None, tables: list[str], object_store: dict, kind: str | None
 ) -> ServeTarget:
+    # DuckDB and ObjectStoreSecret both know "gs"; "gcs" is accepted as a
+    # user-friendly alias and normalized before it becomes the dataPath.
+    if target.lower().startswith("gcs://"):
+        target = "gs://" + target[len("gcs://") :]
     prefix = target.rstrip("/")
     last = prefix.rsplit("/", 1)[-1] or "remote"
     db = require_valid_name(name or sanitize_name(last), target)
     if kind == "ducklake":
         return _as_ducklake(prefix + "/", prefix + "/", db, object_store)
+    if kind is not None and kind != "memory":
+        raise TargetError(
+            f"--kind {kind} only applies to a local directory holding a DuckLake's data "
+            "files ('ducklake'); a remote prefix is either that or loose parquet/csv views "
+            "('memory', the default)."
+        )
     stmts = _table_views(tables) if tables else [
         _view(db, "read_parquet", f"{prefix}/**/*.parquet", True)
     ]
@@ -260,6 +270,11 @@ def _resolve_local(
         if kind == "ducklake":
             resolved = path.resolve().as_posix()
             return _as_ducklake(str(path.resolve()), resolved, db, object_store)
+        if kind is not None and kind != "memory":
+            raise TargetError(
+                f"--kind {kind} only applies to a directory holding a DuckLake's data files "
+                "('ducklake'); a directory of loose parquet/csv is 'memory', the default."
+            )
         stmts = _table_views(tables) if tables else _views_for_directory(path)
         return ServeTarget(
             kind="memory",

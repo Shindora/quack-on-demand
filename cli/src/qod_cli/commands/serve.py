@@ -64,14 +64,79 @@ def _resolve_admin_password() -> tuple[str, bool]:
     return secrets.token_urlsafe(12), True
 
 
+def _scheme_family(target: str | None) -> str | None:
+    """s3 | gs | az | None, read off the raw TARGET string before serve_target.resolve()
+    runs (so a "gcs://" alias is still literally "gcs://" here; it maps to the same
+    "gs" family as "gs://"). None covers local, bare, and glob targets - not a URI at
+    all - which keep the s3-flavored default below since any credentials there only
+    ever back a remote --table view, not the target's own dataPath."""
+    low = (target or "").lower()
+    if low.startswith(("s3://", "s3a://", "r2://")):
+        return "s3"
+    if low.startswith(("gs://", "gcs://")):
+        return "gs"
+    if low.startswith(("az://", "azure://", "abfss://")):
+        return "az"
+    return None
+
+
+def _warn_if_no_credentials(out: dict, scheme: str) -> None:
+    if not out:
+        typer.echo(
+            f"note: no object-store credentials given for {scheme}; relying on public "
+            "access or the engine's ambient credential chain",
+            err=True,
+        )
+
+
 def _object_store(
-    access_key_id: str | None, secret_access_key: str | None,
+    scheme_family: str | None, access_key_id: str | None, secret_access_key: str | None,
     region: str | None, endpoint: str | None,
 ) -> dict:
-    """s3_* keys per ObjectStoreSecret's vocabulary (the same one the admin UI's
-    DataPathEditor writes). Flags win; otherwise the ambient AWS_* environment, so
-    `qod serve s3://...` works in a shell that already has credentials."""
-    out: dict = {}
+    """The credential vocabulary ObjectStoreSecret.sql dispatches on, keyed by the
+    TARGET's scheme (SCHEME_FAMILY, from _scheme_family) - not by which flags were
+    passed: s3/s3a/r2 -> s3_*, gs (gcs is an alias, normalized in serve_target) ->
+    gcs_hmac_key_id/gcs_hmac_secret, az/azure/abfss -> azure_account/azure_account_key.
+    A local or bare target (scheme_family=None) keeps the s3 vocabulary, since any
+    credentials there only ever back a remote --table view. Flags win; only s3 falls
+    back to the ambient AWS_* environment (gs/az have no equivalent convention).
+    --region/--endpoint only mean anything for s3 (the gcs/azure secrets carry
+    neither field), so they are refused for gs/az rather than silently dropped."""
+    if scheme_family == "gs":
+        if region or endpoint:
+            raise TargetError(
+                "--region/--endpoint do not apply to a gs:// target: the gcs secret "
+                "ObjectStoreSecret emits has no region or endpoint field."
+            )
+        out: dict = {}
+        if access_key_id:
+            out["gcs_hmac_key_id"] = access_key_id
+        if secret_access_key:
+            out["gcs_hmac_secret"] = secret_access_key
+        _warn_if_no_credentials(out, "gs")
+        return out
+
+    if scheme_family == "az":
+        if region or endpoint:
+            raise TargetError(
+                "--region/--endpoint do not apply to an az:// target: the azure secret "
+                "ObjectStoreSecret emits has no region or endpoint field."
+            )
+        out = {}
+        if access_key_id or secret_access_key:
+            if not (access_key_id and secret_access_key):
+                raise TargetError(
+                    "an az:// target needs BOTH --access-key-id (the storage account "
+                    "name) and --secret-access-key (the account key) to build the azure "
+                    "secret ObjectStoreSecret emits; only one was given."
+                )
+            out["azure_account"] = access_key_id
+            out["azure_account_key"] = secret_access_key
+        _warn_if_no_credentials(out, "az")
+        return out
+
+    # s3/s3a/r2, and local/bare/glob targets: today's behavior, unchanged.
+    out = {}
     key = access_key_id or os.environ.get("AWS_ACCESS_KEY_ID")
     secret = secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY")
     reg = region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
@@ -83,6 +148,8 @@ def _object_store(
         out["s3_region"] = reg
     if endpoint:
         out["s3_endpoint"] = endpoint
+    if scheme_family == "s3":
+        _warn_if_no_credentials(out, "s3")
     return out
 
 
@@ -91,9 +158,11 @@ def _banner(
     edge_host: str, edge_port: int, manager_url: str, pg_port: int, pg_data_dir: str,
     description: str,
 ) -> str:
-    """The connect snippet. The password line appears ONLY on the run that
+    """The connect snippet. The PLAINTEXT password appears only on the run that
     generated it: reprinting a stored secret on every boot would put it in every
-    terminal scrollback and CI log for no benefit."""
+    terminal scrollback and CI log for no benefit. The "stored in <config path>"
+    line is unconditional (generated or not), so a JVM death before the generating
+    run's banner still leaves the user a way back in."""
     from ..config import config_path
 
     jdbc = (
@@ -110,14 +179,18 @@ def _banner(
     ]
     if generated:
         lines.append(f"  password      : {password}   (generated, shown once)")
-    lines.append(f"                  password stored in {config_path()}")
+        lines.append(f"                  password stored in {config_path()}")
+    else:
+        # No preceding "password :" line to hang off of here, so this is its own
+        # aligned row rather than a continuation.
+        lines.append(f"  password      : stored in {config_path()}")
     lines += [
         "",
         f"  JDBC {jdbc}",
         f"  UI   {manager_url.rstrip('/')}/ui/",
         "",
         f"  add a user     : qod user create --tenant {tenant} --username alice --password ...",
-        "                   then grant access: qod role create / qod role grant + "
+        "                   then grant access: qod role create / qod role permission grant + "
         "qod membership add (see qod role --help)",
         "  serve more data: qod serve ./other.duckdb",
         f"  rotate admin   : qod user update --username {_ADMIN_USER} --password ...",
@@ -220,10 +293,20 @@ def serve(
         [], "--table", metavar="NAME=GLOB",
         help="Explicit view for a multi-table remote layout. Repeatable.",
     ),
-    access_key_id: str = typer.Option(None, "--access-key-id", help="Object-store key id."),
-    secret_access_key: str = typer.Option(None, "--secret-access-key", help="Object-store secret."),
-    region: str = typer.Option(None, "--region", help="Object-store region."),
-    endpoint: str = typer.Option(None, "--endpoint", help="S3-compatible endpoint (e.g. MinIO)."),
+    access_key_id: str = typer.Option(
+        None, "--access-key-id",
+        help="Object-store credential: s3 access key id, gs HMAC key id, or az storage "
+        "account name.",
+    ),
+    secret_access_key: str = typer.Option(
+        None, "--secret-access-key",
+        help="Object-store credential: s3 secret access key, gs HMAC secret, or az "
+        "storage account key.",
+    ),
+    region: str = typer.Option(None, "--region", help="Object-store region (s3 only)."),
+    endpoint: str = typer.Option(
+        None, "--endpoint", help="S3-compatible endpoint, e.g. MinIO (s3 only)."
+    ),
     pg_port: int = typer.Option(
         None, "--pg-port", help="Embedded Postgres port. Default 25432, or QOD_PG_EMBEDDED_PORT."
     ),
@@ -269,6 +352,13 @@ def serve(
         run_demo(ctx, version, jar)
         return
 
+    # F4: the server stores tenants lowercase (HandlerResolvers.resolveTenantId), so
+    # canonicalizing here once keeps ensure_pool's client-side match, the banner, the
+    # JDBC string, and the saved profile all agreeing with what the server returns -
+    # a mixed-case --tenant would otherwise miss the existing pool on a re-run and
+    # hit a server "already exists" error instead of the intended noop.
+    tenant = tenant.lower()
+
     try:
         resolved = resolve_target(
             target,
@@ -276,7 +366,9 @@ def serve(
             name=name,
             schema=schema,
             tables=list(table),
-            object_store=_object_store(access_key_id, secret_access_key, region, endpoint),
+            object_store=_object_store(
+                _scheme_family(target), access_key_id, secret_access_key, region, endpoint
+            ),
             data_root=launcher.default_data_dir(),
         )
     except TargetError as exc:
@@ -331,13 +423,27 @@ def serve(
     # The flags default to None so a value already present in base_env is not
     # silently clobbered by an indistinguishable flag default.
     base_env = {**load_start_env(), **os.environ}
-    effective_pg_port = (
-        pg_port if pg_port is not None else int(base_env.get("QOD_PG_EMBEDDED_PORT", "25432"))
-    )
+    if pg_port is not None:
+        effective_pg_port = pg_port
+    else:
+        raw_pg_port = base_env.get("QOD_PG_EMBEDDED_PORT", "25432")
+        try:
+            effective_pg_port = int(raw_pg_port)
+        except ValueError:
+            # A pre-flight refusal, not a raw traceback: QOD_PG_EMBEDDED_PORT can come
+            # from a real env var or a `qod setup --set` typo, neither of which the
+            # user necessarily typed on this command line.
+            typer.echo(
+                f"error: QOD_PG_EMBEDDED_PORT is not a number: {raw_pg_port}", err=True
+            )
+            raise typer.Exit(1)
+    # `or` (not a dict default) so an empty-string env/persisted value - a plausible
+    # `export QOD_PG_EMBEDDED_DATA_DIR=` typo - falls to the built-in default instead
+    # of landing the pgdata in cwd-relative nonsense.
     effective_pg_dir = (
         pg_data_dir
         if pg_data_dir is not None
-        else base_env.get("QOD_PG_EMBEDDED_DATA_DIR", str(state_dir / "pg"))
+        else (base_env.get("QOD_PG_EMBEDDED_DATA_DIR") or str(state_dir / "pg"))
     )
 
     env = launcher.runtime_env(

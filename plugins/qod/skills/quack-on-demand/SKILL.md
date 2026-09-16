@@ -135,8 +135,12 @@ qod serve s3://bucket/wh/ --table orders=s3://bucket/wh/orders/**/*.parquet
 Every step is ensure-semantics (create only what is missing, never delete), so
 re-running is safe and adds a second database beside the first rather than
 replacing it. Credentials for a remote prefix come from `--access-key-id` /
-`--secret-access-key` / `--region` / `--endpoint`, else the ambient `AWS_*`
-environment.
+`--secret-access-key`, plus `--region` and (s3 only) `--endpoint` (flag-only,
+no env fallback); for an `s3://`/`s3a://`/`r2://` prefix these fall back to
+the ambient `AWS_*` environment, while a `gs://` (`gcs://` alias) or `az://`
+prefix takes the same two credential flags with per-scheme meaning (gs: HMAC
+key id/secret; az: storage account name/key, both required together) and no
+environment fallback.
 
 Posture, unlike `qod serve --demo` (`qod start --demo` still works too, as a
 deprecated alias): TLS on, DB auth on, ACL on, and a random admin password

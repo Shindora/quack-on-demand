@@ -52,8 +52,10 @@ def create(
         # without them, but neither is a choice for a plain file: the catalog alias is the
         # database's own name and DuckDB's default schema is `main`. Requiring the caller to
         # spell out DuckLake vocabulary to attach a file was pure friction. Anything the
-        # caller passed still wins. The server already defaults dbName the same way (see
-        # PoolSupervisorSpec "default a duckdb-file tenant-db's dbName to the tenant-db name").
+        # caller passed still wins. `qod serve` already sets dbName to the same raw suffix
+        # for this kind (serve_target.py); this makes the bare command agree with it. The
+        # server stores a duckdb-file metastore verbatim (PoolSupervisor.createTenantDb
+        # force-sets dbName only for DuckLake), so this value is what the node ATTACHes as.
         meta.setdefault("dbName", name)
         meta.setdefault("schemaName", "main")
     body = {
