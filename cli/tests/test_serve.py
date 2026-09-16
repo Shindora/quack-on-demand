@@ -445,7 +445,7 @@ def test_stored_password_is_not_reprinted(respx_mock, tmp_path):
     # hang off of, so it renders as its own aligned row instead of a continuation.
     from qod_cli.config import config_path
 
-    assert f"password      : stored in {config_path()}" in banner
+    assert f"password      : stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}" in banner
 
 
 def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tmp_path):
@@ -458,7 +458,7 @@ def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tm
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
     assert "password      : secret" in banner
-    assert f"password stored in {config_path()}" in banner
+    assert f"stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}" in banner
 
 
 def test_banner_gives_a_two_step_hint_for_adding_a_user_under_acl(respx_mock, tmp_path):

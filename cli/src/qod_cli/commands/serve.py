@@ -232,11 +232,15 @@ def _banner(
                 fg="yellow", bold=True,
             )
         )
-        lines.append(f"                  password stored in {config_path()}")
+        lines.append(
+            f"                  stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}"
+        )
     else:
         # No preceding "password :" line to hang off of here, so this is its own
         # aligned row rather than a continuation.
-        lines.append(f"  password      : stored in {config_path()}")
+        lines.append(
+            f"  password      : stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}"
+        )
     lines += [
         "",
         typer.style(f"  JDBC {jdbc}", fg="cyan", bold=True),
