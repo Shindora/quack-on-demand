@@ -21,6 +21,7 @@ uvx qod serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persi
 uvx qod serve ./warehouse/       # ...or a directory of parquet / csv
 uvx qod serve s3://bucket/data/  # ...or a remote prefix
 
+# admin UI: http://localhost:20900/ui/ - FlightSQL edge: localhost:31338
 # Ctrl-C stops the gateway and its nodes; so does `uvx qod stop` from another terminal
 ```
 
