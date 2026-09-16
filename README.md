@@ -58,9 +58,15 @@ Quack on Demand is that part. It turns a DuckLake lakehouse into a multi-tenant 
 
 ## Quick start
 
-### Demo mode: no Postgres, no Docker
+### Native Linux / MacOS / Windows
+The command below a fully seeded instance against an **embedded, throwaway Postgres**. 
+```bash
+uvx qod start --demo   # the full gateway on your laptop: no install, no Postgres
+```
 
-The command at the top boots a fully seeded instance against an **embedded, throwaway Postgres**. With [uv](https://docs.astral.sh/uv/) installed there are no other prerequisites - the launcher fetches everything it needs (sha256-verified against the GitHub release) and caches it under your user cache dir. Works the same on macOS, Linux, and Windows. `pip install qod && qod start --demo` is equivalent. The same demo also runs from Docker:
+`pip install qod && qod start --demo` is equivalent.
+
+### Docker
 
 ```bash
 # trivial on Linux; on Mac/Windows requires Docker Desktop or a
@@ -80,7 +86,7 @@ Zero to first query in under 5 minutes. Clone this repo, then:
 cp .env.example .env                            # tweak ports / auth / admin password
 LOAD_TPCH=1 ./scripts/run-docker-compose.sh     # pulls starlakeai/quack-on-demand:latest + seeds TPC-H SF=1
 ```
-> **Windows: run inside WSL2** with `QOD_NATIVE_CLIENT=false LOAD_TPCH=1 ./scripts/run-docker-compose.sh`
+> **Windows: run inside WSL2** with `LOAD_TPCH=1 ./scripts/run-docker-compose.sh`
 
 That brings up Postgres + the manager, bootstraps the demo tenants `acme` (tenant-db `acme_tpch` with pools `bi` and `etl`) and `globex` (pool `bi`), and seeds the DuckLake catalog with TPC-H at scale factor 1 (~6M lineitem rows) into `acme_tpch.tpch1`. The admin UI is on `http://localhost:20900/ui/` (log in `admin` / `admin` - change both before exposing anything beyond `localhost`). The FlightSQL edge is on `localhost:31338`; every client scopes its session with `tenant=acme` + `pool=bi`.
 
@@ -90,9 +96,18 @@ The Power BI walkthrough, full ADBC `db_kwargs` examples, and the Python load te
 
 Runnable client examples live in [`examples/`](examples/): FlightSQL clients in [TypeScript](examples/typescript/), [Python](examples/python/), [Java](examples/java/), and [Rust](examples/rust/), each running a single query and the 22 TPC-H queries. An [n8n community node](https://github.com/starlake-ai/qod-n8n-node) lives in its own repo.
 
-### Other paths
+### Production-level deployment
 
-`qod start` runs the manager against your own Postgres with no checkout at all - it downloads everything it needs (sha256-verified) and honors the same env vars (`QOD_PG_*`, `LOAD_TPCH=1`, `NUKE=1`, `QOD_VERSION`, ...); `qod stop` tears it down. Run `uvx qod setup` once to persist the Postgres coordinates, admin credentials, API key, and auth/TLS toggles to your CLI config file so `uvx qod start` picks them up without re-exporting anything (`uvx qod setup --show` to inspect, `--set KEY=VALUE` for anything not on the guided prompts, `--non-interactive` for scripted setup; a real shell env var still wins over the stored config). The Helm chart + a local kind smoke-test rig live under [`charts/quack-on-demand/`](charts/quack-on-demand/). See the docs for [external Postgres and local deployment](https://docs.starlake.ai/qod/operating/deploy-local), the [configuration reference](https://docs.starlake.ai/qod/reference/configuration) (every `QOD_*` / `PROXY_*` env var), and [TLS](https://docs.starlake.ai/qod/operating/tls).
+Past the demo, the manager runs against **your own Postgres** and your own object store.
+
+Pick the deployment shape in the docs:
+
+- **[Laptop deployment](https://docs.starlake.ai/qod/operating/deploy-local)** - nodes as child processes of the manager, against an external Postgres
+- **[Single-server production deployment](https://docs.starlake.ai/qod/operating/deploy-single-server)** - end-to-end walkthrough on one large server: sizing, existing Postgres + S3-compatible store, pool provisioning, RBAC, monitoring, with runnable scripts
+- **[Docker Compose](https://docs.starlake.ai/qod/operating/deploy-docker)** - manager + Postgres as containers on a single host, persistent state bind-mounted
+- **[Kubernetes](https://docs.starlake.ai/qod/operating/deploy-kubernetes)** - manager pod spawning node pods on demand; the Helm chart and a kind smoke-test rig live under [`charts/quack-on-demand/`](charts/quack-on-demand/)
+
+Then harden it: **[Production hardening](https://docs.starlake.ai/qod/operating/hardening)**, **[TLS](https://docs.starlake.ai/qod/operating/tls)**, and the **[configuration reference](https://docs.starlake.ai/qod/reference/configuration)** (every `QOD_*` / `PROXY_*` env var).
 
 ---
 

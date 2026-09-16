@@ -1,1 +1,1 @@
-QOD_NATIVE_CLIENT=false QOD_VERSION=BUILD LOAD_TPCH=1 NUKE=1 QOD_PG_PASSWORD=postgres ./scripts/run-jar.sh
+QOD_VERSION=BUILD LOAD_TPCH=1 NUKE=1 QOD_PG_PASSWORD=postgres ./scripts/run-jar.sh
