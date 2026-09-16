@@ -118,10 +118,10 @@ src/main/resources/native/
 # Docs site (Docusaurus). The build, dependency, and generated-reference
 # outputs are produced by `sbt genConfigDocs genOpenApi` + `npm run build`
 # in CI, so they are never committed (kept in sync with the code, not the tree).
-website/node_modules/
-website/build/
-website/.docusaurus/
-website/static/openapi.yaml
+# The docs site moved to the starlake-docs repo (2026-09). website/ holds only
+# generator scratch now (sbt genConfigDocs writes its legacy output path here);
+# the canonical configuration.md lives in starlake-docs. Never track it again.
+/website/
 src/main/scala/ai/starlake/quack/edge/.metals-scala-cli
 screens
 .venv-release/
