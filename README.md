@@ -16,7 +16,10 @@
 [![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/xHj9D6Rebp)
 
 ```bash
-uvx qod serve --demo   # the full gateway on your laptop: no install, no Postgres
+uvx qod serve --demo             # the full gateway on your laptop: no install, no Postgres
+uvx qod serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persistent + secured
+uvx qod serve ./warehouse/       # ...or a directory of parquet / csv
+uvx qod serve s3://bucket/data/  # ...or a remote prefix
 ```
 
 One command boots a seeded warehouse with row, column, and table security already live. Connect with `tenant=acme` + `pool=bi` (in the admin UI login, set the tenant to `acme`) and switch principals to watch the policies apply:
