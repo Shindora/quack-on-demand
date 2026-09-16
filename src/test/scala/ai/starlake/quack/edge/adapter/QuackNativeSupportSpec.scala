@@ -38,3 +38,49 @@ class QuackNativeSupportSpec extends AnyFlatSpec with Matchers:
       nativeBundled = false
     ) shouldBe false
   }
+
+  it should "not attempt a load when nativeBundled is false" in {
+    var invoked = false
+    val result  = QuackNativeSupport.effectiveNativeClient(
+      configured = true,
+      nativeBundled = false,
+      tryLoad = () => invoked = true
+    )
+    result shouldBe false
+    invoked shouldBe false
+  }
+
+  it should "not attempt a load when configured is false" in {
+    var invoked = false
+    val result  = QuackNativeSupport.effectiveNativeClient(
+      configured = false,
+      nativeBundled = true,
+      tryLoad = () => invoked = true
+    )
+    result shouldBe false
+    invoked shouldBe false
+  }
+
+  it should "return true when configured, bundled, and the load succeeds" in {
+    var invoked = false
+    val result  = QuackNativeSupport.effectiveNativeClient(
+      configured = true,
+      nativeBundled = true,
+      tryLoad = () => invoked = true
+    )
+    result shouldBe true
+    invoked shouldBe true
+  }
+
+  it should "degrade to false when configured and bundled but the load fails" in {
+    val brokenLoad = () =>
+      throw new ExceptionInInitializerError(
+        new UnsatisfiedLinkError("Can't find dependent libraries")
+      )
+    val result = QuackNativeSupport.effectiveNativeClient(
+      configured = true,
+      nativeBundled = true,
+      tryLoad = brokenLoad
+    )
+    result shouldBe false
+  }

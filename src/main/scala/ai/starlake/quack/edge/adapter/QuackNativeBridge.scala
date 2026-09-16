@@ -111,11 +111,24 @@ object QuackNativeBridge:
     NativeLoader.loadFromResources(s"/native/$osArch/$libName")
     true
 
+  // Referencing the module object forces its <clinit> (and therefore the
+  // `loaded` init above, and the underlying System.load) to run right here,
+  // instead of lazily at the first native call. Used by
+  // QuackNativeSupport.effectiveNativeClient to probe loadability at boot.
+  private[adapter] def forceInit(): Unit =
+    val _ = QuackNativeBridge
+    ()
+
 /** Classpath probe for the bundled libquackwire native. Deliberately separate from
   * [[QuackNativeBridge]]: touching that object triggers the JNI load at init, which is exactly what
   * must NOT happen on a platform with no bundled binary (Windows on ARM64 - quackwire.dll is built
   * x86_64-only). Main consults [[effectiveNativeClient]] before constructing the client so such
   * platforms degrade to the embedded HTTP path instead of crashing.
+  *
+  * On a platform WITH a bundled binary, presence alone does not mean the native actually loads
+  * (e.g. Windows missing the MSVC runtime, or the ABI-pinned duckdb.dll not resolvable on PATH).
+  * [[effectiveNativeClient]] also attempts the real load once here, at boot, so a broken native
+  * degrades a single time with a warning instead of poisoning every query with a failed <clinit>.
   */
 object QuackNativeSupport extends com.typesafe.scalalogging.LazyLogging:
 
@@ -133,11 +146,15 @@ object QuackNativeSupport extends com.typesafe.scalalogging.LazyLogging:
     scala.util.Try(NativeLoader.platformDir()).toOption.exists(available(_))
 
   /** The native-client setting Main should actually use: the configured value, forced to `false`
-    * (with a warning) when no native is bundled for this platform.
+    * (with a warning) when no native is bundled for this platform, or when a bundled native fails
+    * to actually load. `tryLoad` is injectable for tests; in production it triggers the real JNI
+    * load via [[QuackNativeBridge.forceInit]] exactly once, here at boot -- never lazily at the
+    * first query.
     */
   def effectiveNativeClient(
       configured: Boolean,
-      nativeBundled: Boolean = availableForThisPlatform
+      nativeBundled: Boolean = availableForThisPlatform,
+      tryLoad: () => Unit = () => QuackNativeBridge.forceInit()
   ): Boolean =
     if configured && !nativeBundled then
       logger.warn(
@@ -146,6 +163,23 @@ object QuackNativeSupport extends com.typesafe.scalalogging.LazyLogging:
           "falling back to the embedded HTTP client."
       )
       false
+    else if configured && nativeBundled then
+      // UnsatisfiedLinkError (and the ExceptionInInitializerError that wraps it when the
+      // failure surfaces via object init) is a java.lang.Error, not an Exception -- NonFatal
+      // (and therefore scala.util.Try) does not catch it. Catch Throwable explicitly.
+      try
+        tryLoad()
+        true
+      catch
+        case t: Throwable =>
+          val cause = if t.getCause != null then t.getCause else t
+          logger.warn(
+            "nativeClient=true and quackwire is bundled for this platform, but loading it " +
+              s"failed: ${cause.getMessage}. Falling back to the embedded HTTP client. On Windows " +
+              "this is commonly a missing Microsoft Visual C++ runtime or the ABI-pinned " +
+              "duckdb.dll not being resolvable on PATH."
+          )
+          false
     else configured
 
 private object NativeLoader:

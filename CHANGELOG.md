@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Fixed: a bundled but unloadable quackwire native (e.g. Windows without the Microsoft Visual C++ runtime) now degrades to the embedded HTTP client at boot with a warning, instead of failing every subsequent query with `UnsatisfiedLinkError`.
+
 ## 0.9.1
 
 The `qod serve` connect card tightened up: the credential block (admin user, password, storage key, rotation) is one contiguous highlighted unit, the rotate hint names `qod auth change-password --username admin` - a command that works exactly as pasted, with no user-id lookup - and the add-a-user / serve-more-data hints moved out of the banner into the docs.
