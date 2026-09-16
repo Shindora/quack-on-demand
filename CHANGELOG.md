@@ -2,28 +2,6 @@
 
 ## 0.9.2
 
-Fixed: a bundled but unloadable quackwire native (e.g. Windows without the Microsoft Visual C++ runtime) now degrades to the embedded HTTP client at boot with a warning, instead of failing every subsequent query with `UnsatisfiedLinkError`.
-
-## 0.9.1
-
-The `qod serve` connect card tightened up: the credential block (admin user, password, storage key, rotation) is one contiguous highlighted unit, the rotate hint names `qod auth change-password --username admin` - a command that works exactly as pasted, with no user-id lookup - and the add-a-user / serve-more-data hints moved out of the banner into the docs.
-
-## 0.9.0
-
-The `qod serve` banner grew into a proper connect card: a titled section under the manager's boot box, the embedded Postgres data directory with how to relocate it (`--pg-data-dir` / `QOD_PG_EMBEDDED_DATA_DIR`, and the warning that a new directory starts a fresh control plane), the admin password's storage key named explicitly (`QOD_ADMIN_PASSWORD` in the CLI config's `[start]` table), password lines highlighted so they cannot blend into scrollback, and the rotate hint renamed to `rotate password`.
-
-## 0.8.8
-
-Fixed: the connect strings `qod serve` prints are for the seeded admin, a superuser, but omitted the `superuser=true` realm flag - so the exact JDBC/ADBC/ODBC string the banner advertised was refused with "Invalid password". All three now carry it, and the banner notes that tenant users created afterwards connect without it.
-
-## 0.8.7
-
-`qod serve`'s banner now prints all three connect strings - JDBC, ADBC, and ODBC - with the real provisioned tenant, pool, and user filled in, copy-paste ready (the manager's own boot box keeps its generic placeholders). The password still appears at most once, on the run that generated it.
-
-Documented `uvx` invocations now pin `uvx qod@latest ...`: uvx freezes on the first version it ever resolved, which hid new releases from returning evaluators.
-
-## 0.8.6
-
 - **`qod serve <target>` takes you from your own data to a queryable gateway
   in one command.** Point it at a `.duckdb` file, a parquet/csv file, a
   directory or glob of them, an `s3://`/`gs://`/`az://` prefix, or nothing at
