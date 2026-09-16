@@ -200,3 +200,84 @@ def test_composed_db_name_mirrors_the_server():
     assert composed_db_name("acme", "sales") == "acme_sales"
     assert composed_db_name("acme", "acme_sales") == "acme_sales"
     assert composed_db_name("ACME", "Sales") == "acme_sales"
+
+
+def test_relative_glob_is_absolutized_in_the_view(tmp_path, monkeypatch):
+    # The node process runs in a different cwd than the CLI, so a relative glob
+    # must be absolutized before it lands in the emitted SQL, not interpolated
+    # as typed.
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "a.parquet").write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    t = resolve("d/*.parquet", name="t", data_root=tmp_path)
+    assert "'d/*.parquet'" not in t.init_sql
+    assert str((tmp_path / "d" / "*.parquet").resolve()) in t.init_sql
+
+
+def test_local_paths_are_posix_styled(tmp_path):
+    # The server rejects backslashes in dataPath (TenantDb.DataPathForbiddenChars);
+    # DuckDB and the JVM both accept forward slashes on Windows, so every local
+    # path emitted by this module is POSIX-styled.
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    t = resolve(str(f), data_root=tmp_path)
+    assert "\\" not in t.data_path
+    for ch in '";':
+        assert ch not in t.data_path
+
+    bare = resolve(None, data_root=tmp_path)
+    assert "\\" not in bare.data_path
+    for ch in '";':
+        assert ch not in bare.data_path
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "orders.parquet").write_bytes(b"")
+    directory_target = resolve(str(data), data_root=tmp_path)
+    assert "\\" not in directory_target.init_sql
+
+
+def test_unnameable_directory_entries_are_skipped(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "---.parquet").write_bytes(b"")
+    (data / "good.parquet").write_bytes(b"")
+    t = resolve(str(data), data_root=tmp_path)
+    assert t.init_sql.count("CREATE OR REPLACE VIEW") == 1
+    assert 'VIEW "good"' in t.init_sql
+
+
+def test_directory_of_only_unnameable_entries_is_an_error(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "---.parquet").write_bytes(b"")
+    with pytest.raises(TargetError, match="no parquet or csv files"):
+        resolve(str(data), data_root=tmp_path)
+
+
+def test_local_directory_forwards_object_store(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    t = resolve(
+        str(data),
+        tables=["orders=s3://b/o/**/*.parquet"],
+        object_store={"s3_region": "x"},
+        data_root=tmp_path,
+    )
+    assert t.object_store == {"s3_region": "x"}
+
+
+def test_local_single_file_forwards_object_store(tmp_path):
+    f = tmp_path / "events.parquet"
+    f.write_bytes(b"")
+    t = resolve(str(f), object_store={"s3_region": "x"}, data_root=tmp_path)
+    assert t.object_store == {"s3_region": "x"}
+
+
+def test_glob_target_forwards_object_store(tmp_path):
+    (tmp_path / "a.parquet").write_bytes(b"")
+    t = resolve(
+        str(tmp_path / "*.parquet"), name="stuff", object_store={"s3_region": "x"},
+        data_root=tmp_path,
+    )
+    assert t.object_store == {"s3_region": "x"}

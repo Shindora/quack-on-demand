@@ -30,7 +30,8 @@ _REMOTE_SCHEMES = (
 _DUCKDB_SUFFIXES = (".duckdb", ".ddb", ".db")
 _PARQUET_SUFFIXES = (".parquet", ".pq")
 _CSV_SUFFIXES = (".csv", ".tsv", ".csv.gz", ".tsv.gz")
-_COMPRESSION_SUFFIXES = (".gz", ".zst", ".bz2")
+# Only .gz is reachable through _CSV_SUFFIXES above; extend both together.
+_COMPRESSION_SUFFIXES = (".gz",)
 _GLOB_CHARS = "*?["
 _KINDS = ("ducklake", "duckdb-file", "memory")
 
@@ -129,23 +130,34 @@ def _views_for_directory(root: Path) -> list[str]:
     """One view per immediate child: a readable FILE becomes a view over that file,
     a SUBDIRECTORY holding parquet at any depth becomes a hive-partitioned view.
     Entries starting with '.' or '_' are skipped, which covers _delta_log,
-    _SUCCESS, .DS_Store and friends."""
+    _SUCCESS, .DS_Store and friends. An entry whose stem sanitizes to an empty
+    name (all-punctuation) is skipped too, rather than emitting `VIEW ""`."""
     stmts: list[str] = []
     for child in sorted(root.iterdir()):
         if child.name.startswith((".", "_")):
             continue
         if child.is_file():
             reader = _reader_for(child.name)
-            if reader is not None:
-                stmts.append(
-                    _view(sanitize_name(_stem(child.name)), reader, str(child.resolve()), False)
-                )
+            if reader is None:
+                continue
+            view_name = sanitize_name(_stem(child.name))
+            if not view_name:
+                continue
+            # Local paths are always emitted POSIX-style: the server rejects
+            # backslashes in dataPath (TenantDb.DataPathForbiddenChars), and both
+            # DuckDB and the JVM accept forward slashes on Windows, so `.as_posix()`
+            # (not `str(...)`) is what turns a resolved Path into wire form
+            # everywhere in this module.
+            stmts.append(_view(view_name, reader, child.resolve().as_posix(), False))
         elif child.is_dir() and next(child.rglob("*.parquet"), None) is not None:
+            view_name = sanitize_name(child.name)
+            if not view_name:
+                continue
             stmts.append(
                 _view(
-                    sanitize_name(child.name),
+                    view_name,
                     "read_parquet",
-                    f"{child.resolve()}/**/*.parquet",
+                    f"{child.resolve().as_posix()}/**/*.parquet",
                     True,
                 )
             )
@@ -196,8 +208,13 @@ def _resolve_remote(
     )
 
 
-def _resolve_glob(target: str, name: str | None) -> ServeTarget:
-    pattern = os.path.expanduser(target)
+def _resolve_glob(target: str, name: str | None, object_store: dict) -> ServeTarget:
+    # Path.resolve() only absolutizes; it does not expand glob metacharacters, so
+    # it is safe to call on a pattern. A relative glob is resolved against the
+    # CLI's cwd, but the emitted view SQL runs in the node process's cwd, so the
+    # pattern used to match here MUST be the same absolutized (POSIX-styled)
+    # expression that lands in the view, or the node would match nothing.
+    pattern = Path(os.path.expanduser(target)).resolve().as_posix()
     matches = sorted(m for m in _glob.glob(pattern, recursive=True) if _reader_for(m))
     if not matches:
         raise TargetError(
@@ -210,6 +227,7 @@ def _resolve_glob(target: str, name: str | None) -> ServeTarget:
         kind="memory",
         name=db,
         data_path="",
+        object_store=dict(object_store),
         init_sql=_view(db, reader, pattern, False),
         description=f"1 view over {target} ({len(matches)} file(s) matched)",
     )
@@ -225,12 +243,14 @@ def _resolve_local(
     if path.is_dir():
         db = require_valid_name(name or sanitize_name(path.resolve().name), target)
         if kind == "ducklake":
-            return _as_ducklake(str(path.resolve()), str(path.resolve()), db, object_store)
+            resolved = path.resolve().as_posix()
+            return _as_ducklake(str(path.resolve()), resolved, db, object_store)
         stmts = _table_views(tables) if tables else _views_for_directory(path)
         return ServeTarget(
             kind="memory",
             name=db,
             data_path="",
+            object_store=dict(object_store),
             init_sql="\n".join(stmts),
             description=f"{len(stmts)} view(s) over {path.resolve()}",
         )
@@ -244,7 +264,7 @@ def _resolve_local(
         return ServeTarget(
             kind="duckdb-file",
             name=db,
-            data_path=str(path.resolve()),
+            data_path=path.resolve().as_posix(),
             metastore={"dbName": db, "schemaName": schema},
             description=f"DuckDB file {path.resolve()} (single node, read-write)",
         )
@@ -259,7 +279,8 @@ def _resolve_local(
         kind="memory",
         name=db,
         data_path="",
-        init_sql=_view(db, reader, str(path.resolve()), False),
+        object_store=dict(object_store),
+        init_sql=_view(db, reader, path.resolve().as_posix(), False),
         description=f"1 view over {path.resolve()}",
     )
 
@@ -291,7 +312,7 @@ def resolve(
         return ServeTarget(
             kind="ducklake",
             name=db,
-            data_path=str(root.resolve()),
+            data_path=root.resolve().as_posix(),
             description=f"new DuckLake warehouse at {root}",
         )
     if target.lower().startswith(_REMOTE_SCHEMES):
@@ -299,5 +320,5 @@ def resolve(
     if any(ch in target for ch in _GLOB_CHARS):
         if kind is not None:
             raise TargetError(f"--kind {kind} only applies to a directory or a remote prefix")
-        return _resolve_glob(target, name)
+        return _resolve_glob(target, name, store)
     return _resolve_local(target, name, schema, tables, kind, store)
