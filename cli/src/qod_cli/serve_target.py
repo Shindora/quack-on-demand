@@ -349,6 +349,9 @@ def resolve(
         return _resolve_remote(target, name, tables, store, kind)
     if any(ch in target for ch in _GLOB_CHARS):
         if kind is not None:
-            raise TargetError(f"--kind {kind} only applies to a directory or a remote prefix")
+            raise TargetError(
+                f"--kind {kind}: only 'ducklake' or 'memory' apply to a directory or a "
+                "remote prefix; the shape of a glob pattern like this one is always inferred."
+            )
         return _resolve_glob(target, name, store)
     return _resolve_local(target, name, schema, tables, kind, store)

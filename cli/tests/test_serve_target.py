@@ -123,6 +123,13 @@ def test_glob_matching_nothing_is_an_error(tmp_path):
         resolve(str(tmp_path / "*.parquet"), data_root=tmp_path)
 
 
+def test_kind_is_refused_on_a_glob_and_names_the_accepted_kinds(tmp_path):
+    # Round 2 item 3: the message used to just say "only applies to a directory or
+    # a remote prefix" without saying what DOES apply there.
+    with pytest.raises(TargetError, match="'ducklake' or 'memory'"):
+        resolve(str(tmp_path / "*.parquet"), kind="ducklake", data_root=tmp_path)
+
+
 def test_name_override_wins(tmp_path):
     f = tmp_path / "sales.duckdb"
     f.write_bytes(b"")

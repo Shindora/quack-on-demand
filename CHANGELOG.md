@@ -11,9 +11,10 @@
   run just resumes on re-run, and `qod serve ./other.duckdb` adds a second
   database beside the first instead of replacing it. Unlike `qod serve
   --demo`, this path is persistent and keeps the normal secure posture: TLS
-  on, DB auth on, ACL forced on, and a random admin password generated on the
-  first run, printed once, and stored in the CLI config file (a real
-  `QOD_ADMIN_PASSWORD` still wins).
+  on, DB auth on, ACL on by default (overridable, with a loud warning), and a
+  random admin password generated on the first run, printed once, and stored
+  in the CLI config file (a real `QOD_ADMIN_PASSWORD` still wins); the saved
+  CLI profile authenticates `qod sql` as the superuser realm out of the box.
 - **The manager can run its control plane on a persistent embedded Postgres**
   (`QOD_PG_EMBEDDED`, single-node only - HA refuses to boot with it set)
   instead of requiring an external Postgres already running, which is what

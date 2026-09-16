@@ -106,12 +106,17 @@ def _object_store(
         if region or endpoint:
             raise TargetError(
                 "--region/--endpoint do not apply to a gs:// target: the gcs secret "
-                "ObjectStoreSecret emits has no region or endpoint field."
+                "DuckDB creates has no region or endpoint field."
             )
         out: dict = {}
-        if access_key_id:
+        if access_key_id or secret_access_key:
+            if not (access_key_id and secret_access_key):
+                raise TargetError(
+                    "a gs:// target needs BOTH --access-key-id (the HMAC key id) and "
+                    "--secret-access-key (the HMAC secret) to build the gcs secret "
+                    "DuckDB creates; only one was given."
+                )
             out["gcs_hmac_key_id"] = access_key_id
-        if secret_access_key:
             out["gcs_hmac_secret"] = secret_access_key
         _warn_if_no_credentials(out, "gs")
         return out
@@ -120,7 +125,7 @@ def _object_store(
         if region or endpoint:
             raise TargetError(
                 "--region/--endpoint do not apply to an az:// target: the azure secret "
-                "ObjectStoreSecret emits has no region or endpoint field."
+                "DuckDB creates has no region or endpoint field."
             )
         out = {}
         if access_key_id or secret_access_key:
@@ -128,7 +133,7 @@ def _object_store(
                 raise TargetError(
                     "an az:// target needs BOTH --access-key-id (the storage account "
                     "name) and --secret-access-key (the account key) to build the azure "
-                    "secret ObjectStoreSecret emits; only one was given."
+                    "secret DuckDB creates; only one was given."
                 )
             out["azure_account"] = access_key_id
             out["azure_account_key"] = secret_access_key
@@ -148,6 +153,14 @@ def _object_store(
         out["s3_region"] = reg
     if endpoint:
         out["s3_endpoint"] = endpoint
+    if not key and not secret:
+        # A region/endpoint-only map would still produce a scoped CREATE SECRET
+        # server-side with KEY_ID ''/SECRET '' (ObjectStoreSecret.s3Secret defaults
+        # a missing key to ""), which OUTRANKS DuckDB's ambient credential chain for
+        # exactly the served prefix - the empty-credential trap this whole scheme
+        # dispatch exists to prevent. Drop region/endpoint entirely rather than ship
+        # a secret with no actual credentials.
+        out = {}
     if scheme_family == "s3":
         _warn_if_no_credentials(out, "s3")
     return out
@@ -238,6 +251,13 @@ def _provision(
                 "manager_url": manager_url,
                 "token": token,
                 "sql_user": _ADMIN_USER,
+                # The login just above authenticated in the SYSTEM realm (the seeded
+                # admin is a superuser row, tenant IS NULL): the FlightSQL handshake
+                # has no fallback between realms, so without this a `qod sql` reusing
+                # this profile would authenticate in the tenant realm instead - where
+                # no admin row exists - and fail with "Invalid password". tenant/pool
+                # stay as-is: they are routing headers, not the auth realm.
+                "superuser": True,
                 "tenant": tenant,
                 "pool": pool,
                 "edge_host": edge_host,

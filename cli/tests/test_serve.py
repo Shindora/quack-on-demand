@@ -253,6 +253,53 @@ def test_serve_gs_target_has_no_aws_env_fallback(runner, wired, monkeypatch):
     assert "note: no object-store credentials given for gs" in result.output
 
 
+def test_serve_s3_target_drops_a_region_only_map_from_ambient_env(runner, wired, monkeypatch):
+    # Round 2 item 1: a region-only map (no key, no secret) would still produce a
+    # scoped CREATE SECRET server-side with KEY_ID ''/SECRET '', which OUTRANKS
+    # DuckDB's ambient credential chain for exactly the served prefix - the empty-
+    # credential trap F1 exists to prevent. AWS_REGION alone must not survive.
+    # Explicitly clear the key/secret vars too: conftest's isolated_env only strips
+    # QOD_*, and a real AWS_ACCESS_KEY_ID in the running shell would otherwise leak
+    # into this test and give it the wrong (accidentally correct) answer.
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    result = _invoke(runner, wired, "s3://bucket/sales/")
+    assert result.exit_code == 0, result.output
+    assert wired["provision"]["target"].object_store == {}
+    assert "note: no object-store credentials given for s3" in result.output
+
+
+def test_serve_s3_target_keeps_region_when_keys_are_present(runner, wired):
+    result = _invoke(
+        runner, wired, "s3://bucket/sales/",
+        "--access-key-id", "AK", "--secret-access-key", "SK", "--region", "eu-west-1",
+    )
+    assert result.exit_code == 0, result.output
+    target = wired["provision"]["target"]
+    assert target.object_store == {
+        "s3_access_key_id": "AK",
+        "s3_secret_access_key": "SK",
+        "s3_region": "eu-west-1",
+    }
+    assert "note: no object-store credentials" not in result.output
+
+
+def test_serve_gs_target_refuses_a_single_credential_flag(runner, wired):
+    # Round 2 item 2: gs must mirror az's both-or-neither pairing refusal.
+    result = _invoke(runner, wired, "gs://bucket/sales/", "--access-key-id", "GOOGID")
+    assert result.exit_code == 1
+    assert "BOTH" in result.output
+    assert "cmd" not in wired
+
+    result = _invoke(
+        runner, wired, "gs://bucket/sales/", "--secret-access-key", "GOOGSECRET"
+    )
+    assert result.exit_code == 1
+    assert "BOTH" in result.output
+    assert "cmd" not in wired
+
+
 def test_serve_gs_target_refuses_region(runner, wired):
     # The gcs secret ObjectStoreSecret emits has no region field.
     result = _invoke(runner, wired, "gs://bucket/sales/", "--region", "eu-west-1")
@@ -349,6 +396,11 @@ def test_provisioning_logs_in_and_ensures_everything(respx_mock, tmp_path):
     assert "tenant=default" in banner and "pool=bi" in banner
     assert "pw" in banner  # generated passwords are shown once
     assert load_settings().token == "jwt-1"
+    # Round 2 item 6: the seeded admin is a SUPERUSER row (tenant IS NULL), and the
+    # login _provision just did was in that system realm - the saved profile must
+    # say so, or a later `qod sql` authenticates in the tenant realm instead (where
+    # no admin row exists) and fails the FlightSQL handshake with "Invalid password".
+    assert load_settings().superuser is True
 
 
 def test_provisioning_reports_and_keeps_the_manager_on_failure(respx_mock, tmp_path):
