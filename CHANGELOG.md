@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.6
 
 - **`qod serve <target>` takes you from your own data to a queryable gateway
   in one command.** Point it at a `.duckdb` file, a parquet/csv file, a
