@@ -212,9 +212,19 @@ def _banner(
         f"DisableCertificateVerification=true;UID={_ADMIN_USER};PWD=<password>;"
         f"SUPERUSER=true;TENANT={tenant};POOL={pool}"
     )
+    # The manager's own boot box ends with a bare "====" ruler; this title makes
+    # the provisioning summary below it a labeled section instead of loose lines.
+    ruler = "=" * 78
     lines = [
         "",
-        f"  control plane : embedded postgres ({pg_data_dir}, port {pg_port})",
+        ruler,
+        " qod serve: your gateway is ready",
+        ruler,
+        f"  control plane : embedded postgres on localhost:{pg_port}",
+        f"  pg data       : {pg_data_dir}/pgdata",
+        "                  relocate with --pg-data-dir <dir> or QOD_PG_EMBEDDED_DATA_DIR",
+        "                  (a new dir starts a fresh control plane; move the old dir to keep "
+        "your tenants)",
         f"  serving       : {description}",
         f"  tenant/db/pool: {tenant} / {db} / {pool}  ({size} dual node)",
         f"  admin         : {_ADMIN_USER}",
