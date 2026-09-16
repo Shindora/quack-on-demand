@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.7
+
+`qod serve`'s banner now prints all three connect strings - JDBC, ADBC, and ODBC - with the real provisioned tenant, pool, and user filled in, copy-paste ready (the manager's own boot box keeps its generic placeholders). The password still appears at most once, on the run that generated it.
+
+Documented `uvx` invocations now pin `uvx qod@latest ...`: uvx freezes on the first version it ever resolved, which hid new releases from returning evaluators.
+
 ## 0.8.6
 
 - **`qod serve <target>` takes you from your own data to a queryable gateway
