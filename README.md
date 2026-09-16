@@ -146,7 +146,7 @@ Past the demo, the manager runs against **your own Postgres** and your own objec
 
 Pick the deployment shape in the docs:
 
-- **[Laptop deployment](https://docs.starlake.ai/qod/operating/deploy-local)** - nodes as child processes of the manager, against an external Postgres
+- **[Laptop deployment](https://docs.starlake.ai/qod/operating/deploy-local)** - nodes as child processes of the manager, against an external Postgres or the zero-prerequisite embedded control plane (`qod serve`, `QOD_PG_EMBEDDED=true`)
 - **[Single-server production deployment](https://docs.starlake.ai/qod/operating/deploy-single-server)** - end-to-end walkthrough on one large server: sizing, existing Postgres + S3-compatible store, pool provisioning, RBAC, monitoring, with runnable scripts
 - **[Docker Compose](https://docs.starlake.ai/qod/operating/deploy-docker)** - manager + Postgres as containers on a single host, persistent state bind-mounted
 - **[Kubernetes](https://docs.starlake.ai/qod/operating/deploy-kubernetes)** - manager pod spawning node pods on demand; the Helm chart and a kind smoke-test rig live under [`charts/quack-on-demand/`](charts/quack-on-demand/)
@@ -168,6 +168,7 @@ Then harden it: **[Production hardening](https://docs.starlake.ai/qod/operating/
 
 ### Data plane
 
+- **One-command serving**: `qod serve <target>` boots a persistent, secured gateway over an existing `.duckdb` file, a directory of parquet/csv, or an object-store prefix - control plane on a bundled embedded Postgres, so there is nothing to install first
 - **Multi-tenant pools** of Quack nodes (`READONLY` / `WRITEONLY` / `DUAL`); the router classifies each statement and picks a compatible least-loaded node
 - **Per-tenant DuckLake catalog DB** (`${tenant}_${tenantDb}`) auto-provisioned next to the control-plane DB: tenant isolation at the Postgres-database boundary, not just row level
 - **Single binary** deployment
