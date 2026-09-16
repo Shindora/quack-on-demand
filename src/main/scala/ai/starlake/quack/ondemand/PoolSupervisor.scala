@@ -338,6 +338,7 @@ final class PoolSupervisor(
             distribution = p.distribution,
             metastore = merged,
             s3 = td.objectStore,
+            kindWire = td.kind.wireValue,
             maxConcurrentPerNode = p.maxConcurrentPerNode,
             disabled = p.disabled,
             suspended = p.suspended,
@@ -593,10 +594,10 @@ final class PoolSupervisor(
   /** NodeSpec for an ephemeral Spec 09 maintenance node. Never registered in the Router or
     * NodeLoadTracker; the caller owns the full lifecycle. Borrows a serving pool's resolved config
     * (metastore, s3, kindWire, init SQL) so it ATTACHes the same catalog the same way; falls back
-    * to the effective metastore + the tenant-db's own `objectStore` when the tenant-db has no pool
-    * yet, so a per-db-credentialed bucket still authors its `CREATE SECRET` on a donor-less run.
-    * The pool segment is the reserved name `__maint` so node ids can't collide with a serving
-    * pool's.
+    * to the effective metastore + the tenant-db's own `objectStore` and `kind` when the tenant-db
+    * has no pool yet, so a per-db-credentialed bucket still authors its `CREATE SECRET` and a
+    * duckdb-file / memory tenant-db still spawns with its own wire kind on a donor-less run. The
+    * pool segment is the reserved name `__maint` so node ids can't collide with a serving pool's.
     */
   def maintenanceNodeSpec(tenantName: String, tenantDbName: String): Option[NodeSpec] =
     findTenantDb(tenantName, tenantDbName).map { td =>
@@ -614,7 +615,7 @@ final class PoolSupervisor(
         metastore = metastore,
         s3 = s3,
         maxConcurrent = 1,
-        kindWire = donor.map(_.kindWire).getOrElse("ducklake"),
+        kindWire = donor.map(_.kindWire).getOrElse(td.kind.wireValue),
         extraSetupSql = donor
           .map(s => PoolSupervisor.joinInitAndBlob(s.initSql, s.extraSetupSql))
           .getOrElse(""),

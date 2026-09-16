@@ -1866,6 +1866,70 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     after.defaultSchema shouldBe before.defaultSchema
   }
 
+  // ---------- restore() carries the tenant-db's own kindWire (live-smoke regression) ----------
+  //
+  // Narrower sibling of the ignored KNOWN GAP test above: that one also pins extraSetupSql, which
+  // stays unfixed here (needs federation-resolver plumbing, out of scope for this fix). This one
+  // isolates kindWire alone and drives it all the way through to the NodeSpec a real backend would
+  // receive, matching the reported symptom: a restored duckdb-file pool's spawn hits the
+  // spawn-quack-node.sh ducklake arm's `mkdir -p` on a FILE path ("File exists"), so the node never
+  // becomes healthy and reconcile respawn-loops forever.
+  it should "carry a duckdb-file tenant-db's kindWire onto the NodeSpec after restore() respawns it" in:
+    val st      = new InMemoryControlPlaneStore()
+    val backend = new CapturingBackend
+    val sup     = new PoolSupervisor(backend, new NodeLoadTracker, st)
+    st.upsertTenant(Tenant("acme", "acme"))
+    st.upsertTenantDb(
+      ai.starlake.quack.model.TenantDb(
+        id = "td-seed", tenantId = "acme", name = "acme_default",
+        kind = TenantDbKind.DuckDbFile,
+        metastore = Map("dbName" -> "acme_default", "schemaName" -> "main"),
+        dataPath = "/data/acme_default.duckdb"
+      )
+    )
+    // Seed the pool row directly in the store with an authored single-node cohort and NO node
+    // rows (the "fresh YAML bootstrap" shape spawnFromDistribution exists for), same as the
+    // cohort-mismatch test above, so restore() + reconcile() drives a real spawn.
+    st.upsertPool(
+      ai.starlake.quack.model.Pool(
+        id = "p-kindwire",
+        tenantId = "acme",
+        tenantDbId = "td-seed",
+        name = key.pool,
+        size = 1,
+        distribution = RoleDistribution(0, 0, 1),
+        cohorts = List(
+          ai.starlake.quack.model.PoolCohort(
+            ai.starlake.quack.model.NodePlacement.empty,
+            RoleDistribution(0, 0, 1)
+          )
+        )
+      )
+    )
+
+    sup.restore()
+    sup.reconcile().unsafeRunSync()
+
+    backend.specs.head.kindWire shouldBe "duckdb-file"
+
+  "PoolSupervisor.maintenanceNodeSpec" should
+    "fall back to the tenant-db's own kindWire when there is no donor pool" in:
+    // Sibling of the "no donor" objectStoreSql test above: same donor-less shape, but on a
+    // duckdb-file tenant-db, pinning that the fallback reads td.kind rather than hardcoding
+    // "ducklake".
+    val (sup, _) = freshSupervisorWithBackend()
+    sup.createTenant(Tenant("acme")).unsafeRunSync()
+    sup.createTenantDb(
+      "acme", "kindmaint",
+      TenantDbKind.DuckDbFile,
+      Map("dbName" -> "acme_kindmaint", "schemaName" -> "main"),
+      dataPath = "/data/acme_kindmaint.duckdb"
+    ).unsafeRunSync()
+    // No createPool call: no serving pool of this tenant-db exists, so maintenanceNodeSpec must
+    // fall back to td.kind.wireValue (not the "ducklake" literal) for its kindWire field.
+    val spec = sup.maintenanceNodeSpec("acme", "acme_kindmaint").get
+    spec.kindWire shouldBe "duckdb-file"
+
   // ---------- updateTenantDb ----------
 
   /** Fresh supervisor + tenant acme + DuckDbFile tenant-db with pgPassword in metastore
