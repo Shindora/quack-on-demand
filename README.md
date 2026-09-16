@@ -58,8 +58,10 @@ Quack on Demand is that part. It turns a DuckLake lakehouse into a multi-tenant 
 
 ## Quick start
 
-### Native Linux / MacOS / Windows
-The command below a fully seeded instance against an **embedded, throwaway Postgres**. 
+### Native Linux / macOS / Windows
+
+The command below boots a fully seeded instance against an **embedded, throwaway Postgres**. With [uv](https://docs.astral.sh/uv/) installed there are no other prerequisites - the launcher fetches everything it needs (sha256-verified against the GitHub release) and caches it under your user cache dir.
+
 ```bash
 uvx qod start --demo   # the full gateway on your laptop: no install, no Postgres
 ```
