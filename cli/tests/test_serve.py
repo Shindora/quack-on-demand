@@ -484,6 +484,8 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
     # The manager's own boot box prints JDBC/ADBC/ODBC with <tenant>/<pool>/<user>
     # placeholders; serve's banner has the real provisioned values in hand and
     # should print all three protocols copy-paste ready, not just JDBC.
+    import click
+
     from qod_cli.commands.serve import _banner
 
     banner = _banner(
@@ -491,8 +493,11 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
         generated=False, edge_host="edgehost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
-    adbc_line = next(line for line in banner.splitlines() if line.strip().startswith("ADBC"))
-    odbc_line = next(line for line in banner.splitlines() if line.strip().startswith("ODBC"))
+    # Connect lines are styled for readability (see the highlighting test below),
+    # so match on the ANSI-stripped content rather than a raw prefix.
+    plain = click.unstyle(banner)
+    adbc_line = next(line for line in plain.splitlines() if line.strip().startswith("ADBC"))
+    odbc_line = next(line for line in plain.splitlines() if line.strip().startswith("ODBC"))
 
     assert "grpc+tls://edgehost:31338" in adbc_line
     assert "tenant=default, pool=bi" in adbc_line
@@ -505,6 +510,35 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
     # generated-run line) - never baked into a connect string printed on every boot.
     assert "sup3rs3cret" not in adbc_line
     assert "sup3rs3cret" not in odbc_line
+
+
+def test_banner_highlights_connect_urls_and_password_for_readability(respx_mock, tmp_path):
+    # The connect strings and the one-time plaintext password are the two things
+    # a user must copy off this screen; they should visually stand out from the
+    # rest of the banner instead of blending into ordinary scrollback text.
+    import click
+
+    from qod_cli.commands.serve import _banner
+
+    banner = _banner(
+        tenant="default", db="sales", pool="bi", size=1, password="sup3rs3cret",
+        generated=True, edge_host="edgehost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    )
+    plain_to_raw = {click.unstyle(line): line for line in banner.splitlines()}
+
+    for prefix in ("  JDBC ", "  ADBC ", "  ODBC ", "  UI   "):
+        plain_line = next(p for p in plain_to_raw if p.startswith(prefix))
+        assert plain_to_raw[plain_line] != plain_line, f"{prefix.strip()} line is not styled"
+
+    password_plain = "  password      : sup3rs3cret   (generated, shown once)"
+    assert password_plain in plain_to_raw
+    assert plain_to_raw[password_plain] != password_plain, "password line is not styled"
+
+    # Styling must be cosmetic only: the ANSI-stripped banner still reads exactly
+    # like the plain content every other banner test asserts against.
+    assert "jdbc:arrow-flight-sql://edgehost:31338/" in click.unstyle(banner)
+    assert "qod user update" in click.unstyle(banner)
 
 
 def test_provisioning_never_raises_on_a_tokenless_login(respx_mock, tmp_path):

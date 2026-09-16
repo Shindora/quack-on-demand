@@ -175,7 +175,12 @@ def _banner(
     generated it: reprinting a stored secret on every boot would put it in every
     terminal scrollback and CI log for no benefit. The "stored in <config path>"
     line is unconditional (generated or not), so a JVM death before the generating
-    run's banner still leaves the user a way back in."""
+    run's banner still leaves the user a way back in.
+
+    The connect lines (JDBC/ADBC/ODBC/UI) and the one-time plaintext password
+    line are styled (bold, colored) so they stand out for copy-pasting; click
+    auto-strips the ANSI codes when the destination isn't a terminal, so piped
+    output and CI logs stay plain text."""
     from ..config import config_path
 
     jdbc = (
@@ -208,7 +213,18 @@ def _banner(
         f"  admin         : {_ADMIN_USER}",
     ]
     if generated:
-        lines.append(f"  password      : {password}   (generated, shown once)")
+        # Bold+yellow so the one-time plaintext doesn't blend into the rest of the
+        # scrollback. typer.style() only wraps the whole string (ANSI codes go at
+        # the very start and end, never mid-string), so the literal
+        # "password      : <value>" text stays contiguous for anything matching on
+        # it, and click.echo strips the codes automatically when stdout/stderr
+        # isn't a terminal (piped output, CI logs stay plain).
+        lines.append(
+            typer.style(
+                f"  password      : {password}   (generated, shown once)",
+                fg="yellow", bold=True,
+            )
+        )
         lines.append(f"                  password stored in {config_path()}")
     else:
         # No preceding "password :" line to hang off of here, so this is its own
@@ -216,10 +232,10 @@ def _banner(
         lines.append(f"  password      : stored in {config_path()}")
     lines += [
         "",
-        f"  JDBC {jdbc}",
-        f"  ADBC {adbc}",
-        f"  ODBC {odbc}",
-        f"  UI   {manager_url.rstrip('/')}/ui/",
+        typer.style(f"  JDBC {jdbc}", fg="cyan", bold=True),
+        typer.style(f"  ADBC {adbc}", fg="cyan", bold=True),
+        typer.style(f"  ODBC {odbc}", fg="cyan", bold=True),
+        typer.style(f"  UI   {manager_url.rstrip('/')}/ui/", fg="cyan", bold=True),
         "",
         f"  add a user     : qod user create --tenant {tenant} --username alice --password ...",
         "                   then grant access: qod role create / qod role permission grant + "
