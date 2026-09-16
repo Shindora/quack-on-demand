@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.8
+
+Fixed: the connect strings `qod serve` prints are for the seeded admin, a superuser, but omitted the `superuser=true` realm flag - so the exact JDBC/ADBC/ODBC string the banner advertised was refused with "Invalid password". All three now carry it, and the banner notes that tenant users created afterwards connect without it.
+
 ## 0.8.7
 
 `qod serve`'s banner now prints all three connect strings - JDBC, ADBC, and ODBC - with the real provisioned tenant, pool, and user filled in, copy-paste ready (the manager's own boot box keeps its generic placeholders). The password still appears at most once, on the run that generated it.
