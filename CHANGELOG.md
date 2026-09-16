@@ -36,6 +36,10 @@
 - Fixed: a `memory`-kind tenant-db (loose parquet/csv views, no catalog) can
   now carry an object-store scope, needed for `qod serve` targets that serve
   views over a remote prefix.
+- Fixed: pools rehydrated after a manager restart or HA NOTIFY lost their
+  resolved federation blob (and, before that fix landed, their tenant-db
+  kind); respawned and resumed nodes now boot with their federation ATTACH
+  aliases intact.
 
 ## 0.8.5
 

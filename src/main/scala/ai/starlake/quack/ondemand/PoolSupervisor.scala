@@ -320,6 +320,29 @@ final class PoolSupervisor(
     snap.tenants.foreach(t => tenants.put(t.id, t))
     snap.tenantDbs.foreach(td => tenantDbs.put(td.id, td))
     snap.pools.foreach(p => poolRows.put(p.id, p))
+    // Federation blob resolution, per tenant-db and cached for the duration of this restore()
+    // call: createPool resolves it via federationBlobOf and stores it on PoolState.extraSetupSql,
+    // but restore() used to skip that call entirely, so any pool respawned after a manager
+    // restart (or an HA replica rehydrating off a qod_topology NOTIFY) came back without its
+    // federation ATTACH aliases. One JDBC read per federated tenant-db per restore is accepted:
+    // topology NOTIFYs are infrequent and the loop below is already O(pools). The bridge to
+    // unsafeRunSync mirrors the established sync-call precedent elsewhere in the edge
+    // (FlightSqlRouter, FlightProducerImpl); a resolution failure must never fail restore()/boot.
+    val fedBlobCache = scala.collection.mutable.Map.empty[String, scala.util.Try[String]]
+    def resolvedBlobFor(td: TenantDb): scala.util.Try[String] =
+      fedBlobCache.getOrElseUpdate(
+        td.id, {
+          val attempt = scala.util.Try(federationBlobOf(td.id).unsafeRunSync().getOrElse(""))
+          attempt.failed.foreach { e =>
+            logger.warn(
+              s"restore: federation blob resolution failed for tenant-db '${td.name}': " +
+                s"${e.getMessage}; nodes respawned from this state will lack federation " +
+                "aliases until it is re-saved"
+            )
+          }
+          attempt
+        }
+      )
     snap.pools.foreach { p =>
       val opt = for
         td <- tenantDbs.get(p.tenantDbId)
@@ -330,6 +353,11 @@ final class PoolSupervisor(
         poolIdByKey.put(key, p.id)
         val nodesHere = snap.nodes.filter(_.poolKey == key)
         val merged    = effectiveMetastoreFor(td)
+        // On resolution failure, fall back to this supervisor's PREVIOUS in-memory blob for this
+        // pool (a warm restore()/NOTIFY replay), else "" (a cold restore() with nothing to fall
+        // back on - see the failure-path test in PoolSupervisorSpec).
+        val extraSetupSql = resolvedBlobFor(td)
+          .getOrElse(pools.get(key).map(_.extraSetupSql).getOrElse(""))
         pools.put(
           key,
           PoolState(
@@ -344,6 +372,7 @@ final class PoolSupervisor(
             suspended = p.suspended,
             dbInitSql = td.initSql,
             initSql = p.initSql,
+            extraSetupSql = extraSetupSql,
             // Session defaults for SQL validation / policy-rewrite. Omitting these degraded every
             // restored pool to the metastore's schemaName ("main"), so schema-qualified refs
             // stopped matching tenant-db grants after a restart / NOTIFY rehydration.
