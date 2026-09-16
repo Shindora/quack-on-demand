@@ -39,6 +39,7 @@ from ..serve_provision import (
 from ..serve_target import TargetError, composed_db_name
 from ..serve_target import resolve as resolve_target
 from ._launch import _exec, resolve_jar, resolve_java
+from .demo import run_demo
 
 # The seeded superuser. QOD_ADMIN_USERNAME defaults to "admin@localhost.local,admin",
 # so both names exist; the short one is what a person types.
@@ -236,14 +237,33 @@ def serve(
         None, "--version", envvar="QOD_VERSION", help="Manager release to run."
     ),
     jar: Path = typer.Option(None, "--jar", help="Run this local jar instead of downloading."),
+    demo: bool = typer.Option(
+        False,
+        "--demo",
+        help="Run the self-contained demo instead: embedded ephemeral Postgres, seeded "
+        "TPC-H, RLS/CLS showcase. Takes no TARGET; all state is deleted on exit.",
+    ),
 ):
     """Serve your own data through a fresh, persistent gateway in one command.
 
     Provisions tenant/database/pool around TARGET on an embedded Postgres, so
     nothing external is required. Re-running is safe: every step creates only what
     is missing, so `qod serve ./other.duckdb` adds a second database beside the
-    first. Ctrl-C tears the manager and its nodes down gracefully.
+    first. Ctrl-C tears the manager and its nodes down gracefully. With --demo,
+    runs the self-contained throwaway demo (sample data, insecure by design)
+    instead.
     """
+    if demo:
+        if target is not None:
+            typer.echo(
+                "error: qod serve --demo takes no TARGET (the demo seeds its own sample "
+                "data); drop --demo to serve your own data.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        run_demo(ctx, version, jar)
+        return
+
     try:
         resolved = resolve_target(
             target,

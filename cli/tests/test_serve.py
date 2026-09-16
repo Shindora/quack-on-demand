@@ -348,6 +348,29 @@ def test_provisioning_never_raises_on_a_tokenless_login(respx_mock, tmp_path):
     assert "still running" in out
 
 
+def test_serve_demo_delegates_to_the_demo_runner(runner, wired, monkeypatch):
+    from qod_cli.commands import serve as serve_cmd
+
+    called = {}
+    monkeypatch.setattr(
+        serve_cmd, "run_demo", lambda ctx, version, jar: called.setdefault("args", (version, jar)),
+        raising=False,
+    )
+    result = _invoke(runner, wired, "--demo")
+    assert result.exit_code == 0, result.output
+    assert "args" in called
+    # The normal serve path must not run: no provisioning, no direct exec from serve.
+    assert "provision" not in wired
+    assert "cmd" not in wired
+
+
+def test_serve_demo_refuses_a_target(runner, wired):
+    result = _invoke(runner, wired, "./sales.duckdb", "--demo")
+    assert result.exit_code == 1
+    assert "--demo" in result.output and "TARGET" in result.output
+    assert "cmd" not in wired
+
+
 def test_provisioning_substitutes_a_null_flight_sql_host(respx_mock, tmp_path):
     # I-2: a JSON-null flightSqlHost must take the same substitution branch as
     # "" and "0.0.0.0", not land None in the JDBC connection string.

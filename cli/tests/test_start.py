@@ -324,6 +324,19 @@ def test_nuke_confirmation_aborts_on_wrong_answer(monkeypatch, capsys):
     assert "aborted" in capsys.readouterr().err
 
 
+def test_start_demo_still_works_and_points_at_serve(runner, wired, monkeypatch):
+    import qod_cli.commands.demo as demo_mod
+
+    called = {}
+    monkeypatch.setattr(demo_mod, "run_demo", lambda ctx, version, jar: called.setdefault("hit", True))
+    from qod_cli.main import app
+
+    result = runner.invoke(app, ["start", "--demo", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert called.get("hit") is True
+    assert "qod serve --demo" in result.output  # the deprecation pointer
+
+
 def test_nuke_confirmation_skips_for_non_tty(monkeypatch, tmp_path):
     from qod_cli.commands import start as start_mod
 

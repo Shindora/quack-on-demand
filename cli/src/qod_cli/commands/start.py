@@ -157,7 +157,8 @@ def start(
         False,
         "--demo",
         help="Run the self-contained demo instead: embedded ephemeral Postgres, seeded "
-        "TPC-H, RLS/CLS showcase. Needs no external Postgres; all state is deleted on exit.",
+        "TPC-H, RLS/CLS showcase. Needs no external Postgres; all state is deleted on exit. "
+        "(deprecated alias: use qod serve --demo)",
     ),
 ):
     """Run a quack-on-demand manager against your Postgres (scripts/run-jar.sh
@@ -172,6 +173,11 @@ def start(
     if demo:
         from .demo import run_demo
 
+        typer.echo(
+            "note: the demo moved to qod serve --demo (this alias will be removed in a "
+            "future release)",
+            err=True,
+        )
         run_demo(ctx, version, jar)
         return
     java = resolve_java()
