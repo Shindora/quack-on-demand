@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.2
 
 Fixed: a bundled but unloadable quackwire native (e.g. Windows without the Microsoft Visual C++ runtime) now degrades to the embedded HTTP client at boot with a warning, instead of failing every subsequent query with `UnsatisfiedLinkError`.
 
