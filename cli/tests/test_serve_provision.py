@@ -62,6 +62,15 @@ def test_ensure_tenant_is_a_noop_when_present(client, respx_mock):
     assert not create.called
 
 
+def test_ensure_tenant_matches_case_insensitively_against_the_normalized_form(client, respx_mock):
+    respx_mock.get(f"{BASE}/api/tenant/list").mock(
+        return_value=httpx.Response(200, json={"tenants": [{"name": "default", "id": "t-1"}]})
+    )
+    create = respx_mock.post(f"{BASE}/api/tenant/create")
+    assert ensure_tenant(client, "Default") is False
+    assert not create.called
+
+
 def test_ensure_database_creates_with_the_suffix_name(client, respx_mock):
     respx_mock.get(f"{BASE}/api/database/list").mock(
         return_value=httpx.Response(200, json={"tenantDbs": []})
@@ -91,8 +100,35 @@ def test_ensure_database_refuses_a_name_collision_on_different_data(client, resp
             {"name": "default_sales", "kind": "duckdb-file", "dataPath": "/other/sales.duckdb"}
         ]})
     )
-    with pytest.raises(ProvisionError, match="--name"):
+    with pytest.raises(ProvisionError, match="--name") as ei:
         ensure_database(client, "default", _target())
+    assert "--name" in ei.value.manual
+
+
+def test_ensure_database_refuses_a_memory_target_reusing_a_different_directory(client, respx_mock):
+    respx_mock.get(f"{BASE}/api/database/list").mock(
+        return_value=httpx.Response(200, json={"tenantDbs": [
+            {"name": "default_reports", "kind": "memory", "dataPath": "", "initSql": "<viewsA>"}
+        ]})
+    )
+    target = _target(kind="memory", name="reports", data_path="", init_sql="<viewsB>",
+                      metastore={})
+    with pytest.raises(ProvisionError, match="--name") as ei:
+        ensure_database(client, "default", target)
+    assert "--name" in ei.value.manual
+
+
+def test_ensure_database_reuses_a_matching_memory_row(client, respx_mock):
+    respx_mock.get(f"{BASE}/api/database/list").mock(
+        return_value=httpx.Response(200, json={"tenantDbs": [
+            {"name": "default_reports", "kind": "memory", "dataPath": "", "initSql": "<viewsA>"}
+        ]})
+    )
+    create = respx_mock.post(f"{BASE}/api/database/create")
+    target = _target(kind="memory", name="reports", data_path="", init_sql="<viewsA>",
+                      metastore={})
+    assert ensure_database(client, "default", target) is False
+    assert not create.called
 
 
 def test_ensure_pool_creates_one_dual_node(client, respx_mock):

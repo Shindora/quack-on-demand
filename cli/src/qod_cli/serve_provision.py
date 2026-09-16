@@ -72,6 +72,9 @@ def wait_ready(
 
 def ensure_tenant(client: RestClient, tenant: str) -> bool:
     """True when created, False when it already existed."""
+    # the server normalizes tenant ids to lowercase slugs on create; match and
+    # create on the normalized form so an exact-case list match never misses.
+    tenant = tenant.lower()
     try:
         existing = client.request("GET", "/api/tenant/list") or {}
     except ApiError as exc:
@@ -106,12 +109,26 @@ def ensure_database(client: RestClient, tenant: str, target: ServeTarget) -> boo
         if row.get("name") != full:
             continue
         current = row.get("dataPath") or ""
-        if current == target.data_path and row.get("kind", target.kind) == target.kind:
+        current_init_sql = row.get("initSql") or ""
+        if (
+            current == target.data_path
+            and row.get("kind") == target.kind
+            and current_init_sql == target.init_sql
+        ):
             return False
+        if current == target.data_path and row.get("kind") == target.kind:
+            detail = (
+                f"database {full!r} already exists with the same dataPath and kind, but its "
+                "views point at different data (initSql differs)"
+            )
+        else:
+            detail = (
+                f"database {full!r} already serves kind={row.get('kind')!r} "
+                f"dataPath={current!r}, not kind={target.kind!r} dataPath={target.data_path!r}"
+            )
         raise ProvisionError(
             "ensure database",
-            f"database {full!r} already serves kind={row.get('kind')!r} "
-            f"dataPath={current!r}, not kind={target.kind!r} dataPath={target.data_path!r}",
+            detail,
             "serve it under another name: qod serve <target> --name <other>",
         )
     try:
@@ -132,7 +149,8 @@ def ensure_database(client: RestClient, tenant: str, target: ServeTarget) -> boo
         raise ProvisionError(
             "create database",
             str(exc),
-            f"qod database create --tenant {tenant} --name {target.name} --kind {target.kind}",
+            f"qod database create --tenant {tenant} --name {target.name} --kind {target.kind} "
+            "--data-path <path> --init-sql <sql>",
         )
     return True
 
