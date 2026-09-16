@@ -20,6 +20,8 @@ uvx qod serve --demo             # the full gateway on your laptop: no install, 
 uvx qod serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persistent + secured
 uvx qod serve ./warehouse/       # ...or a directory of parquet / csv
 uvx qod serve s3://bucket/data/  # ...or a remote prefix
+
+# Ctrl-C stops the gateway and its nodes; so does `uvx qod stop` from another terminal
 ```
 
 One command boots a seeded warehouse with row, column, and table security already live. Connect with `tenant=acme` + `pool=bi` (in the admin UI login, set the tenant to `acme`) and switch principals to watch the policies apply:
