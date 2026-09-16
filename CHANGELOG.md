@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0
+
+The `qod serve` banner grew into a proper connect card: a titled section under the manager's boot box, the embedded Postgres data directory with how to relocate it (`--pg-data-dir` / `QOD_PG_EMBEDDED_DATA_DIR`, and the warning that a new directory starts a fresh control plane), the admin password's storage key named explicitly (`QOD_ADMIN_PASSWORD` in the CLI config's `[start]` table), password lines highlighted so they cannot blend into scrollback, and the rotate hint renamed to `rotate password`.
+
 ## 0.8.8
 
 Fixed: the connect strings `qod serve` prints are for the seeded admin, a superuser, but omitted the `superuser=true` realm flag - so the exact JDBC/ADBC/ODBC string the banner advertised was refused with "Invalid password". All three now carry it, and the banner notes that tenant users created afterwards connect without it.
