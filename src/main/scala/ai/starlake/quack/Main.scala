@@ -160,6 +160,33 @@ object Main extends IOApp with LazyLogging:
       case _ =>
         normalManagerRun
 
+  /** Runs `boot` with the control plane's Postgres coordinates resolved.
+    *
+    * With `embeddedPostgres.enabled = false` (the default) this is the identity: `boot` receives
+    * the config verbatim and no server is started, so existing deployments are untouched.
+    *
+    * With it enabled, a persistent embedded Postgres is started first, the control-plane database
+    * is ensured, and ONLY the five Postgres coordinates are projected onto the config. The server
+    * is stopped (never deleted) on every exit path via `guarantee`, including a failed boot.
+    *
+    * This is deliberately NOT `DemoConfig.overlay`: it does not touch `apiKey`, `runtimeType`,
+    * `nativeClient`, TLS, auth, or ACL, so a persistent embedded install keeps the normal secure
+    * posture. `DemoConfig.overlay` remains reachable only from `DemoRunner.runDemo`.
+    */
+  private[quack] def withEmbeddedControlPlane(
+      mgrCfg: ManagerConfig
+  )(boot: ManagerConfig => IO[ExitCode]): IO[ExitCode] =
+    if !mgrCfg.embeddedPostgres.enabled then boot(mgrCfg)
+    else
+      IO.blocking {
+        val cp = ai.starlake.quack.boot.EmbeddedControlPlane.start(mgrCfg.embeddedPostgres)
+        cp.ensureDatabase(mgrCfg.defaultMetastore.dbName)
+        cp
+      }.flatMap { cp =>
+        boot(ai.starlake.quack.boot.EmbeddedControlPlane.applyCoordinates(mgrCfg, cp))
+          .guarantee(IO.blocking(cp.stop()))
+      }
+
   private def normalManagerRun: IO[ExitCode] =
     val source      = ConfigSource.default
     val mgrCfg      = source.at("quack-on-demand").loadOrThrow[ManagerConfig]
@@ -168,15 +195,17 @@ object Main extends IOApp with LazyLogging:
     val aclCfg      = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
     val lockdownCfg = source.at("quack-flightsql.nodeLockdown").loadOrThrow[NodeLockdownConfig]
     val metricsCfg  = source.at("quack-on-demand.metrics").loadOrThrow[MetricsConfig]
-    bootManager(
-      mgrCfg,
-      edgeCfg,
-      authCfg,
-      aclCfg,
-      metricsCfg,
-      lockdownCfg = lockdownCfg,
-      modules = ai.starlake.quack.ondemand.module.ModuleLoader.discover()
-    )
+    withEmbeddedControlPlane(mgrCfg) { resolved =>
+      bootManager(
+        resolved,
+        edgeCfg,
+        authCfg,
+        aclCfg,
+        metricsCfg,
+        lockdownCfg = lockdownCfg,
+        modules = ai.starlake.quack.ondemand.module.ModuleLoader.discover()
+      )
+    }
 
   private[quack] def bootManager(
       mgrCfg0: ManagerConfig,
