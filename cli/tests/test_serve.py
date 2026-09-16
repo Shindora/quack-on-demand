@@ -439,7 +439,7 @@ def test_stored_password_is_not_reprinted(respx_mock, tmp_path):
     )
     banner = unstyle(banner)
     assert "secret" not in banner
-    assert "qod user update" in banner
+    assert "qod auth change-password" in banner
     # M-2: the "stored in <config_path>" line must survive even when this run did
     # not generate the password, so a JVM death before the generating run's banner
     # doesn't strand the user with zero mention of where the password lives.
@@ -553,7 +553,7 @@ def test_banner_highlights_connect_urls_and_password_for_readability(respx_mock,
     # Styling must be cosmetic only: the ANSI-stripped banner still reads exactly
     # like the plain content every other banner test asserts against.
     assert "jdbc:arrow-flight-sql://edgehost:31338/" in click.unstyle(banner)
-    assert "qod user update" in click.unstyle(banner)
+    assert "qod auth change-password" in click.unstyle(banner)
 
 
 def test_provisioning_never_raises_on_a_tokenless_login(respx_mock, tmp_path):

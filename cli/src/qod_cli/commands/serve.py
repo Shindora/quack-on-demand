@@ -272,7 +272,7 @@ def _banner(
         "system auth realm; only the seeded admin above needs it)",
         "  serve more data: qod serve ./other.duckdb",
         typer.style(
-            f"  rotate password: qod user update --username {_ADMIN_USER} --password ...",
+            f"  rotate password: qod auth change-password --username {_ADMIN_USER}",
             fg=typer.colors.YELLOW,
         ),
         "  Ctrl-C to stop.",
