@@ -276,6 +276,7 @@ def _banner(
             fg=typer.colors.YELLOW,
         ),
         "  Ctrl-C to stop.",
+        ruler,
         "",
     ]
     return "\n".join(lines)
