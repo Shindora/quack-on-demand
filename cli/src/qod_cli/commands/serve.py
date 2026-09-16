@@ -265,12 +265,6 @@ def _banner(
         typer.style(f"  ODBC {odbc}", fg="cyan", bold=True),
         typer.style(f"  UI   {manager_url.rstrip('/')}/ui/", fg="cyan", bold=True),
         "",
-        f"  add a user     : qod user create --tenant {tenant} --username alice --password ...",
-        "                   then grant access: qod role create / qod role permission grant + "
-        "qod membership add (see qod role --help)",
-        "                   that user connects WITHOUT superuser=true (it selects the "
-        "system auth realm; only the seeded admin above needs it)",
-        "  serve more data: qod serve ./other.duckdb",
         typer.style(
             f"  rotate password: qod auth change-password --username {_ADMIN_USER}",
             fg=typer.colors.YELLOW,

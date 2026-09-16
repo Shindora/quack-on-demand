@@ -464,25 +464,6 @@ def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tm
     assert f"stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}" in banner
 
 
-def test_banner_gives_a_two_step_hint_for_adding_a_user_under_acl(respx_mock, tmp_path):
-    # M-5: ACL is forced on, so a bare `qod user create` principal is denied on
-    # every table (only superusers bypass) - the banner must not send users into
-    # that dead end without pointing at role/membership.
-    from qod_cli.commands.serve import _banner
-
-    banner = _banner(
-        tenant="default", db="sales", pool="bi", size=1, password="secret", generated=False,
-        edge_host="localhost", edge_port=31338, manager_url=BASE,
-        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
-    )
-    banner = unstyle(banner)
-    assert "qod user create" in banner
-    assert "grant access" in banner
-    # F3: the real command is `qod role permission grant` (grant is mounted under
-    # role.py's `permission` sub-typer); a bare `qod role grant` is "No such command".
-    assert "qod role permission grant" in banner
-    assert "qod membership add" in banner
-
 
 def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path):
     # The manager's own boot box prints JDBC/ADBC/ODBC with <tenant>/<pool>/<user>
