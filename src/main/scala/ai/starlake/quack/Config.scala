@@ -569,6 +569,7 @@ final case class ManagerConfig(
           "everything (sessions are heap-only)."
     )
     sessionIdleTtlSec: Int,
+    embeddedPostgres: EmbeddedPostgresConfig = EmbeddedPostgresConfig(),
     defaultMetastore: DefaultMetastoreConfig,
     admin: AdminConfig,
     k8s: K8sConfig,
@@ -710,6 +711,37 @@ final case class HibernationConfig(
     Option.when(defaultIdleMinutes > 0)(
       scala.concurrent.duration.DurationInt(math.max(5, defaultIdleMinutes)).minutes
     )
+
+/** Persistent embedded Postgres for the control plane: the zero-prerequisite single-node mode
+  * `qod serve` launches. Distinct from the ephemeral demo instance
+  * ([[ai.starlake.quack.ondemand.demo.DemoPostgres]]) in three ways that matter: the data directory
+  * is reused across restarts, it is never deleted, and a stale `postmaster.pid` naming a dead
+  * process falls through to ordinary Postgres crash recovery instead of a wipe.
+  */
+final case class EmbeddedPostgresConfig(
+    @field @ConfigField(
+      envVar = "QOD_PG_EMBEDDED",
+      description =
+        "Run the control plane on a bundled embedded Postgres rooted at dataDir instead of an " +
+          "external server. Single-node evaluation / small-team mode; refused under HA."
+    )
+    enabled: Boolean = false,
+    @field @ConfigField(
+      envVar = "QOD_PG_EMBEDDED_PORT",
+      description =
+        "Fixed TCP port for the embedded Postgres. Fixed rather than OS-assigned so the " +
+          "coordinates stay stable across restarts and psql works for support."
+    )
+    port: Int = 25432,
+    @field @ConfigField(
+      envVar = "QOD_PG_EMBEDDED_DATA_DIR",
+      description =
+        "Directory holding the embedded Postgres data directory. Empty means the platform " +
+          "user-data dir (<user-data-dir>/pg)."
+    )
+    dataDir: String = ""
+):
+  require(port > 0 && port <= 65535, s"embeddedPostgres: port must be 1..65535, got $port")
 
 /** Managed object storage: one operator root bucket, one prefix per tenant-db incarnation. Fills
   * the database's objectStore from these credentials at managed create; a background worker purges

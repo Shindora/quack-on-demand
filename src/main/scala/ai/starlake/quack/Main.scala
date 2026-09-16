@@ -93,6 +93,7 @@ object Main extends IOApp with LazyLogging:
   given ProductHint[RoutingConfig]             = ProductHint[RoutingConfig](camelMapping)
   given ProductHint[AutoscaleConfig]           = ProductHint[AutoscaleConfig](camelMapping)
   given ProductHint[ManagedObjectStoreConfig]  = ProductHint[ManagedObjectStoreConfig](camelMapping)
+  given ProductHint[EmbeddedPostgresConfig]    = ProductHint[EmbeddedPostgresConfig](camelMapping)
   given ProductHint[SmtpConfig]                = ProductHint[SmtpConfig](camelMapping)
   given ProductHint[McpConfig]                 = ProductHint[McpConfig](camelMapping)
   given ProductHint[PatConfig]                 = ProductHint[PatConfig](camelMapping)
@@ -121,6 +122,7 @@ object Main extends IOApp with LazyLogging:
   given ConfigReader[RoutingConfig]            = deriveReader[RoutingConfig]
   given ConfigReader[AutoscaleConfig]          = deriveReader[AutoscaleConfig]
   given ConfigReader[ManagedObjectStoreConfig] = deriveReader[ManagedObjectStoreConfig]
+  given ConfigReader[EmbeddedPostgresConfig]   = deriveReader[EmbeddedPostgresConfig]
   given ConfigReader[SmtpConfig]               = deriveReader[SmtpConfig]
   given ConfigReader[McpConfig]                = deriveReader[McpConfig]
   given ConfigReader[PatConfig]                = deriveReader[PatConfig]
@@ -193,7 +195,8 @@ object Main extends IOApp with LazyLogging:
       .validate(
         mgrCfg.ha.enabled,
         mgrCfg.runtimeType,
-        mgrCfg.auth.management.sessionJwtSecret
+        mgrCfg.auth.management.sessionJwtSecret,
+        mgrCfg.embeddedPostgres.enabled
       )
       .left
       .foreach(msg => sys.error(msg))

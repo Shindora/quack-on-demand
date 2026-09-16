@@ -9,9 +9,16 @@ object HaPreconditions:
   def validate(
       haEnabled: Boolean,
       runtimeType: String,
-      sessionJwtSecret: String
+      sessionJwtSecret: String,
+      embeddedPostgres: Boolean = false
   ): Either[String, Unit] =
     if !haEnabled then Right(())
+    else if embeddedPostgres then
+      Left(
+        "ha.enabled=true is incompatible with QOD_PG_EMBEDDED=true: a single embedded Postgres " +
+          "process cannot be the shared control plane for multiple replicas. Point the replicas " +
+          "at an external Postgres instead"
+      )
     else if runtimeType.toLowerCase != "kubernetes" && runtimeType.toLowerCase != "k8s" then
       Left(
         s"ha.enabled=true requires runtimeType=kubernetes, got '$runtimeType': the local " +
