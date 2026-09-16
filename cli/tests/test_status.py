@@ -1,4 +1,6 @@
 import json
+import socket
+from pathlib import Path
 
 import httpx
 
@@ -27,6 +29,14 @@ def _quiet_local(monkeypatch, tcp=False):
 
     monkeypatch.setattr(status_mod, "_listening_pid", lambda port: None)
     monkeypatch.setattr(status_mod, "_tcp_open", lambda host, port: tcp)
+
+
+def _stub_listening_pid(monkeypatch):
+    """Like _quiet_local but leaves _tcp_open real - the embedded-postgres tests
+    below reuse _tcp_open to probe an actual socket they bind themselves."""
+    from qod_cli.commands import status as status_mod
+
+    monkeypatch.setattr(status_mod, "_listening_pid", lambda port: None)
 
 
 def test_status_up(runner, respx_mock, monkeypatch):
@@ -116,43 +126,88 @@ def test_status_auth_failure_degrades_silently(runner, respx_mock, monkeypatch):
     assert payload["pools"] == 2  # unauthenticated summary still present
 
 
-def test_status_reports_the_embedded_control_plane(runner, respx_mock, monkeypatch):
-    from qod_cli.config import save_start_env
-    from qod_cli.main import app
-
-    save_start_env({
-        "QOD_PG_EMBEDDED": "true",
-        "QOD_PG_EMBEDDED_PORT": "25432",
-        "QOD_PG_EMBEDDED_DATA_DIR": "/data/qod/pg",
-    })
-    _quiet_local(monkeypatch)
-    respx_mock.get("http://localhost:20900/health").mock(
-        return_value=httpx.Response(200, json={"poolsCount": 1, "nodesCount": 1})
+def _write_postmaster_pid(pgdata: Path, port: int) -> None:
+    """A trimmed real postmaster.pid: line 1 pid, line 2 data dir, line 3 start
+    time, line 4 port (the fields `qod status` actually reads)."""
+    pgdata.mkdir(parents=True, exist_ok=True)
+    (pgdata / "postmaster.pid").write_text(
+        f"12345\n{pgdata}\n1700000000\n{port}\n\n\n\n"
     )
-    respx_mock.get("http://localhost:20900/ready").mock(return_value=httpx.Response(200))
-    respx_mock.get("http://localhost:20900/api/config/client").mock(
-        return_value=httpx.Response(404)
+
+
+def _mock_embedded_probe(respx_mock, pools=0, nodes=0):
+    respx_mock.get(f"{BASE}/health").mock(
+        return_value=httpx.Response(
+            200, json={"poolsCount": pools, "nodesCount": nodes}
+        )
     )
-    result = runner.invoke(app, ["--json", "status"])
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["embeddedPostgres"] == "localhost:25432"
-    assert payload["embeddedPostgresDir"] == "/data/qod/pg"
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200))
+    respx_mock.get(f"{BASE}/api/config/client").mock(return_value=httpx.Response(404))
 
 
-def test_status_omits_the_embedded_line_for_an_external_postgres(
-    runner, respx_mock, monkeypatch
+def test_status_reports_a_running_embedded_control_plane(
+    runner, respx_mock, monkeypatch, tmp_path
 ):
     from qod_cli.main import app
 
-    _quiet_local(monkeypatch)
-    respx_mock.get("http://localhost:20900/health").mock(
-        return_value=httpx.Response(200, json={"poolsCount": 0, "nodesCount": 0})
-    )
-    respx_mock.get("http://localhost:20900/ready").mock(return_value=httpx.Response(200))
-    respx_mock.get("http://localhost:20900/api/config/client").mock(
-        return_value=httpx.Response(404)
-    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("localhost", 0))
+    listener.listen(1)
+    try:
+        port = listener.getsockname()[1]
+        pg_dir = tmp_path / "pg"
+        _write_postmaster_pid(pg_dir / "pgdata", port)
+        monkeypatch.setenv("QOD_PG_EMBEDDED_DATA_DIR", str(pg_dir))
+        # Only _listening_pid is stubbed here (unlike _quiet_local elsewhere in this
+        # file): _tcp_open must stay real so it actually probes the listener above.
+        _stub_listening_pid(monkeypatch)
+        _mock_embedded_probe(respx_mock, pools=1, nodes=1)
+
+        result = runner.invoke(app, ["--json", "status"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["embeddedPostgres"] == f"running (localhost:{port})"
+        assert payload["embeddedPostgresDir"] == str(pg_dir)
+    finally:
+        listener.close()
+
+
+def test_status_reports_a_stopped_embedded_control_plane(
+    runner, respx_mock, monkeypatch, tmp_path
+):
+    from qod_cli.main import app
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("localhost", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # closed again: nothing is listening on it, port stays a real int
+
+    pg_dir = tmp_path / "pg"
+    _write_postmaster_pid(pg_dir / "pgdata", port)
+    monkeypatch.setenv("QOD_PG_EMBEDDED_DATA_DIR", str(pg_dir))
+    # _tcp_open stays real here: it must see that the port above is closed.
+    _stub_listening_pid(monkeypatch)
+    _mock_embedded_probe(respx_mock)
+
     result = runner.invoke(app, ["--json", "status"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["embeddedPostgres"] == "stopped (data preserved)"
+    assert payload["embeddedPostgresDir"] == str(pg_dir)
+
+
+def test_status_omits_the_embedded_line_for_an_external_postgres(
+    runner, respx_mock, monkeypatch, tmp_path
+):
+    from qod_cli.main import app
+
+    # No pgdata under this dir at all: an external Postgres, nothing to probe.
+    monkeypatch.setenv("QOD_PG_EMBEDDED_DATA_DIR", str(tmp_path / "pg"))
+    _quiet_local(monkeypatch)
+    _mock_embedded_probe(respx_mock)
+
+    result = runner.invoke(app, ["--json", "status"])
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert "embeddedPostgres" not in payload
+    assert "embeddedPostgresDir" not in payload

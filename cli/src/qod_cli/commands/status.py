@@ -20,15 +20,18 @@ so scripts can `qod status && ...`.
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 import typer
 
 from ..config import config_path, load_settings, load_start_env
+from ..launcher import default_data_dir
 from ..output import render
 
 
@@ -63,6 +66,21 @@ def _tcp_open(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _embedded_postgres_port(pgdata: Path) -> int:
+    """The port `postgres` is bound to, from `pgdata/postmaster.pid` line 4 (pid is
+    line 1, port is line 4 - see the Postgres docs for the file's layout), falling
+    back to QOD_PG_EMBEDDED_PORT / 25432 when the file is absent or unparseable
+    (server not started yet, or mid-startup)."""
+    try:
+        return int(pgdata.joinpath("postmaster.pid").read_text().splitlines()[3])
+    except (OSError, IndexError, ValueError):
+        pass
+    try:
+        return int(os.environ.get("QOD_PG_EMBEDDED_PORT", "25432"))
+    except ValueError:
+        return 25432
 
 
 def status(ctx: typer.Context):
@@ -132,15 +150,27 @@ def status(ctx: typer.Context):
     if pool_rows:
         out["poolDetail"] = pool_rows
 
+    # Ground truth from the pgdata directory itself rather than stored config: the
+    # moment this line matters most is when the manager (and so its persisted
+    # config) is NOT running. QOD_PG_EMBEDDED_DATA_DIR mirrors the resolution
+    # `qod serve` / EmbeddedControlPlane.resolveDataDir use, falling back to the
+    # same default_data_dir()/pg. Liveness is a TCP probe, not os.kill(pid, 0):
+    # on Windows any non-CTRL signal value TERMINATES the target process, so a
+    # "liveness check" there would kill the server.
+    embedded_dir = os.environ.get("QOD_PG_EMBEDDED_DATA_DIR") or str(
+        default_data_dir() / "pg"
+    )
+    pgdata = Path(embedded_dir) / "pgdata"
+    if pgdata.is_dir():
+        port = _embedded_postgres_port(pgdata)
+        out["embeddedPostgres"] = (
+            f"running (localhost:{port})"
+            if _tcp_open("localhost", port)
+            else "stopped (data preserved)"
+        )
+        out["embeddedPostgresDir"] = embedded_dir
+
     start_env = load_start_env()
-    # `qod serve` persists its launch env here, so the control-plane coordinates are
-    # readable without a side-channel port file. Reported only when embedded: an
-    # external Postgres is the operator's own and they already know where it is.
-    if start_env.get("QOD_PG_EMBEDDED", "").lower() == "true":
-        out["embeddedPostgres"] = f"localhost:{start_env.get('QOD_PG_EMBEDDED_PORT', '25432')}"
-        embedded_dir = start_env.get("QOD_PG_EMBEDDED_DATA_DIR", "")
-        if embedded_dir:
-            out["embeddedPostgresDir"] = embedded_dir
     out["setupVars"] = len(start_env)
     out["configFile"] = str(config_path())
 
