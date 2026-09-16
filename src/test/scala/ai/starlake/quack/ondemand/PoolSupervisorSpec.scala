@@ -1311,6 +1311,29 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     eff("dataPath") shouldBe "/explicit/file.duckdb"
     eff("dbName")   shouldBe "explicit_db"
 
+  it should "carry a memory tenant-db's dataPath through as the object-store scope" in:
+    // A `memory` database of views over remote parquet needs ObjectStoreSecret's SCOPE, which
+    // PoolSupervisor reads from the EFFECTIVE metastore's dataPath. Dropping it here left the
+    // node with no CREATE SECRET and every remote read failing.
+    val (sup, _) = supWithSeededTenantDb(
+      bugDefaults, TenantDbKind.InMemory,
+      metastore = Map.empty,
+      dataPath  = "s3://bucket/sales/"
+    )
+    val eff = sup.effectiveMetastoreFor("acme", "acme_default")
+    eff("dataPath") shouldBe "s3://bucket/sales/"
+    eff("dbName")   shouldBe "memory"
+
+  it should "still drop dataPath for a memory tenant-db that has none" in:
+    val (sup, _) = supWithSeededTenantDb(
+      bugDefaults, TenantDbKind.InMemory,
+      metastore = Map.empty,
+      dataPath  = ""
+    )
+    val eff = sup.effectiveMetastoreFor("acme", "acme_default")
+    eff.contains("dataPath") shouldBe false
+    eff("dbName")            shouldBe "memory"
+
   it should "resolve a memory tenant-db to the built-in `memory` catalog with no dataPath" in:
     // Regression: inheriting the default dbName made Main's health probe run
     // `CREATE SCHEMA IF NOT EXISTS tpch.main` on a node that only has the `memory` catalog,
@@ -1327,10 +1350,13 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     eff("schemaName")        shouldBe "main"
 
   it should "let an explicit metastore dbName win for a memory tenant-db, still without dataPath" in:
+    // A metastore-map "dataPath" entry alone (no row-level dataPath field) still doesn't leak:
+    // only the tenant-db row's own dataPath is the object-store scope (see the InMemory arm of
+    // effectiveMetastoreFor); this pins that the metastore map is never consulted for it.
     val (sup, _) = supWithSeededTenantDb(
       bugDefaults, TenantDbKind.InMemory,
       metastore = Map("dbName" -> "explicit_mem", "dataPath" -> "/ignored"),
-      dataPath  = "/also-ignored"
+      dataPath  = ""
     )
     val eff = sup.effectiveMetastoreFor("acme", "acme_default")
     eff("dbName")            shouldBe "explicit_mem"

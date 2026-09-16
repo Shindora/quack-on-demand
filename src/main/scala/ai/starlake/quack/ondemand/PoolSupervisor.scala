@@ -257,9 +257,13 @@ final class PoolSupervisor(
         if tdData.nonEmpty then withDb.updated("dataPath", tdData) else withDb.removed("dataPath")
 
       case TenantDbKind.InMemory =>
-        merged
-          .updated("dbName", td.metastore.getOrElse("dbName", "memory"))
-          .removed("dataPath")
+        // dataPath is never a catalog for this kind, but when the row carries one it is the
+        // object-store SCOPE the per-database CREATE SECRET needs (see the InMemory arm of
+        // TenantDb.validate). Inherit nothing from the manager default: only the row's own field
+        // counts, or the node would get a DuckLake directory as its secret scope.
+        val withDb = merged.updated("dbName", td.metastore.getOrElse("dbName", "memory"))
+        if td.dataPath.nonEmpty then withDb.updated("dataPath", td.dataPath)
+        else withDb.removed("dataPath")
 
   /** True when `key`'s tenant-db is in [[dataPathBlocked]]. False when the pool has no persisted
     * row (InMemory-only test pools): such a pool never wrote to the store, so it can't race a

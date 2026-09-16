@@ -166,6 +166,43 @@ class TenantDbHandlersSpec extends AnyFlatSpec with Matchers:
     out.swap.toOption.get._1.code shouldBe 400
     out.swap.toOption.get._2.message should include("empty metastore")
 
+  it should "accept kind=memory with a remote dataPath as the object-store scope" in:
+    val h = freshHandlers()
+    val out = h.createTenantDb(TenantDbRequest(
+      tenant      = "acme",
+      name        = "remote",
+      kind        = "memory",
+      metastore   = Map.empty,
+      dataPath    = "s3://bucket/sales/",
+      objectStore = Map("s3_access_key_id" -> "AK", "s3_secret_access_key" -> "SK")
+    ), None)((_: String) => None).unsafeRunSync()
+    out.isRight shouldBe true
+    out.toOption.get.dataPath shouldBe "s3://bucket/sales/"
+
+  it should "still reject a non-empty metastore on kind=memory" in:
+    val h = freshHandlers()
+    val out = h.createTenantDb(TenantDbRequest(
+      tenant    = "acme",
+      name      = "bad2",
+      kind      = "memory",
+      metastore = Map("dbName" -> "x"),
+      dataPath  = "s3://bucket/sales/"
+    ), None)((_: String) => None).unsafeRunSync()
+    out.isLeft shouldBe true
+    out.swap.toOption.get._2.message should include("empty metastore")
+
+  it should "still reject an injection-unsafe dataPath on kind=memory" in:
+    val h = freshHandlers()
+    val out = h.createTenantDb(TenantDbRequest(
+      tenant    = "acme",
+      name      = "bad3",
+      kind      = "memory",
+      metastore = Map.empty,
+      dataPath  = "s3://bucket/x'; DROP TABLE t; --"
+    ), None)((_: String) => None).unsafeRunSync()
+    out.isLeft shouldBe true
+    out.swap.toOption.get._1.code shouldBe 400
+
   "TenantDbHandlers.createTenantDb (kind=duckdb-file)" should
     "round-trip metastore + dataPath" in:
     val h = freshHandlers()
