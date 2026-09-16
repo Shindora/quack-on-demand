@@ -5,10 +5,11 @@ ai.starlake.quack.boot.EmbeddedControlPlane) so there is no external prerequisit
 then provisions a tenant, database, and pool around whatever the target points at
 and prints the client connection strings.
 
-Not the demo. `qod start --demo` is ephemeral, seeded with TPC-H, and deliberately
-insecure (its posture comes from DemoConfig.overlay and lives only on that code
-path). `qod serve` is persistent and keeps the normal secure posture: TLS on, DB
-auth on, ACL on, a generated admin password instead of 'admin'.
+Without `--demo` this is not the demo: `qod serve --demo` (and its deprecated alias
+`qod start --demo`) is ephemeral, seeded with TPC-H, and deliberately insecure (its
+posture comes from DemoConfig.overlay and lives only on that code path); the default
+`qod serve` path is persistent and keeps the normal secure posture: TLS on, DB auth
+on, ACL on, a generated admin password instead of 'admin'.
 
 Provisioning runs in a thread beside the output relay because the manager has to
 be up before the REST calls can land, and `_run_supervised` owns the foreground
@@ -241,7 +242,9 @@ def serve(
         False,
         "--demo",
         help="Run the self-contained demo instead: embedded ephemeral Postgres, seeded "
-        "TPC-H, RLS/CLS showcase. Takes no TARGET; all state is deleted on exit.",
+        "TPC-H, RLS/CLS showcase. Takes no TARGET; all state is deleted on exit. Other "
+        "serve flags (--tenant, --size, object-store credentials, ...) are ignored in "
+        "demo mode.",
     ),
 ):
     """Serve your own data through a fresh, persistent gateway in one command.
