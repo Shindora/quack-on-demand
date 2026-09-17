@@ -25,15 +25,25 @@ class DemoBannerSpec extends AnyFlatSpec with Matchers:
     b should include("denied")   // denial beat
   }
 
-  it should "print the admin UI url and every seeded credential" in {
+  it should "print the admin UI url and every seeded credential as table rows" in {
     val b =
       DemoBanner.render(restPort = 20900, flightPort = 31338, dataPath = "/demo", rows = "~150K")
     b should include("http://localhost:20900/ui/")
-    // The four identities seeded by bootstrap-demo-minimal.yaml.
-    b should include("root / demo-root")
-    b should include("admin / admin")
-    b should include("alice / demo-alice")
-    b should include("acme-admin / demo-acme-admin")
+    // Admin UI table: Tenant | User | Password | Access, one row per seeded identity.
+    b should include regex """│ Tenant\s+│ User\s+│ Password\s+│ Access\s+│"""
+    b should include regex """│ \(blank\)\s+│ root\s+│ demo-root\s+│ superuser console\s+│"""
+    b should include regex """│ \(blank\)\s+│ admin\s+│ admin\s+│ superuser console\s+│"""
+    b should include regex """│ acme\s+│ acme-admin\s+│ demo-acme-admin\s+│ acme-scoped view\s+│"""
+    b should include regex """│ acme\s+│ alice\s+│ demo-alice\s+│ acme-scoped view\s+│"""
+    // Flight SQL table: User | Password | Access | Notes.
+    b should include regex """│ User\s+│ Password\s+│ Access\s+│ Notes\s+│"""
+    b should include regex """│ alice\s+│ demo-alice\s+│ analyst\s+│ c_phone masked, BUILDING rows only\s+│"""
+    b should include regex """│ acme-admin\s+│ demo-acme-admin\s+│ everything in acme\s+│ unmasked\s+│"""
+    b should include regex """│ root\s+│ demo-root\s+│ superuser\s+│ add superuser=true\s+│"""
+    b should include regex """│ admin\s+│ admin\s+│ superuser\s+│ add superuser=true\s+│"""
+    // Box borders are drawn.
+    b should include("┌")
+    b should include("└")
   }
 
   it should "print copy-pastable JDBC, ADBC, and ODBC configurations" in {
