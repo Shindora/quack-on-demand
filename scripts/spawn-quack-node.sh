@@ -265,17 +265,21 @@ if [[ -n "${dbInitSql:-}" ]]; then
 fi
 INIT_SQL+=$'INSTALL quack;    LOAD quack;\n'
 
+# Per-database object-store secret (objectStoreSql env, authored by ObjectStoreSecret.scala).
+# A scoped CREATE SECRET for this database's own bucket/credentials, emitted for EVERY kind:
+# TenantDb.validate permits a `memory` or `duckdb-file` database to carry an objectStore, and a
+# `memory` database of views over s3:// parquet (the `qod serve` remote-prefix case) reads nothing
+# without it. Must precede any ATTACH, and runs alongside the global STORAGE_SQL below - DuckDB
+# picks the longest matching scope.
+if [[ -n "${objectStoreSql:-}" ]]; then
+  INIT_SQL+="$objectStoreSql"$'\n'
+fi
+
 case "$kind" in
   ducklake)
     INIT_SQL+=$'INSTALL ducklake; LOAD ducklake;\n'
     INIT_SQL+=$'INSTALL postgres; LOAD postgres;\n'
     INIT_SQL+="$STORAGE_SQL"$'\n'
-    # Per-database object-store secret (objectStoreSql env, authored by ObjectStoreSecret.scala).
-    # A scoped CREATE SECRET for this database's own bucket/credentials. Runs alongside the global
-    # STORAGE_SQL above (DuckDB picks the longest matching scope), before the catalog ATTACH.
-    if [[ -n "${objectStoreSql:-}" ]]; then
-      INIT_SQL+="$objectStoreSql"$'\n'
-    fi
     INIT_SQL+="ATTACH 'host=$pgHost port=$pgPort dbname=$dbName user=$pgUser password=$pgPassword' AS qod_init_pg (TYPE postgres);"$'\n'
     INIT_SQL+="SELECT * FROM postgres_query('qod_init_pg', 'SELECT pg_advisory_lock(hashtext(''qod-ducklake-init:$dbName''))');"$'\n'
     INIT_SQL+="ATTACH 'ducklake:postgres:host=$pgHost port=$pgPort dbname=$dbName user=$pgUser password=$pgPassword' AS \"$dbName\""$'\n'

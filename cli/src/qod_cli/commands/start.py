@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .. import launcher
+from ..config import load_start_env
 from ._launch import _exec, resolve_jar, resolve_java
 
 # Tenant-db Postgres databases created by the bundled demo manifests; NUKE=1
@@ -42,7 +43,30 @@ def _psql(pg: dict, sql: str):
     )
 
 
+def _confirm_nuke(pg: dict) -> None:
+    """NUKE is irreversible (drops the control plane and demo tenant-dbs,
+    wipes the per-user state dirs). On a terminal, require typing the
+    control-plane db name so a pasted NUKE=1 cannot destroy data silently.
+    Non-tty runs skip the prompt (scripted use unchanged; a script that
+    wants no prompt redirects stdin). Deliberately NOT a password check:
+    NUKE runs with the invoker's OS privileges and must keep working when
+    the stack is too broken to verify credentials against."""
+    if not sys.stdin.isatty():
+        return
+    expected = pg["dbname"]
+    typer.echo(
+        f"NUKE=1 will drop the '{expected}' control plane, the demo "
+        "tenant-dbs, and wipe the local ducklake/state/certs dirs.",
+        err=True,
+    )
+    answer = typer.prompt(f"Type '{expected}' to proceed (anything else aborts)")
+    if answer != expected:
+        typer.echo("aborted; nothing was touched.", err=True)
+        raise typer.Exit(1)
+
+
 def _nuke(state_dir: Path, pg: dict) -> None:
+    _confirm_nuke(pg)
     typer.echo("NUKE=1: tearing down state...", err=True)
     if shutil.which("psql"):
         for db in (pg["dbname"], *_DEMO_DBS):
@@ -133,18 +157,29 @@ def start(
         False,
         "--demo",
         help="Run the self-contained demo instead: embedded ephemeral Postgres, seeded "
-        "TPC-H, RLS/CLS showcase. Needs no external Postgres; all state is deleted on exit.",
+        "TPC-H, RLS/CLS showcase. Needs no external Postgres; all state is deleted on exit. "
+        "(deprecated alias: use qod serve --demo)",
     ),
 ):
     """Run a quack-on-demand manager against your Postgres (scripts/run-jar.sh
     without the checkout). Postgres is assumed reachable (QOD_PG_* env vars);
     supports run-jar's LOAD_TPCH/LOAD_TPCDS/LOAD_SSB/LOAD_TPC, DEMO, NUKE,
     JAVA_OPTS, JAVA_BIN, JAR_CACHE_DIR, DUCKDB_VERSION, and DUCKDB_CACHE_DIR.
-    With --demo, runs the self-contained demo instead (no Postgres needed).
-    Ctrl-C tears the manager and its nodes down gracefully (same as qod stop)."""
+    Run `qod setup` once to persist QOD_PG_*/admin/API-key/TLS settings so you
+    don't have to export them every time - a real env var still overrides it.
+    With --demo, runs the self-contained demo instead (no Postgres needed,
+    and qod setup's stored config is not applied - see qod setup --help).
+    Ctrl-C tears the manager and its nodes down gracefully (same as qod stop).
+
+    No Postgres and just want to serve local data? Use qod serve."""
     if demo:
         from .demo import run_demo
 
+        typer.echo(
+            "note: the demo moved to qod serve --demo (this alias will be removed in a "
+            "future release)",
+            err=True,
+        )
         run_demo(ctx, version, jar)
         return
     java = resolve_java()
@@ -159,8 +194,12 @@ def start(
         typer.echo(f"could not provision duckdb: {e}", err=True)
         raise typer.Exit(1)
     spawn_sh, spawn_ps1 = launcher.materialize_spawn_scripts(app_home / "scripts")
+    # `qod setup` persists QOD_*/PROXY_* vars to the CLI config file; a real
+    # process env var still wins (same precedence as everywhere else in the
+    # CLI: explicit > env var > file > built-in default).
+    base_env = {**load_start_env(), **os.environ}
     env = launcher.runtime_env(
-        dict(os.environ), app_home, duckdb_bin, spawn_sh, spawn_ps1, libduckdb_lib=libduckdb
+        base_env, app_home, duckdb_bin, spawn_sh, spawn_ps1, libduckdb_lib=libduckdb
     )
 
     # Durable state anchor: certs/ and any relative paths land here, and the

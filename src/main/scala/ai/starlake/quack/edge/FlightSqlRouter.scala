@@ -805,6 +805,8 @@ final class FlightSqlRouter(
             val schema = meta.get("schemaName").filter(_.nonEmpty).getOrElse("main")
             s"USE $db.$schema; $sql"
           case None => sql
+      case Some(meta) if trimmed.startsWith("USE ") =>
+        FlightSqlRouter.qualifyBareUse(meta.get("dbName").filter(_.nonEmpty), sql)
       case _ => sql
 
   /** Resolve the routing snapshot, waking a suspended (never a disabled) pool first: fire
@@ -899,3 +901,28 @@ final class FlightSqlRouter(
     val full = s"permanent failure: $message"
     if notFound then RouterFailure.NotFound(full)
     else RouterFailure.BadRequest(full)
+
+object FlightSqlRouter:
+
+  // A bare one-part USE target: an unquoted identifier or one quoted identifier
+  // (quoted may contain anything but a quote, including dots). Two-part
+  // `USE a.b` deliberately does not match and passes through untouched.
+  private val BareUseRe =
+    """(?is)^\s*use\s+("[^"]+"|[a-z_][a-z0-9_$]*)\s*;?\s*$""".r
+
+  /** Qualify a bare one-part `USE x` into `USE <dbName>.x`. On the node the DuckLake catalog is
+    * attached under the tenant-db name and the session's current catalog is the transient memory
+    * db, so a client's `USE star1` fails with "No catalog + schema named star1 found" even though
+    * saleh_default.star1 exists -- and the client has no way to know the physical db name.
+    * `USE a.b`, `USE <dbName>` and `USE memory` pass through so catalog switching stays possible.
+    */
+  private[edge] def qualifyBareUse(dbName: Option[String], sql: String): String =
+    dbName match
+      case None     => sql
+      case Some(db) =>
+        sql match
+          case BareUseRe(token) =>
+            val name = token.stripPrefix("\"").stripSuffix("\"")
+            if name.equalsIgnoreCase(db) || name.equalsIgnoreCase("memory") then sql
+            else s"USE $db.$token"
+          case _ => sql

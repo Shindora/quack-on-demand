@@ -173,6 +173,8 @@ lazy val root = (project in file("."))
       Dependencies.jbcrypt,
       Dependencies.postgresql,
       Dependencies.embeddedPostgres,
+      Dependencies.embeddedPostgresLinuxArm64,
+      Dependencies.embeddedPostgresDarwinArm64,
       Dependencies.liquibaseCore,
       Dependencies.catsCore,
       Dependencies.blobstoreCore,

@@ -269,6 +269,28 @@ def test_start_resolves_relative_jar_before_chdir(runner, wired, monkeypatch, tm
     assert pathlib.Path(jar_arg).is_absolute()
 
 
+def test_start_applies_setup_config(runner, wired, monkeypatch):
+    from qod_cli.config import save_start_env
+    from qod_cli.main import app
+
+    save_start_env({"QOD_PG_HOST": "db.internal", "QOD_PG_PASSWORD": "s3cret"})
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert wired["env"]["QOD_PG_HOST"] == "db.internal"
+    assert wired["env"]["QOD_PG_PASSWORD"] == "s3cret"
+
+
+def test_start_real_env_var_wins_over_setup_config(runner, wired, monkeypatch):
+    from qod_cli.config import save_start_env
+    from qod_cli.main import app
+
+    save_start_env({"QOD_PG_HOST": "from-setup"})
+    monkeypatch.setenv("QOD_PG_HOST", "from-shell")
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert wired["env"]["QOD_PG_HOST"] == "from-shell"
+
+
 def test_start_load_flags_warn_and_skip_on_windows(runner, wired, monkeypatch, tmp_path):
     from qod_cli.commands import start as start_cmd
     from qod_cli.main import app
@@ -283,3 +305,44 @@ def test_start_load_flags_warn_and_skip_on_windows(runner, wired, monkeypatch, t
     assert result.exit_code == 0, result.output
     assert spawned == []
     assert "Windows" in result.output
+
+
+def test_nuke_confirmation_aborts_on_wrong_answer(monkeypatch, capsys):
+    import typer
+    import pytest as _pytest
+
+    from qod_cli.commands import start as start_mod
+
+    monkeypatch.setattr(start_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(start_mod.typer, "prompt", lambda *a, **k: "wrong")
+    destroyed = []
+    monkeypatch.setattr(start_mod, "_psql", lambda *a, **k: destroyed.append(a))
+    with _pytest.raises(typer.Exit) as exc:
+        start_mod._nuke(start_mod.Path("/nonexistent"), {"dbname": "qod"})
+    assert exc.value.exit_code == 1
+    assert destroyed == []  # nothing dropped before the abort
+    assert "aborted" in capsys.readouterr().err
+
+
+def test_start_demo_still_works_and_points_at_serve(runner, wired, monkeypatch):
+    import qod_cli.commands.demo as demo_mod
+
+    called = {}
+    monkeypatch.setattr(demo_mod, "run_demo", lambda ctx, version, jar: called.setdefault("hit", True))
+    from qod_cli.main import app
+
+    result = runner.invoke(app, ["start", "--demo", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert called.get("hit") is True
+    assert "qod serve --demo" in result.output  # the deprecation pointer
+
+
+def test_nuke_confirmation_skips_for_non_tty(monkeypatch, tmp_path):
+    from qod_cli.commands import start as start_mod
+
+    calls = []
+    monkeypatch.setattr(start_mod, "_psql", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(start_mod.shutil, "which", lambda n: "/usr/bin/psql")
+    monkeypatch.setattr(start_mod.sys.stdin, "isatty", lambda: False)
+    start_mod._nuke(tmp_path, {"dbname": "qod", "password": ""})
+    assert calls  # drops proceeded without any prompt

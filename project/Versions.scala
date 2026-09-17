@@ -13,8 +13,8 @@ object Versions {
   val nimbusJoseJwt  = "9.47"
   val scalaTest      = "3.2.17"
   // jsqlParser must match the version jsqltranspiler's pom pins (its manticore line)
-  val jsqlParser     = "5.3.336"
-  val jsqltranspiler = "1.11"
+  val jsqlParser     = "5.4.2"
+  val jsqltranspiler = "1.12"
   val circeYaml      = "0.16.1"
   val cats           = "2.13.0"
   val netty          = "4.1.118.Final"
@@ -23,6 +23,10 @@ object Versions {
   val jbcrypt        = "0.10.2"
   val postgresql     = "42.7.4"
   val embeddedPostgres = "2.0.7"
+  // Binary set for the arm64 artifacts added explicitly in Dependencies.scala. MUST match the
+  // version `embeddedPostgres` pulls in transitively for amd64, or arm and x86 users get
+  // different Postgres majors from the same jar; DemoPostgresSpec fails when they drift.
+  val embeddedPostgresBinaries = "14.10.1"
   val wireMock       = "3.9.2"
   val blobstore      = "0.10.1"
   val starlakeJdbc   = "0.7"

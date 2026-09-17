@@ -16,7 +16,13 @@
 [![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/xHj9D6Rebp)
 
 ```bash
-uvx qod start --demo   # the full gateway on your laptop: no install, no Postgres
+uvx qod@latest serve --demo             # the full gateway on your laptop: no install, no Postgres
+uvx qod@latest serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persistent + secured
+uvx qod@latest serve ./warehouse/       # ...or a directory of parquet / csv
+uvx qod@latest serve s3://bucket/data/  # ...or a remote prefix
+
+# admin UI: http://localhost:20900/ui/ - FlightSQL edge: localhost:31338
+# Ctrl-C stops the gateway and its nodes; so does `uvx qod@latest stop` from another terminal
 ```
 
 One command boots a seeded warehouse with row, column, and table security already live. Connect with `tenant=acme` + `pool=bi` (in the admin UI login, set the tenant to `acme`) and switch principals to watch the policies apply:
@@ -58,9 +64,17 @@ Quack on Demand is that part. It turns a DuckLake lakehouse into a multi-tenant 
 
 ## Quick start
 
-### Demo mode: no Postgres, no Docker
+### Native Linux / macOS / Windows
 
-The command at the top boots a fully seeded instance against an **embedded, throwaway Postgres**. With [uv](https://docs.astral.sh/uv/) installed there are no other prerequisites - the launcher fetches everything it needs (sha256-verified against the GitHub release) and caches it under your user cache dir. Works the same on macOS, Linux, and Windows. `pip install qod && qod start --demo` is equivalent. The same demo also runs from Docker:
+The command below boots a fully seeded instance against an **embedded, throwaway Postgres**. With [uv](https://docs.astral.sh/uv/) installed there are no other prerequisites - the launcher fetches everything it needs (sha256-verified against the GitHub release) and caches it under your user cache dir.
+
+```bash
+uvx qod@latest serve --demo   # the full gateway on your laptop: no install, no Postgres
+```
+
+`pip install qod && qod serve --demo` is equivalent. The `@latest` matters: uvx otherwise freezes on the first version it ever resolved.
+
+### Docker
 
 ```bash
 # trivial on Linux; on Mac/Windows requires Docker Desktop or a
@@ -72,6 +86,42 @@ It starts an embedded ephemeral Postgres, seeds tenant `acme` (`acme_tpch.tpch1`
 
 > Demo mode is insecure by design (self-signed TLS, open REST, demo credentials, ephemeral catalog). Use it to evaluate, never in production.
 
+### Serve your own data
+
+The demo is throwaway. To point the same gateway at data you already have, with
+nothing else to install (no Postgres, no Docker):
+
+```bash
+uvx qod@latest serve ./sales.duckdb          # an existing DuckDB file
+uvx qod@latest serve ./warehouse/            # a directory of parquet / csv
+uvx qod@latest serve s3://bucket/sales/      # a remote prefix
+uvx qod@latest serve                         # a fresh, empty DuckLake to load into
+```
+
+One command provisions a tenant, a database, and a pool around the target, then
+prints the JDBC / ADBC / ODBC strings. The control plane runs on a bundled
+embedded Postgres under your user data dir, and it persists: restart and
+everything is still there. Re-running adds a second database beside the first,
+so `qod serve ./other.duckdb` extends the same gateway rather than replacing it.
+
+Unlike `--demo`, this keeps the normal secure posture: TLS on, database auth on,
+ACL on, and a random admin password generated on the first run and printed once.
+
+An existing `.duckdb` file is attached read-write and served by a single node.
+Parquet and CSV targets become views (`read_parquet` / `read_csv`), so nothing is
+copied or converted.
+
+Not sure which command you want?
+
+| Command | What it is | Needs |
+|---|---|---|
+| `qod serve --demo` | throwaway showcase on sample data, insecure by design | nothing |
+| `qod serve ./your-data` | persistent gateway over your own data, secure defaults | nothing |
+| `qod start` | your deployment: your own Postgres, your config | Postgres + `qod setup` |
+
+For production, run against your own Postgres instead: see the deployment shapes
+below.
+
 ### Full multi-tenant stack (Docker)
 
 Zero to first query in under 5 minutes. Clone this repo, then:
@@ -80,7 +130,7 @@ Zero to first query in under 5 minutes. Clone this repo, then:
 cp .env.example .env                            # tweak ports / auth / admin password
 LOAD_TPCH=1 ./scripts/run-docker-compose.sh     # pulls starlakeai/quack-on-demand:latest + seeds TPC-H SF=1
 ```
-> **Windows: run inside WSL2** with `QOD_NATIVE_CLIENT=false LOAD_TPCH=1 ./scripts/run-docker-compose.sh`
+> **Windows: run inside WSL2** with `LOAD_TPCH=1 ./scripts/run-docker-compose.sh`
 
 That brings up Postgres + the manager, bootstraps the demo tenants `acme` (tenant-db `acme_tpch` with pools `bi` and `etl`) and `globex` (pool `bi`), and seeds the DuckLake catalog with TPC-H at scale factor 1 (~6M lineitem rows) into `acme_tpch.tpch1`. The admin UI is on `http://localhost:20900/ui/` (log in `admin` / `admin` - change both before exposing anything beyond `localhost`). The FlightSQL edge is on `localhost:31338`; every client scopes its session with `tenant=acme` + `pool=bi`.
 
@@ -90,9 +140,18 @@ The Power BI walkthrough, full ADBC `db_kwargs` examples, and the Python load te
 
 Runnable client examples live in [`examples/`](examples/): FlightSQL clients in [TypeScript](examples/typescript/), [Python](examples/python/), [Java](examples/java/), and [Rust](examples/rust/), each running a single query and the 22 TPC-H queries. An [n8n community node](https://github.com/starlake-ai/qod-n8n-node) lives in its own repo.
 
-### Other paths
+### Production-level deployment
 
-`qod start` runs the manager against your own Postgres with no checkout at all - it downloads everything it needs (sha256-verified) and honors the same env vars (`QOD_PG_*`, `LOAD_TPCH=1`, `NUKE=1`, `QOD_VERSION`, ...); `qod stop` tears it down. The Helm chart + a local kind smoke-test rig live under [`charts/quack-on-demand/`](charts/quack-on-demand/). See [`RUNNING.md`](guides/RUNNING.md) for external Postgres, env vars, and TLS.
+Past the demo, the manager runs against **your own Postgres** and your own object store.
+
+Pick the deployment shape in the docs:
+
+- **[Laptop deployment](https://docs.starlake.ai/qod/operating/deploy-local)** - nodes as child processes of the manager, against an external Postgres or the zero-prerequisite embedded control plane (`qod serve`, `QOD_PG_EMBEDDED=true`)
+- **[Single-server production deployment](https://docs.starlake.ai/qod/operating/deploy-single-server)** - end-to-end walkthrough on one large server: sizing, existing Postgres + S3-compatible store, pool provisioning, RBAC, monitoring, with runnable scripts
+- **[Docker Compose](https://docs.starlake.ai/qod/operating/deploy-docker)** - manager + Postgres as containers on a single host, persistent state bind-mounted
+- **[Kubernetes](https://docs.starlake.ai/qod/operating/deploy-kubernetes)** - manager pod spawning node pods on demand; the Helm chart and a kind smoke-test rig live under [`charts/quack-on-demand/`](charts/quack-on-demand/)
+
+Then harden it: **[Production hardening](https://docs.starlake.ai/qod/operating/hardening)**, **[TLS](https://docs.starlake.ai/qod/operating/tls)**, and the **[configuration reference](https://docs.starlake.ai/qod/reference/configuration)** (every `QOD_*` / `PROXY_*` env var).
 
 ---
 
@@ -110,6 +169,7 @@ Runnable client examples live in [`examples/`](examples/): FlightSQL clients in 
 
 ### Data plane
 
+- **One-command serving**: `qod serve <target>` boots a persistent, secured gateway over an existing `.duckdb` file, a directory of parquet/csv, or an object-store prefix - control plane on a bundled embedded Postgres, so there is nothing to install first
 - **Multi-tenant pools** of Quack nodes (`READONLY` / `WRITEONLY` / `DUAL`); the router classifies each statement and picks a compatible least-loaded node
 - **Per-tenant DuckLake catalog DB** (`${tenant}_${tenantDb}`) auto-provisioned next to the control-plane DB: tenant isolation at the Postgres-database boundary, not just row level
 - **Single binary** deployment
@@ -204,12 +264,19 @@ Hosted / self-serve deployments should also harden the data plane:
 - **Network policy**: enable `networkPolicy.enabled=true` in the Helm chart to restrict node-pod ingress/egress
 - **Catalog-reader eviction**: tune `QOD_CATALOG_READER_SWEEP_MIN` / `QOD_CATALOG_READER_IDLE_EVICT_MIN` if the default 10/30-minute cadence for evicting idle per-tenant-db catalog readers needs adjusting
 
-The full hardening runbook is in `skills/quack-on-demand/SKILL.md`.
+The full hardening runbook is in `plugins/qod/skills/quack-on-demand/SKILL.md`.
+
+## Claude Code skill
+
+The operator runbook also ships as a Claude Code skill, so Claude can drive a live manager through the `qod` CLI. Install it one of two ways:
+
+- With the CLI: `qod skill install` (after `uv tool install qod` or `pip install qod`) asks which LLM to install for (Claude Code, GitHub Copilot, Gemini CLI) and copies it into the matching skills directory (`~/.claude/skills` etc.; `--platform claude|copilot|gemini|all` skips the prompt); re-run after a CLI upgrade to refresh it
+- As a plugin: `/plugin marketplace add starlake-ai/quack-on-demand`, then `/plugin install quack-on-demand@quack-on-demand`
 
 ## Documentation
 
 Full guides, configuration reference, and REST API: https://docs.starlake.ai/qod
-Jump to: [Quickstart](https://docs.starlake.ai/qod/getting-started/quickstart) · [`RUNNING.md`](guides/RUNNING.md) · [`API.md`](guides/API.md) · [Architecture](https://docs.starlake.ai/qod/concepts/architecture) · [RBAC model](https://docs.starlake.ai/qod/operating/rbac-model) · [`CONTRIBUTING.md`](CONTRIBUTING.md)
+Jump to: [Quickstart](https://docs.starlake.ai/qod/getting-started/quickstart) · [Deployment](https://docs.starlake.ai/qod/operating/deploy-local) · [Configuration](https://docs.starlake.ai/qod/reference/configuration) · [Administration](https://docs.starlake.ai/qod/administration/onboarding) · [Architecture](https://docs.starlake.ai/qod/concepts/architecture) · [RBAC model](https://docs.starlake.ai/qod/operating/rbac-model) · [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ## License
 

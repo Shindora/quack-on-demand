@@ -81,7 +81,7 @@ export default function Nodes() {
   }
 
   function refresh() {
-    api.statementHistory(50)
+    api.statementHistory(200)
       .then(r => setHistory(r.statements))
       .catch(() => { /* best effort - pools still useful even if history fails */ });
     api.activeStatements()
@@ -480,7 +480,7 @@ export default function Nodes() {
         </table>
       </div>
       <p className="subtle" style={{ textAlign: 'right' }}>
-        Click a row to expand · last 50 statements · ring buffer (oldest evicted)
+        Click a row to expand · last 200 statements · ring buffer (oldest evicted)
       </p>
     </>
   );

@@ -1,17 +1,25 @@
 package ai.starlake.quack.ondemand.ha
 
 /** Config-load-time gates for HA mode. HA requires the Kubernetes backend (the local backend's port
-  * allocator and child processes are per-JVM) and an explicit session JWT secret (sessions must
-  * verify on every replica, so the boot-generated per-replica fallback is refused).
+  * allocator and child processes are per-JVM), an explicit session JWT secret (sessions must verify
+  * on every replica, so the boot-generated per-replica fallback is refused), and an external
+  * Postgres (a single embedded server cannot back N replicas).
   */
 object HaPreconditions:
 
   def validate(
       haEnabled: Boolean,
       runtimeType: String,
-      sessionJwtSecret: String
+      sessionJwtSecret: String,
+      embeddedPostgres: Boolean = false
   ): Either[String, Unit] =
     if !haEnabled then Right(())
+    else if embeddedPostgres then
+      Left(
+        "ha.enabled=true is incompatible with QOD_PG_EMBEDDED=true: a single embedded Postgres " +
+          "process cannot be the shared control plane for multiple replicas. Point the replicas " +
+          "at an external Postgres instead"
+      )
     else if runtimeType.toLowerCase != "kubernetes" && runtimeType.toLowerCase != "k8s" then
       Left(
         s"ha.enabled=true requires runtimeType=kubernetes, got '$runtimeType': the local " +

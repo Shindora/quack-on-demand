@@ -182,15 +182,16 @@ if (-not [string]::IsNullOrEmpty($proxySql))  { [void]$sb.AppendLine($proxySql) 
 if (-not [string]::IsNullOrEmpty($dbInitSql)) { [void]$sb.AppendLine($dbInitSql) }
 [void]$sb.AppendLine("INSTALL quack;    LOAD quack;")
 
+# Per-database object-store secret, emitted for EVERY kind: a `memory` or `duckdb-file`
+# database may carry an objectStore (TenantDb.validate permits it), and a `memory` database
+# of views over remote parquet reads nothing without the CREATE SECRET. Must precede ATTACH.
+if (-not [string]::IsNullOrEmpty($objectStoreSql)) { [void]$sb.AppendLine($objectStoreSql) }
+
 switch ($kind) {
   'ducklake' {
     [void]$sb.AppendLine("INSTALL ducklake; LOAD ducklake;")
     [void]$sb.AppendLine("INSTALL postgres; LOAD postgres;")
     if (-not [string]::IsNullOrEmpty($storageSql)) { [void]$sb.AppendLine($storageSql) }
-    # Per-database object-store secret (objectStoreSql env, authored by ObjectStoreSecret.scala).
-    # A scoped CREATE SECRET for this database's own bucket/credentials. Runs alongside the global
-    # storageSql above (DuckDB picks the longest matching scope), before the catalog ATTACH.
-    if (-not [string]::IsNullOrEmpty($objectStoreSql)) { [void]$sb.AppendLine($objectStoreSql) }
     [void]$sb.AppendLine("ATTACH 'host=$pgHost port=$pgPort dbname=$dbName user=$pgUser password=$pgPassword' AS qod_init_pg (TYPE postgres);")
     [void]$sb.AppendLine("SELECT * FROM postgres_query('qod_init_pg', 'SELECT pg_advisory_lock(hashtext(''qod-ducklake-init:$dbName''))');")
     [void]$sb.AppendLine("ATTACH 'ducklake:postgres:host=$pgHost port=$pgPort dbname=$dbName user=$pgUser password=$pgPassword' AS ""$dbName""")

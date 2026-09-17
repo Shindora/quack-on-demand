@@ -6,7 +6,12 @@ from . import __version__
 from .config import Settings, default_profile, load_settings
 from .registry import covers
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, help="quack-on-demand CLI")
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="quack-on-demand CLI. Try it: qod serve --demo. Serve your data: qod serve <target>. "
+    "Run your deployment: qod start.",
+)
 
 
 @dataclass
@@ -109,13 +114,30 @@ from .commands import sql_cmd  # noqa: E402
 
 app.command("sql")(sql_cmd.sql)
 
-from .commands import start, stop  # noqa: E402
+from .commands import skill_cmd  # noqa: E402
+
+app.add_typer(skill_cmd.app, name="skill")
+
+from .commands import setup as setup_cmd  # noqa: E402
+from .commands import start, status as status_cmd, stop  # noqa: E402
 
 app.command(
     "start", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )(start.start)
+
+from .commands import serve as serve_cmd  # noqa: E402
+
+app.command(
+    "serve", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)(serve_cmd.serve)
 app.command("stop")(stop.stop)
+app.command("setup")(setup_cmd.setup)
+app.command("status")(status_cmd.status)
 
 
 def main() -> None:
     app()
+
+
+if __name__ == "__main__":
+    main()

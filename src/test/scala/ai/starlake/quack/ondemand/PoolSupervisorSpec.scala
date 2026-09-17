@@ -1311,6 +1311,29 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     eff("dataPath") shouldBe "/explicit/file.duckdb"
     eff("dbName")   shouldBe "explicit_db"
 
+  it should "carry a memory tenant-db's dataPath through as the object-store scope" in:
+    // A `memory` database of views over remote parquet needs ObjectStoreSecret's SCOPE, which
+    // PoolSupervisor reads from the EFFECTIVE metastore's dataPath. Dropping it here left the
+    // node with no CREATE SECRET and every remote read failing.
+    val (sup, _) = supWithSeededTenantDb(
+      bugDefaults, TenantDbKind.InMemory,
+      metastore = Map.empty,
+      dataPath  = "s3://bucket/sales/"
+    )
+    val eff = sup.effectiveMetastoreFor("acme", "acme_default")
+    eff("dataPath") shouldBe "s3://bucket/sales/"
+    eff("dbName")   shouldBe "memory"
+
+  it should "still drop dataPath for a memory tenant-db that has none" in:
+    val (sup, _) = supWithSeededTenantDb(
+      bugDefaults, TenantDbKind.InMemory,
+      metastore = Map.empty,
+      dataPath  = ""
+    )
+    val eff = sup.effectiveMetastoreFor("acme", "acme_default")
+    eff.contains("dataPath") shouldBe false
+    eff("dbName")            shouldBe "memory"
+
   it should "resolve a memory tenant-db to the built-in `memory` catalog with no dataPath" in:
     // Regression: inheriting the default dbName made Main's health probe run
     // `CREATE SCHEMA IF NOT EXISTS tpch.main` on a node that only has the `memory` catalog,
@@ -1327,10 +1350,13 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     eff("schemaName")        shouldBe "main"
 
   it should "let an explicit metastore dbName win for a memory tenant-db, still without dataPath" in:
+    // A metastore-map "dataPath" entry alone (no row-level dataPath field) still doesn't leak:
+    // only the tenant-db row's own dataPath is the object-store scope (see the InMemory arm of
+    // effectiveMetastoreFor); this pins that the metastore map is never consulted for it.
     val (sup, _) = supWithSeededTenantDb(
       bugDefaults, TenantDbKind.InMemory,
       metastore = Map("dbName" -> "explicit_mem", "dataPath" -> "/ignored"),
-      dataPath  = "/also-ignored"
+      dataPath  = ""
     )
     val eff = sup.effectiveMetastoreFor("acme", "acme_default")
     eff("dbName")            shouldBe "explicit_mem"
@@ -1421,6 +1447,26 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
       .unsafeRunSync()
     sup.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
     backend.specs.head.objectStoreSql shouldBe ""
+
+  it should
+    "produce a node spec with objectStoreSql for an InMemory tenant-db with objectStore + s3 dataPath" in:
+    val (sup, backend) = freshSupervisorWithBackend()
+    sup.createTenant(Tenant("acme")).unsafeRunSync()
+    sup.createTenantDb("acme", "objmem",
+      TenantDbKind.InMemory,
+      Map.empty,
+      dataPath = "s3://bucket/mem/",
+      objectStore = Map(
+        "s3_access_key_id" -> "k",
+        "s3_secret_access_key" -> "s",
+        "s3_region" -> "us-east-1"
+      )
+    ).unsafeRunSync()
+    val memKey = PoolKey("acme", "acme_objmem", "sales")
+    sup.createPool(memKey, RoleDistribution(0, 0, 1)).unsafeRunSync()
+    val spec = backend.specs.head
+    spec.objectStoreSql should include("CREATE OR REPLACE SECRET qod_db_store")
+    spec.objectStoreSql should include("SCOPE 's3://bucket/mem/'")
 
   // ---------- maintenanceNodeSpec: no-donor s3 fallback ----------
 
@@ -1767,30 +1813,9 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     sup2.get(key).get.defaultSchema shouldBe Some("tpch1")
   }
 
-  // KNOWN GAP (ignored below): restore() drops kindWire and extraSetupSql.
-  //
-  // PoolSupervisor.restore() (PoolSupervisor.scala, the `pools.put(key,
-  // PoolState(...))` block around line 234) rebuilds PoolState explicitly
-  // field-by-field but never passes `kindWire` or `extraSetupSql`, so both
-  // silently fall back to the PoolState case-class defaults ("ducklake" and
-  // "" respectively - see PoolState.scala lines 14-15). createPool, by
-  // contrast, sets `kindWire = td.kind.wireValue` (e.g. "memory" for an
-  // InMemory tenant-db) and `extraSetupSql = fedBlob` (the resolved
-  // federation blob, injected via the `federationBlobOf` constructor hook).
-  //
-  // Practical impact: any respawn driven by restore() - manager restart, an
-  // HA replica rehydrating off a qod_topology NOTIFY - loses the federation
-  // ATTACH blob and mis-tags a memory-kind pool's nodes as "ducklake" wire
-  // kind, which changes what spawn-quack-node.sh does at boot.
-  //
-  // This test creates a pool on an InMemory tenant-db (kindWire should be
-  // "memory") with a non-empty federation blob (via federationBlobOf),
-  // snapshots the pre-restore PoolState, then calls restore() on the SAME
-  // supervisor (mirroring the two tests above) and asserts kindWire and
-  // extraSetupSql survive unchanged. It currently fails with
-  // kindWire "ducklake" != "memory" (see .superpowers/sdd/pin-tests-report.md
-  // for the captured run output). Un-ignore when fixing.
-  ignore should "preserve kindWire and extraSetupSql across restore() (KNOWN GAP)" in {
+  // Pins that restore() carries both kindWire and the resolved federation blob
+  // (extraSetupSql) through unchanged, on the same supervisor that created the pool.
+  it should "preserve kindWire and extraSetupSql across restore()" in {
     val store2 = new InMemoryControlPlaneStore()
     val sup2   = new PoolSupervisor(
       fakeBackend(),
@@ -1819,6 +1844,122 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     after.defaultDatabase shouldBe before.defaultDatabase
     after.defaultSchema shouldBe before.defaultSchema
   }
+
+  // The real bug reproduction: a same-supervisor restore() (above) can pass even without
+  // re-resolving the blob, because the OLD PoolState is still sitting in the in-memory `pools`
+  // map when restore() runs. A cold restart (or a fresh HA replica rehydrating off a NOTIFY) has
+  // no such carry-forward - this builds a SECOND supervisor over the SAME store to reproduce it.
+  it should "resolve the federation blob on a cold restore() (fresh supervisor, no in-memory carry-forward)" in {
+    val store3 = new InMemoryControlPlaneStore()
+    val supA   = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store3,
+      federationBlobOf = _ => IO.pure(Some("ATTACH 'fed.db' AS fedx;"))
+    )
+    supA.createTenant(Tenant("acme")).unsafeRunSync()
+    supA.createTenantDb(
+      tenantName = "acme", suffix = "default", kind = TenantDbKind.InMemory,
+      metastore = Map.empty, dataPath = ""
+    ).unsafeRunSync()
+    supA.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+
+    val supB = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store3,
+      federationBlobOf = _ => IO.pure(Some("ATTACH 'fed.db' AS fedx;"))
+    )
+    supB.restore()
+
+    val restored = supB.get(key).get
+    restored.kindWire shouldBe "memory"
+    restored.extraSetupSql should include("ATTACH 'fed.db' AS fedx;")
+  }
+
+  it should "not fail restore() when federation blob resolution errors, falling back to empty extraSetupSql" in {
+    val store4 = new InMemoryControlPlaneStore()
+    val supA   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store4)
+    supA.createTenant(Tenant("acme")).unsafeRunSync()
+    supA.createTenantDb(
+      tenantName = "acme", suffix = "default", kind = TenantDbKind.InMemory,
+      metastore = Map.empty, dataPath = ""
+    ).unsafeRunSync()
+    supA.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+
+    val supB = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store4,
+      federationBlobOf = _ => IO.raiseError(new RuntimeException("boom"))
+    )
+    noException should be thrownBy supB.restore()
+
+    supB.get(key).get.extraSetupSql shouldBe ""
+  }
+
+  // ---------- restore() carries the tenant-db's own kindWire (live-smoke regression) ----------
+  //
+  // Narrower sibling of the test above: that one also pins extraSetupSql. This one isolates
+  // kindWire alone and drives it all the way through to the NodeSpec a real backend would
+  // receive, matching the reported symptom: a restored duckdb-file pool's spawn hits the
+  // spawn-quack-node.sh ducklake arm's `mkdir -p` on a FILE path ("File exists"), so the node never
+  // becomes healthy and reconcile respawn-loops forever.
+  it should "carry a duckdb-file tenant-db's kindWire onto the NodeSpec after restore() respawns it" in:
+    val st      = new InMemoryControlPlaneStore()
+    val backend = new CapturingBackend
+    val sup     = new PoolSupervisor(backend, new NodeLoadTracker, st)
+    st.upsertTenant(Tenant("acme", "acme"))
+    st.upsertTenantDb(
+      ai.starlake.quack.model.TenantDb(
+        id = "td-seed", tenantId = "acme", name = "acme_default",
+        kind = TenantDbKind.DuckDbFile,
+        metastore = Map("dbName" -> "acme_default", "schemaName" -> "main"),
+        dataPath = "/data/acme_default.duckdb"
+      )
+    )
+    // Seed the pool row directly in the store with an authored single-node cohort and NO node
+    // rows (the "fresh YAML bootstrap" shape spawnFromDistribution exists for), same as the
+    // cohort-mismatch test above, so restore() + reconcile() drives a real spawn.
+    st.upsertPool(
+      ai.starlake.quack.model.Pool(
+        id = "p-kindwire",
+        tenantId = "acme",
+        tenantDbId = "td-seed",
+        name = key.pool,
+        size = 1,
+        distribution = RoleDistribution(0, 0, 1),
+        cohorts = List(
+          ai.starlake.quack.model.PoolCohort(
+            ai.starlake.quack.model.NodePlacement.empty,
+            RoleDistribution(0, 0, 1)
+          )
+        )
+      )
+    )
+
+    sup.restore()
+    sup.reconcile().unsafeRunSync()
+
+    backend.specs.head.kindWire shouldBe "duckdb-file"
+
+  "PoolSupervisor.maintenanceNodeSpec" should
+    "fall back to the tenant-db's own kindWire when there is no donor pool" in:
+    // Sibling of the "no donor" objectStoreSql test above: same donor-less shape, but on a
+    // duckdb-file tenant-db, pinning that the fallback reads td.kind rather than hardcoding
+    // "ducklake".
+    val (sup, _) = freshSupervisorWithBackend()
+    sup.createTenant(Tenant("acme")).unsafeRunSync()
+    sup.createTenantDb(
+      "acme", "kindmaint",
+      TenantDbKind.DuckDbFile,
+      Map("dbName" -> "acme_kindmaint", "schemaName" -> "main"),
+      dataPath = "/data/acme_kindmaint.duckdb"
+    ).unsafeRunSync()
+    // No createPool call: no serving pool of this tenant-db exists, so maintenanceNodeSpec must
+    // fall back to td.kind.wireValue (not the "ducklake" literal) for its kindWire field.
+    val spec = sup.maintenanceNodeSpec("acme", "acme_kindmaint").get
+    spec.kindWire shouldBe "duckdb-file"
 
   // ---------- updateTenantDb ----------
 

@@ -46,11 +46,23 @@ def create(
         help="Provision a managed data path (exclusive with --data-path/--object-store)",
     ),
 ):
+    meta = kv_pairs(metastore)
+    if kind == "duckdb-file":
+        # TenantDb.DuckDbFileRequiredKeys is {dbName, schemaName} and the server refuses
+        # without them, but neither is a choice for a plain file: the catalog alias is the
+        # database's own name and DuckDB's default schema is `main`. Requiring the caller to
+        # spell out DuckLake vocabulary to attach a file was pure friction. Anything the
+        # caller passed still wins. `qod serve` already sets dbName to the same raw suffix
+        # for this kind (serve_target.py); this makes the bare command agree with it. The
+        # server stores a duckdb-file metastore verbatim (PoolSupervisor.createTenantDb
+        # force-sets dbName only for DuckLake), so this value is what the node ATTACHes as.
+        meta.setdefault("dbName", name)
+        meta.setdefault("schemaName", "main")
     body = {
         "tenant": tenant,
         "name": name,
         "kind": kind,
-        "metastore": kv_pairs(metastore),
+        "metastore": meta,
         "dataPath": data_path,
         "objectStore": kv_pairs(object_store),
         "initSql": init_sql,

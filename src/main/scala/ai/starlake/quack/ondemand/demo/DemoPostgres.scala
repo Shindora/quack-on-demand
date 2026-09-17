@@ -46,10 +46,25 @@ object DemoPostgres:
     * auth would accept it. The value itself is irrelevant to the embedded server.
     */
   def start(dataDir: Path): DemoPostgres =
-    val instance = EmbeddedPostgres
-      .builder()
-      .setOverrideWorkingDirectory(dataDir.toFile)
-      .setDataDirectory(dataDir.resolve("pgdata").toFile)
-      .start()
+    val instance =
+      try
+        EmbeddedPostgres
+          .builder()
+          .setOverrideWorkingDirectory(dataDir.toFile)
+          .setDataDirectory(dataDir.resolve("pgdata").toFile)
+          .start()
+      catch case scala.util.control.NonFatal(t) => throw startFailure(t, dataDir)
     val coords = PgCoords("localhost", instance.getPort, "postgres", "postgres")
     new DemoPostgres(instance, coords)
+
+  /** zonky reports a failed child as a bare `IllegalStateException: Process [...initdb...] failed`
+    * and routes that child's stdout/stderr -- the line that actually says what went wrong -- to an
+    * INFO logger, which the default `QOD_LOG_LEVEL=ERROR` swallows. Re-throw pointing at the knob
+    * that makes the real message visible.
+    */
+  private[demo] def startFailure(cause: Throwable, dataDir: Path): Throwable =
+    new IllegalStateException(
+      s"embedded Postgres failed to start under $dataDir - re-run with QOD_LOG_LEVEL=INFO " +
+        s"to see the initdb/postgres output (${cause.getMessage})",
+      cause
+    )

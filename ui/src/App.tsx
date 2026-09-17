@@ -106,7 +106,7 @@ function ProfileShell() {
         <NavLink to="/profile" className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
         {starlakeUrl && (
           <button type="button" className="nav-link-btn" onClick={() => { void goToStarlake(starlakeUrl); }}>
-            Starlake
+            Workbench
           </button>
         )}
         <span className="spacer" />
@@ -165,7 +165,7 @@ function Shell() {
         <NavLink to="/profile"     className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
         {starlakeUrl && (
           <button type="button" className="nav-link-btn" onClick={() => { void goToStarlake(starlakeUrl); }}>
-            Starlake
+            Workbench
           </button>
         )}
         <span className="spacer" />

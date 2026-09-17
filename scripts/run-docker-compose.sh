@@ -48,8 +48,8 @@
 #   PROFILES            comma-separated list of compose profiles to
 #                       activate (e.g. "observability,seaweedfs"). Merges
 #                       with auto-detected profiles - the `seaweedfs`
-#                       profile auto-activates when QOD_S3_ENDPOINT in
-#                       .env points at it, so you only need PROFILES
+#                       profile auto-activates when QOD_S3_ENDPOINT (env
+#                       or .env) points at it, so you only need PROFILES
 #                       for the OTHER opt-in profiles (`observability`).
 #                                                 (default unset)
 #
@@ -109,7 +109,29 @@ fi
 # Container uids (postgres uid 70, root) own the bind-mount contents, so
 # a plain `rm -rf` from the host user fails with EACCES. Wipe via an
 # ephemeral root container that has write access to the mount.
+# NUKE is irreversible: the control plane, every tenant-db, and all DuckLake
+# parquet go with it. On a terminal, require typing the project name so a
+# pasted NUKE=1 or a wrong-directory invocation cannot destroy data silently.
+# Non-tty runs (CI, nohup) skip the prompt, so scripted use is unchanged
+# (a script that wants no prompt redirects stdin, e.g. < /dev/null).
+# Deliberately NOT a password check: NUKE runs with host privileges and must work when the stack is too
+# broken to verify anything.
+confirm_nuke() {
+  local expected="$1" scope="$2"
+  if [[ ! -t 0 ]]; then return 0; fi
+  echo "NUKE=1 will irreversibly wipe: $scope"
+  printf "Type '%s' to proceed (anything else aborts): " "$expected"
+  local answer
+  read -r answer
+  if [[ "$answer" != "$expected" ]]; then
+    echo "aborted; nothing was touched." >&2
+    exit 1
+  fi
+}
+
 if [[ "$NUKE" == "1" ]]; then
+  confirm_nuke "quack-on-demand" \
+    "./pgdata (control plane + every tenant-db), ./ducklake, ./certs, ./seaweedfs, ./seaweedfs-config"
   echo "NUKE=1: tearing down any existing stack..."
   # `down` must enumerate every profile that could have services running;
   # otherwise containers in skipped profiles linger. Always include the
@@ -118,25 +140,22 @@ if [[ "$NUKE" == "1" ]]; then
   docker compose -f docker-compose.yml \
     --profile seaweedfs --profile observability \
     down --remove-orphans 2>/dev/null || true
+  # ./rustfs is a legacy leftover from the 2026-09-10..09-11 RustFS-as-
+  # bundled-object-store detour (rolled back to SeaweedFS); wipe it too so
+  # checkouts that ran that era clean up.
   if [[ -d "$REPO_DIR/pgdata" || -d "$REPO_DIR/ducklake" || -d "$REPO_DIR/certs" \
-     || -d "$REPO_DIR/seaweedfs" || -d "$REPO_DIR/seaweedfs-config" ]]; then
-    echo "wiping ./pgdata, ./ducklake, ./certs, ./seaweedfs, ./seaweedfs-config via ephemeral container..."
+     || -d "$REPO_DIR/seaweedfs" || -d "$REPO_DIR/seaweedfs-config" || -d "$REPO_DIR/rustfs" ]]; then
+    echo "wiping ./pgdata, ./ducklake, ./certs, ./seaweedfs, ./seaweedfs-config (+ legacy ./rustfs) via ephemeral container..."
     docker run --rm -v "$REPO_DIR:/work" alpine sh -c \
-      'rm -rf /work/pgdata /work/ducklake /work/certs /work/seaweedfs /work/seaweedfs-config'
+      'rm -rf /work/pgdata /work/ducklake /work/certs /work/seaweedfs /work/seaweedfs-config /work/rustfs'
   fi
-  # Pre-create the bind-mount dirs with the right ownership. Without
-  # this, docker auto-creates them root-owned on `up`, and the
-  # manager's `quack` user (uid 1000, set in the Dockerfile) gets
-  # EACCES on `./certs` (TLS cert write fails -> FlightSQL edge
-  # silently dies) and `./ducklake` (TPC-H seed `mkdir` fails). Chown
-  # via the ephemeral container so it works even when the host user
-  # is not uid 1000. Postgres re-chowns ./pgdata to uid 70 on its own
-  # init, so we leave that one root-owned. ./seaweedfs and
-  # ./seaweedfs-config are root-owned inside the container (seaweedfs
-  # image runs as root), so they stay root-owned here too.
-  mkdir -p "$REPO_DIR/pgdata" "$REPO_DIR/ducklake" "$REPO_DIR/certs"
-  docker run --rm -v "$REPO_DIR:/work" alpine sh -c \
-    'chown 1000:1000 /work/ducklake /work/certs'
+  # Pre-create ./pgdata so `up` doesn't have to. Postgres re-chowns it to
+  # uid 70 on its own init regardless of starting ownership, so it's the
+  # one bind-mount dir that doesn't need our chown - see below for
+  # ./ducklake, ./certs (and ./seaweedfs/./seaweedfs-config, prepared but
+  # not chowned - see the prep step), which are all prepared unconditionally
+  # on every run now, not just here.
+  mkdir -p "$REPO_DIR/pgdata"
   echo "booting from a clean slate."
 fi
 
@@ -153,6 +172,36 @@ if [[ "$IMAGE_SOURCE" == "pull" ]] && [[ "$QOD_VERSION" == "latest" ]]; then
 fi
 ENV_FILE="${ENV_FILE:-.env}"
 ENV_SEED="${ENV_SEED:-.env.example}"
+
+# read_env KEY DEFAULT: KEY's effective value under this repo's standard
+# precedence (see run-jar.sh) - explicit override > env var > file > default.
+# There's no per-call flag here, so it's process env (an actual `export
+# KEY=...`, or `KEY=... ./run-docker-compose.sh`) first, then $ENV_FILE, then
+# DEFAULT. Bash indirection (${!key-}) reads the process-env variable named
+# by $key dynamically and is nounset-safe (empty, not an error, when unset).
+# Every call site in this script (the seaweedfs profile detection
+# below, and the demo-seed Postgres/S3 vars further down) MUST go through
+# this so a real env var always wins - reading .env directly split-brains
+# against docker-compose.yml's own `${VAR}` interpolation, which already
+# prefers the process env over .env by compose's own rules.
+read_env() {
+  local key="$1" default="$2" v
+  v="${!key-}"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
+  fi
+  if [[ -f "$ENV_FILE" ]]; then
+    local raw
+    # [A-Z0-9_]+, not [A-Z_]+: several keys read below (QOD_S3_ENDPOINT,
+    # S3_BUCKET, ...) contain digits, which the letters-only class would
+    # silently fail to strip, leaking "KEY=" into the returned value.
+    raw="$(grep -E "^[[:space:]]*$key[[:space:]]*=" "$ENV_FILE" | tail -1 | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]*[A-Z0-9_]+[[:space:]]*=[[:space:]]*//; s/[[:space:]]*$//' || true)"
+    echo "${raw:-$default}"
+  else
+    echo "$default"
+  fi
+}
 # An explicitly-set DEMO=... with no LOAD_* flag implies the full demo:
 # LOAD_TPC=1 (all benchmarks at SF=1; minimal still skips TPC-DS below).
 # Set any LOAD_* flag yourself (0/false = skip) to control what loads.
@@ -238,16 +287,7 @@ if (( ${#LOOPBACK_PROXY_PORTS[@]} > 0 )); then
 fi
 
 # ---- Port-conflict auto-bump ----
-declare_pg_port() {
-  if [[ -f "$ENV_FILE" ]]; then
-    local raw
-    raw="$(grep -E '^[[:space:]]*PG_PORT[[:space:]]*=' "$ENV_FILE" | tail -1 | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]*PG_PORT[[:space:]]*=[[:space:]]*//; s/[[:space:]]*$//' || true)"
-    echo "${raw:-5432}"
-  else
-    echo "5432"
-  fi
-}
-PG_PORT_EFFECTIVE="$(declare_pg_port)"
+PG_PORT_EFFECTIVE="$(read_env PG_PORT 5432)"
 
 if [[ "$PG_PORT_EFFECTIVE" == "5432" ]] && lsof -nP -iTCP:5432 -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
   echo "host port 5432 is already in use by another process." >&2
@@ -268,9 +308,10 @@ fi
 
 # ---- Compose profile resolution -------------------------------------------
 # Two sources:
-#   1. Auto: when .env's QOD_S3_ENDPOINT points at the in-compose seaweedfs
-#      service, activate the `seaweedfs` profile so the manager doesn't come
-#      up writing to s3:// against a never-started SeaweedFS container.
+#   1. Auto: when QOD_S3_ENDPOINT (in the environment or .env - see read_env
+#      above) points at the in-compose seaweedfs service, activate the
+#      `seaweedfs` profile so the manager doesn't come up writing to s3://
+#      against a never-started SeaweedFS container.
 #   2. Explicit: PROFILES=foo,bar from the caller's env. Merges with the
 #      auto-detected set. De-duplicated. Lets the user add `observability`
 #      etc. without touching .env.
@@ -283,11 +324,28 @@ _has_profile() {
   for x in "${_profiles[@]:-}"; do [[ "$x" == "$1" ]] && return 0; done
   return 1
 }
-s3_endpoint="$(grep -E '^[[:space:]]*QOD_S3_ENDPOINT[[:space:]]*=' "$ENV_FILE" 2>/dev/null \
-  | tail -1 | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]*QOD_S3_ENDPOINT[[:space:]]*=[[:space:]]*//; s/[[:space:]]*$//' || true)"
-if [[ "$s3_endpoint" == seaweedfs:* ]]; then
+# Via read_env, not a direct .env grep: docker-compose.yml's own `${VAR}`
+# interpolation already prefers a real process env var over .env, so this
+# detection must resolve QOD_S3_ENDPOINT the same way - otherwise an
+# exported (not .env-file) endpoint reaches the manager container but not
+# this profile-activation decision, splitting the two halves of the stack.
+s3_endpoint="$(read_env QOD_S3_ENDPOINT "")"
+# Strip http(s):// before matching: spawn-quack-node.sh and _load-common.sh
+# both accept a scheme-ful http://seaweedfs:8333 as a first-class spelling,
+# not just bare seaweedfs:8333. Match against the stripped copy only -
+# $s3_endpoint itself is forwarded to the seed exec and the container
+# unchanged, whichever form it was.
+s3_endpoint_bare="${s3_endpoint#http://}"
+s3_endpoint_bare="${s3_endpoint_bare#https://}"
+if [[ "$s3_endpoint_bare" == seaweedfs:* ]]; then
   echo "detected QOD_S3_ENDPOINT=$s3_endpoint -> auto-activating 'seaweedfs' compose profile"
   _has_profile seaweedfs || _profiles+=("seaweedfs")
+elif [[ "$s3_endpoint_bare" == rustfs:* ]]; then
+  echo "WARN: QOD_S3_ENDPOINT=$s3_endpoint (environment or .env) points at 'rustfs', which this" >&2
+  echo "      stack no longer bundles (the 0.8.2 RustFS detour was rolled back to SeaweedFS)." >&2
+  echo "      The 'seaweedfs' compose profile is NOT being activated for this run - update .env" >&2
+  echo "      to QOD_S3_ENDPOINT=seaweedfs:8333 (auto-activates the profile on your next run)," >&2
+  echo "      otherwise the stack comes up unable to reach the object store." >&2
 fi
 if [[ -n "${PROFILES:-}" ]]; then
   IFS=',' read -ra _user_profiles <<< "$PROFILES"
@@ -305,6 +363,25 @@ for p in "${_profiles[@]:-}"; do
   [[ -n "$p" ]] || continue
   COMPOSE_PROFILES+=("--profile" "$p")
 done
+
+# ---- Prepare bind-mount dir ownership (every run, not just NUKE) ---------
+# Without pre-creating these, Docker auto-creates them root-owned on `up`,
+# and the manager's `quack` user (uid 1000, set in the Dockerfile) gets
+# EACCES on `./certs` (TLS cert write fails -> FlightSQL edge silently dies)
+# and `./ducklake` (TPC-H seed `mkdir` fails, and it's still needed in S3
+# mode too, for DuckDB's local TEMP_DIR spill). This used to run only inside
+# the NUKE=1 block, so a fresh checkout's first `up` (no prior NUKE) hit both
+# failures. ./seaweedfs and ./seaweedfs-config get a plain `mkdir -p` only,
+# no chown: the seaweedfs image runs as root in-container, so a root-owned
+# bind mount (Docker's own auto-create default) is already writable by it -
+# unlike an image that runs non-root, which would need the same chown
+# treatment ./ducklake/./certs get here. All of this is cheap and idempotent
+# (mkdir -p + chown are no-ops once already correct).
+mkdir -p "$REPO_DIR/ducklake" "$REPO_DIR/certs"
+docker run --rm -v "$REPO_DIR:/work" alpine sh -c 'chown 1000:1000 /work/ducklake /work/certs'
+if _has_profile seaweedfs; then
+  mkdir -p "$REPO_DIR/seaweedfs" "$REPO_DIR/seaweedfs-config"
+fi
 
 # ---- Inject QOD_BOOTSTRAP_YAML before up when a bench or explicit DEMO asks ----
 # The JVM reads this at startup, so it must be in .env before `docker compose up`.
@@ -352,6 +429,11 @@ case "$IMAGE_SOURCE" in
     ;;
 esac
 
+# No bucket-bootstrap wait here: seaweedfs-init is gated on the seaweedfs
+# healthcheck and completes long before the manager's first s3:// touch
+# (the JVM boot has always lost that race safely - months of baseline).
+# See the comment on the quack service in docker-compose.yml.
+
 # ---- Wait for manager ----
 echo -n "waiting for manager REST on :20900 "
 deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
@@ -385,18 +467,78 @@ if [[ "$_want_tpch" == "1" || "$_want_tpcds" == "1" || "$_want_ssb" == "1" ]]; t
   done
   unset _var _val
 
-  read_env() {
-    local key="$1" default="$2"
-    if [[ -f "$ENV_FILE" ]]; then
-      local raw
-      raw="$(grep -E "^[[:space:]]*$key[[:space:]]*=" "$ENV_FILE" | tail -1 | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]*[A-Z_]+[[:space:]]*=[[:space:]]*//; s/[[:space:]]*$//' || true)"
-      echo "${raw:-$default}"
-    else
-      echo "$default"
-    fi
-  }
+  # read_env is defined near the top of the script (right after ENV_FILE is
+  # set) so the seaweedfs profile detection above can share it.
   pg_user="$(read_env PG_USER     postgres)"
   pg_pass="$(read_env PG_PASSWORD azizam)"
+
+  # S3-mode seeding: key off QOD_DUCKLAKE_DATA_PATH itself, not QOD_S3_ENDPOINT.
+  # An endpoint alone was the wrong signal in both directions - it can be set
+  # while DATA_PATH is still local (seeding then derived a bucket path nothing
+  # wrote to), and a stale/unrelated endpoint could flip seeding into S3 mode
+  # even though DATA_PATH was local. Mirror exactly how the manager derives
+  # each tenant-db's actual data path instead
+  # (PoolSupervisor.effectiveMetastoreFor -> replaceLastSegment,
+  # PoolSupervisor.scala:239-251): replace the root's last path segment with
+  # the tenant-db name. This also handles a nested root (s3://bucket/a/b) the
+  # same way the manager does. Forwards the same QOD_S3_* vars
+  # _load-common.sh's load_resolve_storage() reads to author the DuckDB
+  # SECRET. TEMP_DIR stays local either way - spill must never go to the
+  # bucket (and matters in S3 mode too, since DuckDB's spill dir is separate
+  # from DATA_PATH).
+  #
+  # Known limitation (Option B - external AWS S3, no QOD_S3_ENDPOINT
+  # override, relying on AWS's default endpoint resolution): unset
+  # QOD_S3_ENDPOINT still reaches _load-common.sh's SECRET as `ENDPOINT ''`
+  # rather than omitting the clause. Fixing that is out of scope here (would
+  # touch _load-common.sh, shared with every other launcher) - tracked as a
+  # follow-up; for now, Option B seeding needs QOD_S3_ENDPOINT set explicitly
+  # (e.g. to s3.amazonaws.com) even though the manager itself tolerates it
+  # unset.
+  s3_access_key_id="$(read_env QOD_S3_ACCESS_KEY_ID quack)"
+  s3_secret_access_key="$(read_env QOD_S3_SECRET_ACCESS_KEY quackquack)"
+  s3_region="$(read_env QOD_S3_REGION us-east-1)"
+  s3_url_style="$(read_env QOD_S3_URL_STYLE path)"
+  s3_use_ssl="$(read_env QOD_S3_USE_SSL false)"
+  _dl_root="$(read_env QOD_DUCKLAKE_DATA_PATH /app/ducklake/data)"
+  # Strip a trailing slash before deriving the parent, mirroring
+  # replaceLastSegment's stripSuffix("/") - without it a root written as
+  # s3://ducklake/tpch/ derives .../tpch/acme_tpch instead of .../acme_tpch,
+  # landing one directory below what the manager's own derivation resolves
+  # to. Applies to local roots too, so a non-default
+  # QOD_DUCKLAKE_DATA_PATH=/app/ducklake/custom/data seeds under
+  # /app/ducklake/custom/<db> instead of the old hardcoded /app/ducklake/<db>.
+  _dl_root="${_dl_root%/}"
+  _dl_parent="${_dl_root%/*}"
+  # This case is now ONLY the S3-credential-forwarding gate, not the path
+  # derivation (that's $_dl_parent/<db> unconditionally, right below).
+  # az://azure://abfss:// deliberately excluded: azure seeding is
+  # unsupported here (only QOD_S3_* is forwarded into the exec; the
+  # az/azure/abfss arm of _load-common.sh's load_resolve_storage() reads
+  # QOD_AZURE_CONNECTION_STRING, which this script never forwards - follow-up).
+  case "$_dl_root" in
+    s3://*|s3a://*|gs://*|r2://*)
+      is_remote=1
+      ;;
+    *)
+      is_remote=0
+      ;;
+  esac
+  s3_env_flags=()
+  if [[ "$is_remote" == "1" ]]; then
+    echo "S3 mode: seeding will write under $_dl_parent/<db> (QOD_DUCKLAKE_DATA_PATH=$_dl_root)"
+    s3_env_flags=(
+      -e QOD_S3_ENDPOINT="$s3_endpoint"
+      -e QOD_S3_ACCESS_KEY_ID="$s3_access_key_id"
+      -e QOD_S3_SECRET_ACCESS_KEY="$s3_secret_access_key"
+      -e QOD_S3_REGION="$s3_region"
+      -e QOD_S3_URL_STYLE="$s3_url_style"
+      -e QOD_S3_USE_SSL="$s3_use_ssl"
+    )
+  fi
+  tpch_data_path="$_dl_parent/acme_tpch"
+  tpcds_data_path="$_dl_parent/globex_tpcds"
+  ssb_data_path="$_dl_parent/acme_tpch"
 
   # The manager image is JRE-only and does not ship psql. Pre-create only
   # the demo tenant-db Postgres databases we are actually going to seed,
@@ -432,9 +574,10 @@ if [[ "$_want_tpch" == "1" || "$_want_tpcds" == "1" || "$_want_ssb" == "1" ]]; t
       -e PG_PASS="$pg_pass" \
       -e DB_NAME="acme_tpch" \
       -e SCHEMA_NAME="tpch1" \
-      -e DATA_PATH="/app/ducklake/acme_tpch" \
+      -e DATA_PATH="$tpch_data_path" \
       -e TEMP_DIR="/app/ducklake/.tmp" \
       -e SF="$LOAD_TPCH" \
+      "${s3_env_flags[@]+"${s3_env_flags[@]}"}" \
       quack /app/scripts/load-tpch-dbgen.sh
   fi
 
@@ -447,9 +590,10 @@ if [[ "$_want_tpch" == "1" || "$_want_tpcds" == "1" || "$_want_ssb" == "1" ]]; t
       -e PG_PASS="$pg_pass" \
       -e DB_NAME="globex_tpcds" \
       -e SCHEMA_NAME="tpcds1" \
-      -e DATA_PATH="/app/ducklake/globex_tpcds" \
+      -e DATA_PATH="$tpcds_data_path" \
       -e TEMP_DIR="/app/ducklake/.tmp" \
       -e SF="$LOAD_TPCDS" \
+      "${s3_env_flags[@]+"${s3_env_flags[@]}"}" \
       quack /app/scripts/load-tpcds-dbgen.sh
   fi
 
@@ -462,16 +606,16 @@ if [[ "$_want_tpch" == "1" || "$_want_tpcds" == "1" || "$_want_ssb" == "1" ]]; t
       -e PG_PASS="$pg_pass" \
       -e DB_NAME="acme_tpch" \
       -e SCHEMA_NAME="ssb1" \
-      -e DATA_PATH="/app/ducklake/acme_tpch" \
+      -e DATA_PATH="$ssb_data_path" \
       -e TEMP_DIR="/app/ducklake/.tmp" \
       -e SF="$LOAD_SSB" \
+      "${s3_env_flags[@]+"${s3_env_flags[@]}"}" \
       quack /app/scripts/load-ssb-dbgen.sh
   fi
 fi
 
 # ---- Summary ----
-tls="${TLS:-$(grep -E '^[[:space:]]*TLS[[:space:]]*=' "$ENV_FILE" 2>/dev/null | tail -1 | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]*TLS[[:space:]]*=[[:space:]]*//; s/[[:space:]]*$//')}"
-tls="${tls:-false}"
+tls="$(read_env TLS false)"
 scheme=$([[ "$tls" == "true" ]] && echo "grpc+tls" || echo "grpc")
 
 cat <<EOM

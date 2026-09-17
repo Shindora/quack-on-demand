@@ -28,8 +28,10 @@ On **Windows** the manager runs natively (no WSL/Docker) via PowerShell twins:
 alive by holding stdin open instead of a FIFO). Teardown uses `taskkill /T` so
 the `duckdb.exe` grandchild dies with its wrapper. The native `quackwire.dll` is
 bundled automatically whenever `libquackwire/binaries/windows-x86_64/quackwire.dll`
-exists in the checkout; without it, run the embedded client with
-`QOD_NATIVE_CLIENT=false`. See guides/RUNNING.md "Path 1 on Windows".
+exists in the checkout; without it (or on Windows ARM64, where the dll is
+x86_64-only) `QuackNativeSupport.effectiveNativeClient` probes the jar at boot
+and falls back to the embedded client with a WARN, so no env flag is needed --
+`QOD_NATIVE_CLIENT=false` only forces that path. See guides/RUNNING.md "Path 1 on Windows".
 
 UI dev loop (proxies `/api/*` to `localhost:20900`):
 
@@ -228,7 +230,7 @@ Two security-critical knobs should be pinned before any non-localhost deploy: `Q
 
 ## Operator runbook
 
-[skills/quack-on-demand/SKILL.md](skills/quack-on-demand/SKILL.md) is the operator runbook: REST API curl recipes, tenant/pool/ACL CRUD, typical failure modes, load-test invocation. When the user asks operational questions ("how do I create a pool", "why is auth failing"), prefer the patterns there over reinventing them.
+[plugins/qod/skills/quack-on-demand/SKILL.md](plugins/qod/skills/quack-on-demand/SKILL.md) is the operator runbook: `qod` CLI recipes for tenant/pool/ACL CRUD, typical failure modes. When the user asks operational questions ("how do I create a pool", "why is auth failing"), prefer the patterns there over reinventing them. It is deliberately checkout-free (it must work for users who only installed the CLI or the Claude Code plugin) - never add repo paths, scripts, or sbt invocations to it. The wheel bundles a copy at `cli/src/qod_cli/skills/quack-on-demand/SKILL.md` (served by `qod skill install`); `cli/tests/test_skill_freshness.py` fails until the copy is refreshed after any skill edit.
 
 ## Things to avoid
 

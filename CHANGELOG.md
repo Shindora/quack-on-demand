@@ -1,5 +1,177 @@
 # Changelog
 
+## 0.9.2
+
+- **`qod serve <target>` takes you from your own data to a queryable gateway
+  in one command.** Point it at a `.duckdb` file, a parquet/csv file, a
+  directory or glob of them, an `s3://`/`gs://`/`az://` prefix, or nothing at
+  all for a fresh empty DuckLake, and it provisions a tenant, database, and
+  pool around it, then prints the client connection strings. Every step is
+  ensure-semantics (create only what is missing), so a failed or interrupted
+  run just resumes on re-run, and `qod serve ./other.duckdb` adds a second
+  database beside the first instead of replacing it. Unlike `qod serve
+  --demo`, this path is persistent and keeps the normal secure posture: TLS
+  on, DB auth on, ACL on by default (overridable, with a loud warning), and a
+  random admin password generated on the first run, printed once, and stored
+  in the CLI config file (a real `QOD_ADMIN_PASSWORD` still wins); the saved
+  CLI profile authenticates `qod sql` as the superuser realm out of the box.
+- **The manager can run its control plane on a persistent embedded Postgres**
+  (`QOD_PG_EMBEDDED`, single-node only - HA refuses to boot with it set)
+  instead of requiring an external Postgres already running, which is what
+  lets `qod serve` need nothing but a JVM. It lives at a fixed data
+  directory and port (`--pg-port`/`--pg-data-dir` or
+  `QOD_PG_EMBEDDED_PORT`/`QOD_PG_EMBEDDED_DATA_DIR`), persists across
+  restarts, and is never deleted. `qod status` now live-probes it instead of
+  just reading a pidfile.
+- **`qod serve --demo` is now the canonical form of the self-contained demo**
+  (embedded ephemeral Postgres, seeded TPC-H, deliberately insecure); `qod
+  start --demo` still works, as a deprecated alias.
+- **`qod database create --kind duckdb-file` defaults `dbName`/`schemaName`**
+  to the database's own name and `main`, since neither is a real choice for a
+  plain file - the DuckLake vocabulary was pure friction there. Anything the
+  caller passes still wins.
+- Fixed: `objectStoreSql` was only ever emitted for DuckLake tenant-dbs; every
+  kind (including `duckdb-file` and `memory`) now gets its per-database
+  `CREATE SECRET` when it carries object-store credentials.
+- Fixed: a `memory`-kind tenant-db (loose parquet/csv views, no catalog) can
+  now carry an object-store scope, needed for `qod serve` targets that serve
+  views over a remote prefix.
+- Fixed: pools rehydrated after a manager restart or HA NOTIFY lost their
+  resolved federation blob (and, before that fix landed, their tenant-db
+  kind); respawned and resumed nodes now boot with their federation ATTACH
+  aliases intact.
+
+## 0.8.5
+
+- **The demo starts on arm64 instead of dying on missing Postgres
+  binaries.** `qod start --demo` failed on Linux arm64 (Graviton, ARM VMs,
+  containers on Apple Silicon) with zonky's `IllegalStateException: Missing
+  embedded postgres binaries`. The build declared only `embedded-postgres`,
+  whose transitive binary set is amd64 only, and zonky resolves binaries
+  strictly from the classpath: its single emulation fallback covers
+  Darwin/aarch64 and Windows on ARM, never Linux, so there was nothing left
+  to try. The Linux and macOS arm64 binaries are now bundled. That also
+  takes Apple Silicon off the Rosetta path, where the demo had been running
+  an emulated Postgres behind a WARN the default `QOD_LOG_LEVEL=ERROR`
+  hides, and failed outright when Rosetta was not installed. The uber-jar
+  grows by about 40 MB.
+- **`qod start --demo` no longer trips over the home a crashed run left
+  behind.** A demo killed before its teardown (SIGKILL, machine sleep, OOM,
+  or a second demo sharing the default `${TMPDIR}/qod-demo`) leaves
+  `pg/pgdata` populated, and the next run's `initdb` refuses it with
+  `directory "..." exists but is not empty`. That surfaced only as zonky's
+  opaque `IllegalStateException: Process [...initdb...] failed`, since
+  initdb's stderr goes to an INFO logger the default `QOD_LOG_LEVEL=ERROR`
+  swallows, and the failed run's own cleanup then deleted the home, so the
+  run after it succeeded and the whole thing looked random. `DemoHome.create`
+  now clears the three subdirectories the demo owns (`pg`, `ducklake`,
+  `native`, never the caller-supplied root) before creating them. Because
+  that clean is destructive it refuses to run while a demo is still live on
+  the home, keyed off Postgres's own `postmaster.pid` plus a pid-liveness
+  check, and if the clean does not take it fails fast naming the directory
+  to remove instead of landing back on the unreadable initdb error. A failed
+  embedded-Postgres start now also reports the underlying cause rather than
+  the wrapper exception.
+- **jsqltranspiler 1.12 and jsqlparser 5.4.2.** The two move in lockstep
+  because jsqltranspiler's pom pins the parser version. 1.12 carries the
+  upstream fix overriding the `PivotQuery` visit methods that the 5.3 to 5.4
+  visitor interface change required; 1.11 was built against 5.3.336 and
+  would have run that path on an interface it does not implement.
+
+## 0.8.4
+
+- **The operator skill ships to users instead of living in the source
+  tree.** Two install channels: `qod skill install` bundles it in the
+  wheel and asks which LLM to install for (Claude Code, GitHub Copilot,
+  Gemini CLI; `--platform claude|copilot|gemini|all` skips the prompt,
+  `--project` targets the working directory, `--dir` names an exact
+  target), and the repo is now a Claude Code plugin marketplace
+  (`/plugin marketplace add starlake-ai/quack-on-demand`, then
+  `/plugin install quack-on-demand@quack-on-demand`). The skill itself was
+  rewritten to be checkout-free: every manager REST curl recipe is now the
+  equivalent `qod` command, booting goes through `qod setup/start/status/stop`,
+  and repo paths, sbt invocations and raw `qodstate` INSERT advice are gone.
+  curl remains only where no CLI equivalent exists (the PyPI version probe,
+  SCIM, federation YAML export/import). The operating agent also compares
+  `qod --version` against PyPI and asks the user to upgrade when stale,
+  never upgrading unprompted.
+- **Bare `USE <schema>` now resolves against the tenant database.** On a
+  node the DuckLake catalog is attached under the tenant-db name while the
+  session's current catalog is the transient memory db, so a client issuing
+  `USE star1` got "No catalog + schema named star1 found" even though
+  `<dbName>.star1` existed, with no way to learn the physical database name.
+  The edge now qualifies a bare one-part `USE x` into `USE <dbName>.x`.
+  Two-part `USE a.b`, `USE <dbName>` and `USE memory` pass through
+  untouched, so catalog switching still works.
+- **Admin UI: the Nodes page shows the last 200 statements** instead of 50.
+  The router's ring buffer holds 256 records and the endpoint caps at 500,
+  so this is a display change only.
+- **Admin UI: the "Starlake" nav entry is now labelled "Workbench".**
+
+## 0.8.3
+
+- **Manager creates the control-plane database at startup.** The boot
+  preflight now classifies the initial connect failure: when the server is
+  reachable but the control-plane database is missing (SQLState `3D000`), it
+  is created through the admin database (`PG_ADMIN_DB`, default `postgres`)
+  and boot proceeds, logging `control-plane database '<db>' did not exist;
+  created it`. Every other failure (server unreachable, bad credentials)
+  still refuses to start with the existing operator message. This removes
+  the launchers' `psql` dependency: a fresh install needs only a Postgres
+  user with `CREATEDB`. The `psql` preflight arms in `run-jar.sh` and the
+  CLI remain as optional fail-fast conveniences.
+- **Local rigs: reverted to SeaweedFS as the bundled object store** (the
+  0.8.2 RustFS replacement is rolled back); the wrapper-script hardening
+  from that work is retained (env precedence, data-path-derived seeding,
+  port handling).
+- **`qod sql --file` runs a SQL script fail-fast.** Statements split on
+  top-level semicolons with full lexical awareness (strings, quoted
+  identifiers, comments, dollar-quoting), executed in order; the first
+  error aborts with exit 1 naming the statement and its line. `-` reads
+  stdin.
+- **`NUKE=1` asks for typed confirmation on a terminal.** All four launch
+  surfaces (compose wrapper, `run-jar.sh`, the kind rig, `qod start`) now
+  require typing the destruction target's name before wiping; non-tty runs
+  skip the prompt, so scripts and CI are unchanged. There is deliberately
+  no bypass env var.
+
+## 0.8.2
+
+- **`qod setup`: configure `qod start` once.** New CLI command persisting the
+  env vars `qod start` reads (Postgres coordinates, admin credentials, API
+  key, auth/TLS toggles, arbitrary `QOD_*`/`PROXY_*` via `--set`) into the
+  CLI config file under a `[start]` table; guided prompts on a terminal,
+  flags/`--set`/`--unset`/`--show` for scripts. A real shell export still
+  wins, and `qod start --demo` deliberately ignores the stored config.
+  Before saving, connection coordinates are verified (TCP probe, plus a
+  `SELECT 1` login check when `psql` is on `PATH`); `--skip-checks` opts out.
+- **`qod status`: one glance at what is running.** Manager `/health` and
+  `/ready`, FlightSQL edge coordinates with a live port check, local manager
+  pids, per-pool healthy/total nodes when logged in, and the stored setup
+  summary. Exits 1 when the manager is unreachable, for scripting.
+- **Local rigs: SeaweedFS replaced by RustFS** (kind local-stack and docker
+  compose). BREAKING (dev rigs): the compose profile is now `rustfs` (was
+  `seaweedfs`), data dir `./rustfs` (env `RUSTFS_DIR`), S3 endpoint
+  `rustfs:9000`; a stale `seaweedfs` endpoint in `.env` warns instead of
+  half-starting. RustFS does not auto-create buckets, so both rigs run a
+  one-shot bucket-create step before the stack serves.
+- **Compose wrapper hardening.** The wrapper script now honors the repo-wide
+  precedence everywhere (process env wins over `.env`, incl. `PG_PORT` and
+  profile auto-detection, scheme-tolerant endpoint matching); demo seeding
+  derives its DuckLake data path from `QOD_DUCKLAKE_DATA_PATH` exactly as
+  the manager does (trailing slashes and nested or local roots included), so
+  S3-mode seeding no longer mismatches the catalog; data/cert/store dirs are
+  prepared with correct ownership on every run, not only under `NUKE=1`.
+- **Fix: demo seeding inside released images.** `scripts/_load-common.sh`
+  was never copied into the Docker image after the loader refactor, so
+  in-pod `LOAD_TPCH` seeding failed in every released image since; the
+  image now ships it.
+- **Helm chart published as an OCI artifact.** Every release pushes the
+  chart to `oci://ghcr.io/starlake-ai/charts/quack-on-demand`, stamped to
+  the release version; the chart's node-pod image now defaults to the
+  release `appVersion` instead of `latest-snapshot`, so a versioned chart
+  deploys versioned images throughout.
+
 ## 0.8.1
 
 - **MCP full admin surface.** The MCP endpoint (`POST /mcp`) now exposes the complete

@@ -1,6 +1,6 @@
 ---
 name: quack-on-demand
-description: Operate a quack-on-demand FlightSQL gateway - boot/stop the manager, manage tenants/pools/ACLs, inspect nodes, run load tests
+description: Operate a quack-on-demand FlightSQL gateway - boot/stop the manager, manage tenants/pools/ACLs, inspect nodes, run SQL
 ---
 
 # Quack on Demand
@@ -13,58 +13,180 @@ Use this skill when the user wants to:
 - Grant / revoke ACLs
 - Inspect node health, throughput, latency
 - See what SQL recently ran and where
-- Run load tests
+- Run ad-hoc SQL against the FlightSQL edge
 - Diagnose typical failure modes (dead nodes, expired sessions, ACL denials)
 
-## Repo layout (the bits operators touch)
+## Tooling
 
-- `scripts/run-jar.sh` - boot from the uber-jar; `QOD_VERSION=BUILD` runs `sbt assembly` first, `QOD_VERSION=LOCAL` reuses the newest `distrib/` jar
-- `scripts/stop-jar.sh` - SIGTERM → wait → SIGKILL
-- `scripts/tpch-load-test/tpch-load-test.py` - Python FlightSQL load tester (ADBC driver)
-- `scripts/adbc.sh` - run one SQL query against the FlightSQL edge and print it as a table (ADBC driver, self-provisioning venv)
-- `scripts/start-quack-ducklake.sh` - standalone single-node Quack for testing (no manager)
-- `scripts/load-tpch-dbgen.sh` - generate TPCH (SF=1 by default; override via `SF=10`) into the metastore using DuckDB's `dbgen()` table function; self-skips when `lineitem` is already populated
-- `src/main/resources/application.conf` - config (every key has a `QOD_*` env-var override)
-- `docs/superpowers/FOLLOWUPS.md` - triaged backlog
-- `README.md` - full feature list + operational notes
+Everything here runs through the `qod` CLI (PyPI package `qod`) against a live
+manager - no source checkout is needed. The pieces:
+
+- `qod start` / `qod stop` / `qod status` - run a manager from the released
+  uber-jar (auto-downloaded and cached) against your Postgres; `qod setup`
+  persists the `QOD_*` settings it needs
+- `qod serve --demo` - fully self-contained evaluation stack (embedded Postgres)
+- `qod <noun> <verb>` - the REST control plane (tenants, databases, pools,
+  nodes, RBAC, policies, telemetry)
+- `qod sql` - run SQL against the FlightSQL edge (one statement, a script, or a REPL)
+- Docs: https://docs.starlake.ai/qod (guides, configuration reference, REST API)
+
+Every manager config scalar has a `QOD_*` env-var override (or `PROXY_*` for
+FlightSQL edge keys); prefer env vars - the bundled `application.conf` is baked
+into the jar.
+
+## CLI setup (do this before CLI-driven operations)
+
+The `qod` CLI is the primary way to drive the manager. Before operating
+through it, make sure it is installed, current, and logged in.
+
+**1. Installed and current?**
+
+```bash
+qod --version                # prints: qod X.Y.Z; command not found = not installed
+curl -s https://pypi.org/pypi/qod/json | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['version'])"
+```
+
+- Not installed - install it: `uv tool install qod` when `uv` is available,
+  else `pip install qod`. (`uvx qod@latest ...` also works for one-off runs with no
+  install.)
+- Versions equal, or the installed one ends in `.dev0` (a source checkout) -
+  proceed.
+- Installed older than PyPI - upgrade with the command matching the install
+  method: `uv tool upgrade qod` (uv tool installs), `pip install -U qod`
+  (pip); `uvx qod` users resolve the latest on a fresh cache (`uvx qod@latest`
+  forces it).
+- PyPI unreachable (offline, proxy) - skip the check silently; never block
+  operations on it.
+- After an upgrade, `qod skill install` refreshes the locally installed copy
+  of this skill; it prompts for the target LLM (claude, copilot, gemini, all)
+  and `--platform <name>` skips the prompt. No-op for plugin installs, which
+  update via `/plugin marketplace update`.
+
+**2. Logged in?** `qod whoami` verifies the current session. If it errors,
+log in first - every non-public command needs a session:
+
+```bash
+qod login --username admin                  # prompts for the password; system realm
+qod login --username alice --tenant acme    # tenant-scoped principal
+```
+
+`qod login` mints a session and stores the token plus the FlightSQL edge
+settings in the active CLI profile file (mode 0600; `QOD_CONFIG_FILE`
+overrides the path), so subsequent commands need no flags. Non-interactive
+alternative: set `QOD_API_KEY` (static key) or `QOD_TOKEN` (session or PAT
+token) in the environment - each command sends it as `X-API-Key`. Use
+`--profile <name>` (or `QOD_PROFILE`) to keep several managers side by side,
+`QOD_MANAGER_URL` for a non-default manager URL, and `qod --json ...`
+anywhere you need raw JSON for scripting.
 
 ## Booting
 
+Not sure which command you want?
+
+| Command | What it is | Needs |
+|---|---|---|
+| `qod serve --demo` | throwaway showcase on sample data, insecure by design | nothing |
+| `qod serve ./your-data` | persistent gateway over your own data, secure defaults | nothing |
+| `qod start` | your deployment: your own Postgres, your config | Postgres + `qod setup` |
+
 On Kubernetes, the Helm chart is published as an OCI artifact per release:
 `helm install qod oci://ghcr.io/starlake-ai/charts/quack-on-demand --version <release>`
-(external Postgres required; see charts/quack-on-demand/README.md). Locally:
+(external Postgres required; see https://docs.starlake.ai/qod). Locally,
+`qod start` supervises the released uber-jar, downloaded and cached on first
+use (Java 21+ required; the `duckdb` CLI and node spawn scripts are
+provisioned automatically):
 
 ```bash
+# One-time: persist Postgres coordinates, admin password, API key, TLS prefs
+# so a bare `qod start` works afterwards (a real env var still wins)
+qod setup
+
 # Default: TLS edge, DB auth on, Postgres state, admin user seeded
-./scripts/run-jar.sh
+qod start
 
-# Build the uber-jar first
-QOD_VERSION=BUILD ./scripts/run-jar.sh
-
-# Newest distrib/ jar, no rebuild, no Central lookup
-QOD_VERSION=LOCAL ./scripts/run-jar.sh
+# Pin a release, or run a jar you already have
+qod start --version 0.8.3
+qod start --jar /path/to/quack-on-demand-assembly.jar
 
 # Disable DB auth (UI then skips the login screen)
-QOD_AUTH_DB_ENABLED=false ./scripts/run-jar.sh
+QOD_AUTH_DB_ENABLED=false qod start
 
-# Disable TLS on the FlightSQL edge
-PROXY_TLS_ENABLED=false ./scripts/run-jar.sh
+# Is anything running, and what is it serving?
+qod status
 
-# Stop everything
-./scripts/stop-jar.sh
+# Stop everything (manager + quack nodes)
+qod stop
 ```
 
-The start script is idempotent on CWD (anchors at the repo root). Default credentials: `admin@localhost.local` / `admin` (rotate via `QOD_ADMIN_PASSWORD`). The manager logs `auth: providers configured` when DB auth is on, and `auth: OPEN` otherwise.
-
-**Self-contained demo (`demo` subcommand).** For evaluation with no external Postgres and no Docker, the assembly jar takes a `demo` argument that boots everything against an embedded, ephemeral Postgres (zonky), seeds the minimal demo, and tears it all down on exit. Prerequisites: JDK 21 + `duckdb` on `PATH`.
+**Serve your own data in one command.** `qod serve <target>` provisions a
+tenant, database, and pool around data the user already has, on a persistent
+embedded Postgres, so there is no external prerequisite:
 
 ```bash
-java -Darrow.allocation.manager.type=Unsafe -jar distrib/quack-on-demand-assembly-*.jar demo
+qod serve ./sales.duckdb          # existing DuckDB file (kind=duckdb-file, 1 dual node)
+qod serve ./warehouse/            # directory of parquet/csv -> views (kind=memory)
+qod serve s3://bucket/sales/      # remote prefix -> a hive-partitioned view
+qod serve                         # a fresh empty DuckLake to load into
+
+qod serve ./sales.duckdb --tenant acme --name sales --pool bi
+qod serve s3://bucket/wh/ --table orders=s3://bucket/wh/orders/**/*.parquet
 ```
 
-It creates a demo home under `/tmp/qod-demo` (override `QOD_DEMO_HOME`) holding the embedded PG data dir + the DuckLake data path, runs the whole demo config overlay (TLS off, REST open, ACL/RLS/CLS on) - a posture produced ONLY on this code path, never on a normal `run-jar.sh` boot - seeds tenant `acme` (`acme_tpch.tpch1`) with TPC-H at SF 0.1, and prints a connect banner. Seeded principals: `alice`/`demo-alice` (analyst - sees `c_phone` masked + only `BUILDING` rows), `acme-admin`/`demo-acme-admin` (full), and any ungranted table is denied. Ctrl-C stops the manager, stops the embedded PG, and deletes the demo home. Insecure by design; not for production.
+Every step is ensure-semantics (create only what is missing, never delete), so
+re-running is safe and adds a second database beside the first rather than
+replacing it. Credentials for a remote prefix come from `--access-key-id` /
+`--secret-access-key`, plus `--region` and (s3 only) `--endpoint` (flag-only,
+no env fallback); for an `s3://`/`s3a://`/`r2://` prefix these fall back to
+the ambient `AWS_*` environment, while a `gs://` (`gcs://` alias) or `az://`
+prefix takes the same two credential flags with per-scheme meaning (gs: HMAC
+key id/secret; az: storage account name/key, both required together) and no
+environment fallback.
 
-Bootstrap is driven by `QOD_BOOTSTRAP_YAML` - a path (or `classpath:` reference) to a YAML manifest. Bootstrap runs only when you request demo data: pass `LOAD_TPCH=1` or `LOAD_TPCDS=1` to `run-jar.sh`, or the equivalent bench flag to `run-docker-compose.sh`. In that case the script sets `QOD_BOOTSTRAP_YAML` to the bundled demo manifest (`run-jar.sh` uses the filesystem path `src/main/resources/bootstrap-demo.yaml`; `run-docker-compose.sh` uses `classpath:bootstrap-demo.yaml`). A bare `./scripts/run-jar.sh` does NOT bootstrap. The demo manifest imports two tenants (`acme` with pools `bi` and `etl`, `globex` with pool `bi`), 2 nodes per pool, and a starter RBAC role graph. The import is idempotent: it is skipped when the demo tenants already exist, so restarting the manager is safe.
+Posture, unlike `qod serve --demo` (`qod start --demo` still works too, as a
+deprecated alias): TLS on, DB auth on, ACL on, and a random admin password
+generated on the first run, printed once, and stored in the CLI config file.
+A real `QOD_ADMIN_PASSWORD` still wins. Rotate with
+`qod user update --username admin --password ...`.
+
+The embedded control plane lives at `<user-data-dir>/pg` on a fixed port
+(25432 by default, `--pg-port`), persists across restarts, and is never deleted.
+`qod status` reports its coordinates. It is a single-node evaluation and
+small-team mode: point the manager at your own Postgres (`qod setup`,
+`qod start`) for production, and HA refuses to boot with it.
+
+`qod serve` stores the generated admin password in the same `[start]` table
+`qod start` reads, so a later `qod start` seeds the same admin password. A
+`memory` database whose views point at a remote prefix carries that prefix as
+its object-store scope; under node lockdown such a database loses local file
+reads (`disabled_filesystems`), which is the intended posture for
+remote-only views. `qod status` reports the embedded control plane by probing
+its data directory; a custom `--pg-data-dir` run is only visible to `status`
+when `QOD_PG_EMBEDDED_DATA_DIR` is set (env or `qod setup --set`).
+
+`qod start` runs the manager in the foreground; Ctrl-C tears the manager and
+its nodes down gracefully (same as `qod stop` from another terminal - never
+kill the JVM directly, or DuckDB node processes are orphaned holding ports
+`21900+`). Durable state (`certs/`, DuckLake data, node state) lives under the
+platform user-data dir (`~/.local/share/qod` on Linux,
+`~/Library/Application Support/qod` on macOS); jars and the provisioned duckdb
+CLI cache under the user-cache dir. Default credentials:
+`admin@localhost.local` / `admin` (rotate via `QOD_ADMIN_PASSWORD`). The
+manager logs `auth: providers configured` when DB auth is on, and
+`auth: OPEN` otherwise.
+
+**Self-contained demo.** For evaluation with no external Postgres and no
+Docker, `qod serve --demo` boots everything against an embedded, ephemeral
+Postgres (zonky), seeds the minimal demo, and tears it all down on exit
+(`qod setup`'s stored config is deliberately not applied). `qod start --demo`
+still works too, as a deprecated alias:
+
+```bash
+qod serve --demo
+```
+
+It creates a demo home under `/tmp/qod-demo` (override `QOD_DEMO_HOME`) holding the embedded PG data dir + the DuckLake data path, runs the whole demo config overlay (TLS off, REST open, ACL/RLS/CLS on) - a posture produced ONLY on this code path, never on a normal `qod start` boot - seeds tenant `acme` (`acme_tpch.tpch1`) with TPC-H at SF 0.1, and prints a connect banner. Seeded principals: `alice`/`demo-alice` (analyst - sees `c_phone` masked + only `BUILDING` rows), `acme-admin`/`demo-acme-admin` (full), and any ungranted table is denied. Ctrl-C stops the manager, stops the embedded PG, and deletes the demo home. Insecure by design; not for production.
+
+Bootstrap is driven by `QOD_BOOTSTRAP_YAML` - a path (or `classpath:` reference) to a YAML manifest. Bootstrap runs only when you request demo data: pass `LOAD_TPCH=1` or `LOAD_TPCDS=1` (or `LOAD_SSB=1`, or `LOAD_TPC=1` for all) in the environment of `qod start`, which seeds the benchmark in the background and sets `QOD_BOOTSTRAP_YAML` to the bundled demo manifest (`classpath:bootstrap-demo.yaml`). A bare `qod start` does NOT bootstrap. The demo manifest imports two tenants (`acme` with pools `bi` and `etl`, `globex` with pool `bi`), 2 nodes per pool, and a starter RBAC role graph. The import is idempotent: it is skipped when the demo tenants already exist, so restarting the manager is safe. (`LOAD_*` seeding is not yet supported on Windows through `qod start` - the bundled loaders are bash.)
 
 A second profile targets fronting a single DuckDB instance: `DEMO=minimal` (with any
 `LOAD_*` flag) imports `bootstrap-demo-minimal.yaml` instead: tenant `acme` only, one pool
@@ -73,7 +195,12 @@ A second profile targets fronting a single DuckDB instance: `DEMO=minimal` (with
 consulted when `QOD_BOOTSTRAP_YAML` is unset, and bootstrap only imports into a fresh
 control plane, so switch profiles with `NUKE=1`:
 
-    NUKE=1 DEMO=minimal LOAD_TPCH=1 ./scripts/run-jar.sh
+    NUKE=1 DEMO=minimal LOAD_TPCH=1 qod start
+
+On a terminal, `NUKE=1` asks you to type the control-plane database's name
+before proceeding (it drops the control plane and the demo tenant-dbs and
+wipes the local state dirs); non-tty runs skip the prompt (a script that
+wants no prompt redirects stdin, e.g. `< /dev/null`).
 
 `DEMO=minimal` plus `LOAD_TPCDS` warns and skips the TPC-DS loader (no globex tenant in
 this profile).
@@ -87,14 +214,11 @@ The REST API has three acceptable credentials:
    (see "Personal access tokens and the MCP server" below)
 
 ```bash
-# Get a session token (admin role required)
-TOKEN=$(curl -sS -X POST http://localhost:20900/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin"}' \
-  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+# Mint a session and store it in the CLI profile (admin role required)
+qod login --username admin        # prompts for the password
 
-# Use it on every /api/* call
-curl -H "X-API-Key: $TOKEN" http://localhost:20900/api/pool/list
+# Every subsequent command rides that session
+qod pool list
 ```
 
 If `QOD_API_KEY` is unset (or empty), only the static-key arm is disabled: every non-public `/api/...` call still requires a session or PAT, and a keyless call answers 401. There is no open mode; keyless dev scripts must log in first.
@@ -105,17 +229,9 @@ The admin UI isn't admin-exclusive: a tenant-scoped `role=user` principal can lo
 
 ```bash
 # Log in as a regular tenant user (demo credentials from the bootstrap manifest)
-TOKEN=$(curl -sS -X POST http://localhost:20900/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"demo-alice","tenant":"acme"}' \
-  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+qod login --username alice --tenant acme    # prompts for the password (demo-alice)
 
 # Own usage and recent statements - the only data endpoints this session can reach
-curl -sS -H "X-API-Key: $TOKEN" 'http://localhost:20900/api/profile/usage?days=7'
-curl -sS -H "X-API-Key: $TOKEN" 'http://localhost:20900/api/profile/statements?limit=20'
-
-# CLI equivalents
-qod auth login --username alice --tenant acme
 qod profile usage --days 7
 qod profile statements --limit 20
 ```
@@ -159,34 +275,18 @@ are load-bearing.
 
 ```bash
 # Mint an unscoped token (session required; the token is printed ONCE - store it now)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/auth/pat/create \
-  -H 'Content-Type: application/json' -d '{"name":"claude-code"}'
+qod auth pat create --name claude-code [--expires-at 2027-01-01T00:00:00Z]
 # {"id":"pat-...","name":"claude-code","token":"qod_pat_..."}
 
 # Mint a scoped token for an agent: read-only, one database, two tools, no admin standing
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/auth/pat/create \
-  -H 'Content-Type: application/json' -d '{
-    "name": "claude-agent",
-    "databases": ["acme_db"],
-    "tools": ["run_sql", "list_tables"],
-    "verbCeiling": "RO",
-    "dropAdmin": true,
-    "maxRows": 500
-  }'
-
-# List (metadata only; the raw token is unrecoverable after mint; the scope summary
-# and parentId/depth on each row show what an agent's own PAT has minted)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/auth/pat/list
-# Revoke
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/auth/pat/revoke \
-  -H 'Content-Type: application/json' -d '{"id":"pat-..."}'
-
-# CLI equivalents
-qod auth pat create --name claude-code [--expires-at 2027-01-01T00:00:00Z]
 qod auth pat create --name claude-agent \
   --database acme_db --tool run_sql --tool list_tables \
   --verb-ceiling RO --drop-admin --max-rows 500
+
+# List (metadata only; the raw token is unrecoverable after mint; the scope summary
+# and parentId/depth on each row show what an agent's own PAT has minted)
 qod auth pat list
+# Revoke
 qod auth pat revoke --id pat-...
 ```
 
@@ -213,35 +313,6 @@ MCP troubleshooting:
 - **"pool is resuming"**: the suspended pool is waking; retry in a few seconds.
 - Row caps: `run_sql` is truncated server-side at `QOD_MCP_MAX_ROWS` (default 500).
 
-### Administering over MCP
-
-An agent holding an admin PAT (or the static `QOD_API_KEY`) can drive the entire
-control plane through `POST /mcp`, not just data tools - the same surface as the
-admin REST API, gated by the same server-side guards (superuser checks, tenant scope,
-self/floor guards, mutation gates, audit). Tool families, one line each:
-
-- **Identity** - tenants, users, groups, roles, memberships
-- **Access** - role table permissions, column/row policies, pool permissions
-- **Pools & nodes** - pool create/scale/suspend/resume/stop/delete, pool settings
-  (resources, pod template, lockdown, autoscale, disabled), node restart/quarantine/
-  max-concurrent, active statements + kill
-- **Databases** - tenant-db create/update/delete, metastore defaults
-- **Maintenance & tags** - maintenance policies, maintenance runs, tag create/delete/
-  protect-unprotect (toggles both ways)
-- **Time travel** - restore/undrop, list recoverable snapshots
-- **Federation** - federated sources and secrets (returns a `federation_disabled`
-  error if federation isn't wired on this manager)
-- **Manifest** - export/import the control-plane YAML manifest
-- **PATs** - create/list/revoke/delete, self-scoped: a token only manages its own
-  subtree, never a sibling or its owner's other tokens
-- **Telemetry** - statement history, usage trends/report, server config, audit search
-
-Tenant inference: a tenant-scoped PAT acts in its own tenant automatically (omit
-`tenant` from tool arguments). Superuser credentials (a superuser PAT or the static
-key) are cross-tenant and must pass `tenant` explicitly on every tool call that needs
-one. Exception: `create_user` always requires an explicit `tenant` -- omitting it
-attempts SUPERUSER creation, which only superuser credentials may do.
-
 ### Account lockout and self-service password reset
 
 Lockout is opt-in and off by default. Turning it on requires SMTP to be configured first - boot refuses to start otherwise (the error names `QOD_SMTP_HOST`), because a locked-out user with no mail path would have no way back in.
@@ -257,19 +328,12 @@ export QOD_AUTH_LOCKOUT_ENABLED=true
 export QOD_AUTH_LOCKOUT_MAX_FAILURES=10   # default; locks after this many consecutive bad passwords
 
 # A locked-out user (or anyone who forgot their password) self-serves a reset -
-# this endpoint is public (no API key) and always returns 200, even for an
-# unknown username or an account without an email, to avoid leaking existence
-curl -sS -X POST http://localhost:20900/api/auth/forgot-password \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","tenant":"acme"}'
-
-# The mailed link carries a single-use, 1-hour token:
-curl -sS -X POST http://localhost:20900/api/auth/reset-password \
-  -H 'Content-Type: application/json' \
-  -d '{"token":"<from the emailed link>","newPassword":"a-new-password"}'
-
-# CLI equivalents
+# the endpoint is public (no session needed) and always answers 200, even for
+# an unknown username or an account without an email, to avoid leaking existence
 qod auth forgot-password --username alice --tenant acme
+
+# The mailed link carries a single-use, 1-hour token; the command prompts for
+# the token and the new password:
 qod auth reset-password
 ```
 
@@ -278,9 +342,7 @@ Lockout only ever applies to rows with an `email` set (`qod user create/update -
 An email-format username is its own email and cannot be set separately: `qod user create/update --email` with a conflicting value 400s `invalid_email`, and pre-existing such rows were backfilled automatically. This includes the seeded admin (`admin@localhost.local` by default): because its username is email-format, it is auto-assigned `email = username`, so it IS eligible for lockout when lockout is on, and for self-service reset. A locked superuser is still recoverable without the email flow: restarting the manager re-seeds the admin (resetting the password to `QOD_ADMIN_PASSWORD` and clearing `failed_attempts` / `locked_at` in the same statement), and the static `X-API-Key` bypasses login lockout entirely. Note that `admin@localhost.local` is not a routable mailbox, so the seeded admin's self-service email reset will not deliver by default - set `QOD_ADMIN_USERNAME` to a real deliverable address if you want the admin to self-recover by email, otherwise use restart or the API key.
 
 ```bash
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/user/update \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"<user-id>","password":"a-new-password"}'
+qod user update <user-id> --password a-new-password
 ```
 
 An admin password reset also unconditionally clears the lock (`failed_attempts` and `locked_at`), same as the self-service reset.
@@ -318,109 +380,82 @@ Semantics worth knowing: `userName` and a group's `displayName` are immutable (a
 
 ```bash
 # List tenants
-curl -sS -H "X-API-Key: $TOKEN" http://localhost:20900/api/tenant/list | python3 -m json.tool
+qod tenant list
 
-# Create a tenant with metastore overrides
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/tenant/create \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"acme","metastore":{"dbName":"tpch","schemaName":"tpch1"}}'
+# Create a tenant, then its database (metastore keys omitted here resolve from
+# the manager's defaultMetastore at spawn time; --metastore KEY=VALUE overrides)
+qod tenant create acme
+qod database create --tenant acme --name tpch \
+  --metastore dbName=tpch --metastore schemaName=tpch1
 
 # Create a pool (1 WriteOnly + 1 ReadOnly + 1 Dual = 3 nodes)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/create \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","size":3,
-       "roleDistribution":{"writeonly":1,"readonly":1,"dual":1}}'
+qod pool create --tenant acme --db acme_tpch --pool bi --size 3 \
+  --writeonly 1 --readonly 1 --dual 1
 
 # Scale up
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/scale \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","targetSize":6,
-       "roleDistribution":{"writeonly":1,"readonly":2,"dual":3}}'
+qod pool scale --tenant acme --db acme_tpch --pool bi --target-size 6 \
+  --writeonly 1 --readonly 2 --dual 3
 
-# Stop a pool: scales it down to 0 nodes but KEEPS the pool (force=true skips graceful drain)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/stop \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","force":true}'
+# Stop a pool: scales it down to 0 nodes but KEEPS the pool (--force skips graceful drain)
+qod pool stop --tenant acme --db acme_tpch --pool bi --force
 
 # Suspend a pool (scale-to-zero, keeps the role distribution for resume)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/suspend \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi"}'
+qod pool suspend --tenant acme --db acme_tpch --pool bi
 
 # Resume a suspended pool
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/resume \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi"}'
+qod pool resume --tenant acme --db acme_tpch --pool bi
 
 # A suspended pool also wakes automatically on the first FlightSQL statement
 # (bounded by PROXY_RESUME_HOLD_TIMEOUT_SEC, default 60s). A stopped pool
-# (pool/stop) stays down; a disabled pool is never auto-woken.
+# (pool stop) stays down; a disabled pool is never auto-woken.
 
-# Autoscale band: declare minNodes/maxNodes and the manager adds/removes READONLY
+# Autoscale band: declare min/max nodes and the manager adds/removes READONLY
 # nodes with demand, never leaving the band. Both bounds together or neither.
 # Rules: 1 <= min <= max <= QOD_AUTOSCALE_HARD_CAP (16); min must cover the
 # write-capable nodes (writeonly + dual); the CURRENT size must sit inside the
 # band (so a stopped pool, size 0, cannot take one - scale it up first); a pool
 # with authored cohorts cannot be elastic. Violations return 400 invalid_band.
 # Create a pool with a band:
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/create \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","size":2,
-       "roleDistribution":{"writeonly":1,"readonly":1,"dual":0},
-       "minNodes":2,"maxNodes":6}'
-
-# Set (or change) the band on an existing pool
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/setAutoscale \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","minNodes":2,"maxNodes":6}'
-
-# Clear the band (omit BOTH bounds) - the pool goes back to a fixed size
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/setAutoscale \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi"}'
-
-# CLI equivalents
 qod pool create --tenant acme --db acme_tpch --pool bi --size 2 \
   --writeonly 1 --readonly 1 --min-nodes 2 --max-nodes 6
-qod pool set-autoscale --tenant acme --db acme_tpch --pool bi --min-nodes 2 --max-nodes 6
-qod pool set-autoscale --tenant acme --db acme_tpch --pool bi   # clears it
 
-# pool/scale on a banded pool refuses a targetSize outside [min, max] with
+# Set (or change) the band on an existing pool
+qod pool set-autoscale --tenant acme --db acme_tpch --pool bi --min-nodes 2 --max-nodes 6
+
+# Clear the band (omit BOTH bounds) - the pool goes back to a fixed size
+qod pool set-autoscale --tenant acme --db acme_tpch --pool bi
+
+# pool scale on a banded pool refuses a target size outside [min, max] with
 # 400 outside_band ("adjust the band first via pool/setAutoscale") - the next
 # sweep would just undo it. Widen or clear the band, then scale.
-# To pin a pool: set minNodes == maxNodes. That is a legal band meaning "hold
-# exactly this size, never scale", and it keeps manual scaling constrained to
-# that size. To stop the sweep manager-wide: QOD_AUTOSCALE_ENABLED=false (bands
-# stay recorded and are simply not acted on). Actions land in the audit log with
-# actor "autoscale" and in the manager log as
+# To pin a pool: set --min-nodes == --max-nodes. That is a legal band meaning
+# "hold exactly this size, never scale", and it keeps manual scaling constrained
+# to that size. To stop the sweep manager-wide: QOD_AUTOSCALE_ENABLED=false
+# (bands stay recorded and are simply not acted on). Actions land in the audit
+# log with actor "autoscale" and in the manager log as
 # "autoscale: acme/acme_tpch/bi out 2 -> 3 util=0.91".
 
 # Delete a pool: stops nodes AND removes the pool from the registry
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/delete \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","force":true}'
+qod pool delete --tenant acme --db acme_tpch --pool bi --force
 
 # Delete a tenant (must have no pools first)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/tenant/delete \
-  -H 'Content-Type: application/json' -d '{"name":"acme"}'
+qod tenant delete acme
 
 # Size a pool's k8s node pods: cpu and memory are each applied as request AND
 # limit on the quack container (Guaranteed QoS when both set). Applies on the
 # next node spawn; restart the pool's nodes to apply now. Empty clears.
 # Set DuckDB memory (database/pool init SQL, SET memory_limit) to ~80% of pod
 # memory so the engine spills before the kernel OOM-kills the pod.
-curl -sS -X POST "http://localhost:20900/api/pool/setResources" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","cpu":"2","memory":"8Gi"}'
+qod pool set-resources --tenant acme --db acme_tpch --pool bi --cpu 2 --memory 8Gi
 
-# Supply a full Pod-manifest template (superuser only; requires
+# Supply a full Pod-manifest template from a YAML file (superuser only; requires
 # QOD_POD_TEMPLATE_ENABLED=true). The manager overlays the pod name, its
 # identity labels, and the quack container's env contract and resources; a
 # container named 'quack' is required. Use for sidecars, volumes, affinity.
-curl -sS -X POST "http://localhost:20900/api/pool/setPodTemplate" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","podTemplateYaml":"apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: quack\n      image: placeholder\n    - name: log-shipper\n      image: busybox"}'
+qod pool set-pod-template --tenant acme --db acme_tpch --pool bi --file pod-template.yaml
 ```
 
-The local backend ignores cpu/memory/template; use database or pool `initSql` (`SET memory_limit='...'`) for local memory control. The Helm chart's `resources` block sizes the MANAGER container, not node pods; use `setResources` for node-pod sizing.
+The local backend ignores cpu/memory/template; use database or pool `initSql` (`SET memory_limit='...'`) for local memory control. The Helm chart's `resources` block sizes the MANAGER container, not node pods; use `qod pool set-resources` for node-pod sizing.
 
 `pool/setResources` is mutation-gated as of 2026-08-13, like `pool/create` and `pool/scale`: a module gate may refuse it, and the refusal surfaces as **HTTP 429 `quota_exceeded`** with the reason in the body. Superuser sessions and static-`X-API-Key` callers bypass the gate, as everywhere. Zero-module (plain OSS) boots have no gates registered, so nothing changes there.
 
@@ -436,77 +471,66 @@ Hosted deployments can cap a tenant's *cumulated* cores and memory across all it
 
 Grants live in the normalized `qodstate_*` tables in Postgres. The endpoints are always mounted (Postgres is the only control-plane store since 2026-06-12).
 
-### Endpoint reference
+### Command reference
 
 ```bash
 # Roles
-GET  /api/role/list?tenant=acme
-POST /api/role/create       body: {"tenant":"acme","name":"analyst","description":"..."}
-POST /api/role/delete       body: {"id":"<roleId>"}
+qod role list --tenant acme
+qod role create --tenant acme --name analyst --description "..."
+qod role delete <roleId>
 
-# Role table permissions  (verb: SELECT | INSERT | UPDATE | DELETE | ALL)
-GET  /api/role/permission/list?roleId=<roleId>
-POST /api/role/permission/grant   body: {"roleId":"<roleId>","catalog":"acme_tpch","schema":"tpch1","table":"customer","verb":"SELECT"}
-POST /api/role/permission/revoke  body: {"id":"<permissionId>"}
+# Role table permissions (verb: RO | RW | DDL | ALL)
+qod role permission list --role-id <roleId>
+qod role permission grant --role-id <roleId> --catalog acme_tpch --schema tpch1 --table customer --verb RO
+qod role permission revoke <permissionId>
 
 # Users
-POST /api/user/create       body: {"tenant":"acme","username":"alice","password":"...","role":"user"}
+qod user create --tenant acme --username alice --role user   # prompts for the password
 
 # Groups
-POST /api/group/create      body: {"tenant":"acme","name":"analysts"}
+qod group create --tenant acme --name analysts
 
-# Memberships (each has a matching /remove)
-POST /api/membership/group-role/add   body: {"groupId":"<groupId>","roleId":"<roleId>"}
-POST /api/membership/user-group/add   body: {"userId":"<userId>","groupId":"<groupId>"}
-POST /api/membership/user-role/add    body: {"userId":"<userId>","roleId":"<roleId>"}
+# Memberships (each has a matching remove)
+qod membership group-role add --group-id <groupId> --role-id <roleId>
+qod membership user-group add --user-id <userId> --group-id <groupId>
+qod membership user-role add --user-id <userId> --role-id <roleId>
 
 # Pool access - governs which pools a principal can reach
-GET  /api/pool/permission/list?tenant=acme
-POST /api/pool/permission/grant   body: {"tenant":"acme","poolId":"<poolId>","groupId":"<groupId>"}
-POST /api/pool/permission/revoke  body: {"id":"<id>"}
+qod pool permission list --tenant acme
+qod pool permission grant --tenant acme --pool-id <poolId> --group-id <groupId>
+qod pool permission revoke <id>
 ```
 
 ### Grant a team read access (6-step flow)
 
 ```bash
-# 1. Create a role
-ROLE_ID=$(curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/role/create \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"analyst","description":"Read-only analyst"}' \
+# 1. Create a role (qod --json prints the raw response so the id can be captured)
+ROLE_ID=$(qod --json role create --tenant acme --name analyst --description "Read-only analyst" \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
-# 2. Grant SELECT on acme_tpch.tpch1.customer (repeat per table, or use "*" to wildcard any field)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/role/permission/grant \
-  -H 'Content-Type: application/json' \
-  -d "{\"roleId\":\"$ROLE_ID\",\"catalog\":\"acme_tpch\",\"schema\":\"tpch1\",\"table\":\"customer\",\"verb\":\"SELECT\"}"
+# 2. Grant RO on acme_tpch.tpch1.customer (repeat per table, or use "*" to wildcard any field)
+qod role permission grant --role-id "$ROLE_ID" \
+  --catalog acme_tpch --schema tpch1 --table customer --verb RO
 
 # 3. Create a group
-GROUP_ID=$(curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/group/create \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"analysts"}' \
+GROUP_ID=$(qod --json group create --tenant acme --name analysts \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 # 4. Attach the role to the group
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/membership/group-role/add \
-  -H 'Content-Type: application/json' \
-  -d "{\"groupId\":\"$GROUP_ID\",\"roleId\":\"$ROLE_ID\"}"
+qod membership group-role add --group-id "$GROUP_ID" --role-id "$ROLE_ID"
 
-# 5. Add a user to the group (or use membership/user-role/add to attach the role directly to a user)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/membership/user-group/add \
-  -H 'Content-Type: application/json' \
-  -d "{\"userId\":\"<userId>\",\"groupId\":\"$GROUP_ID\"}"
+# 5. Add a user to the group (or use membership user-role add to attach the role directly to a user)
+qod membership user-group add --user-id <userId> --group-id "$GROUP_ID"
 
 # 6. Grant the group access to the pool (REQUIRED - without this the group cannot reach the pool)
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/permission/grant \
-  -H 'Content-Type: application/json' \
-  -d "{\"tenant\":\"acme\",\"poolId\":\"<poolId>\",\"groupId\":\"$GROUP_ID\"}"
+qod pool permission grant --tenant acme --pool-id <poolId> --group-id "$GROUP_ID"
 ```
 
-Retrieve `<userId>` and `<poolId>` from `/api/user/list?tenant=acme` and `/api/pool/list` respectively.
+Retrieve `<userId>` and `<poolId>` from `qod user list --tenant acme` and `qod pool list` respectively.
 
 ### DML and DDL grants
 
-Use the same `role/permission/grant` endpoint with `verb` set to `INSERT` / `UPDATE` / `DELETE` for DML writes, or `CREATE` / `DROP` / `ALTER` for DDL. Use `ALL` to cover every verb on a table at once. The validator collapses granular verbs to `Read`, `Write`, or `Ddl` per table at enforcement time.
+Use the same `qod role permission grant` command with `--verb RW` for DML writes (covers reads too), `--verb DDL` for CREATE / DROP / ALTER, or `--verb ALL` to cover everything on a table at once. The verb vocabulary is deliberately coarse (`RO` / `RW` / `DDL` / `ALL`, matching what the validator enforces per table); granular SQL keywords like `SELECT` or `INSERT` are only accepted by the SQL admin dialect (below), which maps them onto these four at parse time.
 
 ### Metadata browsing (information_schema)
 
@@ -525,9 +549,8 @@ that turns the filter off for that principal and restores the unfiltered read (u
 for a tooling or admin account that must see the whole catalog):
 
 ```bash
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/role/permission/grant \
-  -H 'Content-Type: application/json' \
-  -d "{\"roleId\":\"$ROLE_ID\",\"catalog\":\"acme_tpch\",\"schema\":\"information_schema\",\"table\":\"*\",\"verb\":\"RO\"}"
+qod role permission grant --role-id "$ROLE_ID" \
+  --catalog acme_tpch --schema information_schema --table '*' --verb RO
 ```
 
 The grant must name `information_schema` literally (a wildcard schema does not count as
@@ -562,16 +585,13 @@ whole feature off manager-wide and go back to the pre-0.6.7 grant-required postu
 
 ```bash
 # Remove a table permission from a role
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/role/permission/revoke \
-  -H 'Content-Type: application/json' -d '{"id":"<permissionId>"}'
+qod role permission revoke <permissionId>
 
 # Detach a role from a group
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/membership/group-role/remove \
-  -H 'Content-Type: application/json' -d "{\"groupId\":\"<groupId>\",\"roleId\":\"<roleId>\"}"
+qod membership group-role remove --group-id <groupId> --role-id <roleId>
 
 # Remove pool access
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/pool/permission/revoke \
-  -H 'Content-Type: application/json' -d '{"id":"<poolPermissionId>"}'
+qod pool permission revoke <poolPermissionId>
 ```
 
 The EffectiveSet cache is invalidated on every RBAC mutation, so changes take effect on the next handshake - no TTL window to wait for.
@@ -584,25 +604,20 @@ Create with a temporary password (or reset one) that only works against
 `POST /api/auth/change-password`:
 
 ```bash
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/user/create \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","username":"alice","password":"Temp123","role":"user","mustChangePassword":true}'
+qod user create --tenant acme --username alice --password Temp123 --role user \
+  --must-change-password
 
 # reset an existing password as temporary
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/user/update \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"<userId>","password":"Temp123","mustChangePassword":true}'
+qod user update <userId> --password Temp123 --must-change-password
 ```
 
 Until changed, REST login answers `401 password_change_required` and the FlightSQL
 handshake fails `UNAUTHENTICATED` with "password change required". The user swaps it
-(no session needed; also available anytime for voluntary rotation, and CLI
-`qod auth change-password`):
+(no session needed; also available anytime for voluntary rotation; prompts for the
+current and new passwords):
 
 ```bash
-curl -sS -X POST http://localhost:20900/api/auth/change-password \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","username":"alice","currentPassword":"Temp123","newPassword":"Real456"}'
+qod auth change-password --username alice --tenant acme
 ```
 
 ## SQL administration (FlightSQL)
@@ -628,9 +643,8 @@ off dialect authority on an already-open connection until that connection's
 context TTL (`sessionTtlSec`, default 3600s) expires, matching the existing
 handshake-cache behavior for every other authorization check on the wire.
 
-**One example per statement family** (see
-`docs/superpowers/specs/2026-09-09-sql-admin-dialect-design.md` for the full
-grammar):
+**One example per statement family** (the semantics bullets below cover the
+sharp edges of the grammar):
 
 ```sql
 -- Roles and membership
@@ -782,17 +796,8 @@ For `ducklake` creates, Postgres connection keys are optional: anything omitted 
 Example: create an in-memory tenant-db that only serves federated sources.
 
 ```bash
-curl -X POST -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: application/json' \
-  "$MGR/api/database/create" \
-  -d '{
-    "tenant": "acme",
-    "name": "fed",
-    "kind": "memory",
-    "metastore": {},
-    "dataPath": "",
-    "defaultDatabase": "fedpg",
-    "defaultSchema": "public"
-  }'
+qod database create --tenant acme --name fed --kind memory \
+  --default-database fedpg --default-schema public
 ```
 
 ### Update a database
@@ -806,13 +811,13 @@ curl -X POST -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: application/json' \
 # the database's kind requires (incl. pgPassword on ducklake) is rejected.
 # Engine defaults only in initSql, never credentials: the value is stored
 # unredacted and inlined in pod specs; secrets belong in federation sources.
-curl -sS -X POST "http://localhost:20900/api/database/update" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"acme_tpch","initSql":"SET memory_limit = '\''8GB'\'';"}'
+qod database update --tenant acme --name acme_tpch --init-sql "SET memory_limit = '8GB';"
 
 # Rotate the metastore password (restarts the db's nodes):
 # Send the FULL metastore map when editing it (minus pgPassword to keep it): the map is replaced, and dropping a required key is rejected.
-curl -sS -X POST "http://localhost:20900/api/database/update" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"acme_tpch","metastore":{"dbName":"acme_tpch","pgHost":"localhost","pgPort":"5432","pgUser":"postgres","schemaName":"main","pgPassword":"newpass"}}'
+qod database update --tenant acme --name acme_tpch \
+  --metastore dbName=acme_tpch --metastore pgHost=localhost --metastore pgPort=5432 \
+  --metastore pgUser=postgres --metastore schemaName=main --metastore pgPassword=newpass
 ```
 
 ### Per-database object-store credentials
@@ -831,14 +836,11 @@ specific scope per path). Keys, by `dataPath` scheme:
 ```bash
 # Create a database that authenticates its own bucket, distinct from the
 # manager-wide default credentials.
-curl -sS -X POST "http://localhost:20900/api/database/create" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{
-    "tenant": "acme",
-    "name": "coldstore",
-    "kind": "ducklake",
-    "dataPath": "s3://acme-coldstore/ducklake",
-    "objectStore": {"s3_region": "us-east-1", "s3_access_key_id": "AKIA...", "s3_secret_access_key": "..."}
-  }'
+qod database create --tenant acme --name coldstore --kind ducklake \
+  --data-path s3://acme-coldstore/ducklake \
+  --object-store s3_region=us-east-1 \
+  --object-store s3_access_key_id=AKIA... \
+  --object-store s3_secret_access_key=...
 ```
 
 An empty (or absent) `objectStore` falls back to the global env credentials -
@@ -864,7 +866,7 @@ the manager with:
 
 ```bash
 export QOD_MANAGED_STORE_ENABLED=true
-export QOD_MANAGED_STORE_ENDPOINT=http://seaweedfs:8333   # empty = AWS default resolution
+export QOD_MANAGED_STORE_ENDPOINT=http://seaweedfs:8333    # empty = AWS default resolution
 export QOD_MANAGED_STORE_REGION=us-east-1
 export QOD_MANAGED_STORE_BUCKET=qod-managed
 export QOD_MANAGED_STORE_ACCESS_KEY_ID=...
@@ -885,14 +887,10 @@ In HA, replicas race that first create, so the losing ones can log one false
 "unreachable" WARN at first boot; it self-heals.
 
 ```bash
-# Create a managed database. No dataPath, no objectStore: the server resolves
+# Create a managed database. No data path, no object store: the server resolves
 # both. The response's dataPath is s3://<bucket>/<tenant>_<name>-<id8>/ where
 # id8 is the first 8 chars of the tenant-db surrogate id, so recreating a
 # deleted name always lands on a fresh empty prefix.
-curl -sS -X POST "http://localhost:20900/api/database/create" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"sales","kind":"ducklake","managedStorage":true}'
-
-# CLI equivalent
 qod database create --tenant acme --name sales --kind ducklake --managed-storage
 ```
 
@@ -913,14 +911,10 @@ no BYO-to-managed (or managed-to-BYO) migration, recreate instead.
 
 ```bash
 # Delete: tombstone now, objects purged after retainDays (7 by default).
-curl -sS -X POST "http://localhost:20900/api/database/delete" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"acme_sales"}'
+qod database delete --tenant acme --name acme_sales
 
 # Delete and make the storage purge-eligible immediately (the worker drains it
 # on its next sweep; the call itself still returns straight away).
-curl -sS -X POST "http://localhost:20900/api/database/delete" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","name":"acme_sales","purgeManagedData":true}'
-
 qod database delete --tenant acme --name acme_sales --purge-managed-data
 ```
 
@@ -962,13 +956,9 @@ Two operator cautions:
 ### Register a federated source
 
 ```bash
-curl -X POST -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: application/json' \
-  "$MGR/api/tenants/acme/tenant-dbs/acme_fed/federated-sources" \
-  -d '{
-    "alias": "fedpg",
-    "description": "Prod warehouse Postgres",
-    "setupSql": "INSTALL postgres; LOAD postgres; CREATE OR REPLACE SECRET fedpg_sec (TYPE POSTGRES, HOST '\''pg.prod'\'', PORT 5432, DATABASE '\''warehouse'\'', USER '\''svc_qod'\'', PASSWORD '\''{{secret.PG_PWD}}'\''); ATTACH '\'''\'' AS {{alias}} (TYPE POSTGRES, SECRET fedpg_sec, READ_ONLY);"
-  }'
+qod federation create acme acme_fed --alias fedpg \
+  --description "Prod warehouse Postgres" \
+  --setup-sql "INSTALL postgres; LOAD postgres; CREATE OR REPLACE SECRET fedpg_sec (TYPE POSTGRES, HOST 'pg.prod', PORT 5432, DATABASE 'warehouse', USER 'svc_qod', PASSWORD '{{secret.PG_PWD}}'); ATTACH '' AS {{alias}} (TYPE POSTGRES, SECRET fedpg_sec, READ_ONLY);"
 ```
 
 Placeholders:
@@ -978,17 +968,14 @@ Placeholders:
 ### Add a Postgres-backed secret
 
 ```bash
-curl -X PUT -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: application/json' \
-  "$MGR/api/tenants/acme/tenant-dbs/acme_fed/federated-sources/fedpg/secrets" \
-  -d '{"name": "PG_PWD", "value": "hunter2"}'
+qod federation secret set acme acme_fed fedpg --name PG_PWD --value hunter2
 ```
 
 Or a secret backed by an external store (env var, AWS Secrets Manager, etc.):
 
 ```bash
-curl -X PUT -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: application/json' \
-  "$MGR/api/tenants/acme/tenant-dbs/acme_fed/federated-sources/fedpg/secrets" \
-  -d '{"name": "PG_PWD", "externalRef": "vault:secret/data/qod/fedpg#password"}'
+qod federation secret set acme acme_fed fedpg --name PG_PWD \
+  --external-ref "vault:secret/data/qod/fedpg#password"
 ```
 
 ### Switch the secret resolver
@@ -1007,18 +994,21 @@ curl -X PUT -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: application/json' \
 
 ### Export / import as YAML
 
+These two endpoints have no `qod` command yet - call them over REST (the
+static `QOD_API_KEY` or a session/PAT token goes in `X-API-Key`).
+
 Export (`***REDACTED***` replaces every value-backed secret; `externalRef` is left as-is):
 
 ```bash
-curl -H 'X-API-Key: '"$API_KEY" \
-  "$MGR/api/tenants/acme/tenant-dbs/acme_fed/federated-sources/yaml/export" > fed.yaml
+curl -H "X-API-Key: $QOD_API_KEY" \
+  "http://localhost:20900/api/tenants/acme/tenant-dbs/acme_fed/federated-sources/yaml/export" > fed.yaml
 ```
 
 Re-import after editing. Secrets with `value: "***REDACTED***"` (and no `externalRef`) reuse the existing row's value, so a round-trip never requires re-typing passwords:
 
 ```bash
-curl -X POST -H 'X-API-Key: '"$API_KEY" -H 'Content-Type: text/plain' \
-  "$MGR/api/tenants/acme/tenant-dbs/acme_fed/federated-sources/yaml/import" --data-binary @fed.yaml
+curl -X POST -H "X-API-Key: $QOD_API_KEY" -H 'Content-Type: text/plain' \
+  "http://localhost:20900/api/tenants/acme/tenant-dbs/acme_fed/federated-sources/yaml/import" --data-binary @fed.yaml
 ```
 
 Import semantics: replace-by-alias inside the tenant-db. Sources absent from the YAML are deleted; secrets absent from a source are deleted.
@@ -1034,18 +1024,18 @@ Import semantics: replace-by-alias inside the tenant-db. Sources absent from the
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `unresolved secret 'X' in source '<alias>'` in supervisor log | Source's setupSql references `{{secret.X}}` but no matching row | Add the secret row via `PUT .../federated-sources/<alias>/secrets` |
+| `unresolved secret 'X' in source '<alias>'` in supervisor log | Source's setupSql references `{{secret.X}}` but no matching row | Add the secret row via `qod federation secret set` |
 | `unsubstituted placeholder` at boot | Typo in setupSql like `{{secret.X}` (missing brace) | Fix setupSql via re-create (POST upserts); recycle the pool |
 | `catalog 'fedpg' does not exist` from the client | Pool was not recycled after editing the source | Drop and recreate the pool, or wait for idle-timeout recycle |
-| `missing RO grant on fedpg.public.X` | ACL not granted on the federated alias | `INSERT INTO qodstate_role_permission(role_id, catalog_name, schema_name, table_name, verb) VALUES (..., 'RO')` |
-| `kind env var is required` from spawn script | Manager invoked the script without setting `kind` | Old `LocalQuackBackend` build - rebuild the manager (`sbt assembly`) and restart |
+| `missing RO grant on fedpg.public.X` | ACL not granted on the federated alias | `qod role permission grant --role-id <roleId> --catalog fedpg --schema public --table X --verb RO` |
+| `kind env var is required` from spawn script | Manager invoked the script without setting `kind` | Manager release too old for this feature - upgrade (`qod start` with a current release) and restart |
 | `secret '<name>' for source '<alias>' has no existing value to reuse` on YAML import | Imported `***REDACTED***` for a new source that didn't exist before | Provide the actual `value` or `externalRef` for that secret in the YAML |
 | YAML import HTTP 400 `duplicate alias '<X>' in payload` | Two sources in the imported YAML have the same alias | Dedupe in the YAML before re-importing |
 
 ### What does NOT need an ACL change
 
 The existing RBAC graph covers federated tables with zero changes:
-- Grant `RO` on `fedpg.public.orders` to role `analyst` via `INSERT INTO qodstate_role_permission` (verb `RO`).
+- Grant `RO` on `fedpg.public.orders` to role `analyst` via `qod role permission grant` (verb `RO`), exactly like a DuckLake table.
 - Federated writes (INSERT/UPDATE/DELETE on a federated alias) require an `RW` grant on the same triple; otherwise they are denied.
 - Read-only is enforced at ATTACH time (the user's `setupSql` should include `READ_ONLY`), not in the validator.
 
@@ -1053,15 +1043,17 @@ The existing RBAC graph covers federated tables with zero changes:
 
 ```bash
 # Live node table (used by the UI)
-curl -sS -H "X-API-Key: $TOKEN" http://localhost:20900/api/pool/list \
+qod pool list
+
+# Compact one-line-per-node view of the same data
+qod --json pool list \
   | python3 -c "import sys,json; d=json.load(sys.stdin); \
     [print(f'{n[\"nodeId\"]:28s} role={n[\"role\"]:9s} healthy={n[\"healthy\"]} \
 served={n[\"totalServed\"]:5d} p50={n[\"p50Ms\"]:4.0f} p95={n[\"p95Ms\"]:4.0f} p99={n[\"p99Ms\"]:4.0f}') \
      for p in d['pools'] for n in p['nodes']]"
 
 # Recent statement history (newest first)
-curl -sS -H "X-API-Key: $TOKEN" 'http://localhost:20900/api/node/statements?limit=20' \
-  | python3 -m json.tool
+qod node statements --limit 20
 ```
 
 Per-node fields surfaced via `/api/pool/list`:
@@ -1080,29 +1072,21 @@ Quarantine is durable operator state, separate from node health. Check the quara
 ```bash
 # Quarantine a node: stop routing new statements to it (running ones finish).
 # Durable: survives manager restarts; only unquarantine clears it. Superuser only.
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/node/quarantine \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","nodeId":"bi-1"}'
+qod node quarantine --tenant acme --db acme_tpch --pool bi --node-id bi-1
 
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/node/unquarantine \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","nodeId":"bi-1"}'
+qod node unquarantine --tenant acme --db acme_tpch --pool bi --node-id bi-1
 
 # Restart a node: kills everything running on it, respawns with the same id, and clears any quarantine. Superuser only.
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/node/restart \
-  -H 'Content-Type: application/json' \
-  -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","nodeId":"bi-1"}'
+qod node restart --tenant acme --db acme_tpch --pool bi --node-id bi-1
 
 # In-flight statements (tenant admins see only their tenant).
-curl -sS -H "X-API-Key: $TOKEN" http://localhost:20900/api/node/active-statements
+qod node active-statements
 
 # Best-effort kill by statement id from the list above. "accepted" is not a guarantee:
 # the manager closes the stream; a node that ignores disconnect keeps executing.
 # Response is "accepted" (stream closed, best-effort) or "already-completed" (statement finished before the kill arrived).
-# Escalate with node/restart when the statement must die.
-curl -sS -H "X-API-Key: $TOKEN" -X POST http://localhost:20900/api/statement/kill \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"<statement-id>"}'
+# Escalate with node restart when the statement must die.
+qod statement kill <statement-id>
 ```
 
 ## Audit log
@@ -1111,22 +1095,19 @@ The audit log records control-plane mutations, auth events, data-plane denials, 
 
 ```bash
 # Most recent 50 control-plane events
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/audit/list?family=control-plane&limit=50' | python3 -m json.tool
+qod audit list --family control-plane --limit 50
 
 # Page through with the keyset cursor (use nextBefore from the previous response)
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/audit/list?before=<nextBefore-from-previous-page>'
+qod audit list --before <nextBefore-from-previous-page>
 
 # Failed logins in a time window
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/audit/list?action=auth.login.failure&from=2026-07-01T00:00:00Z'
+qod audit list --action auth.login.failure --from 2026-07-01T00:00:00Z
 
 # Only no-tenant rows (anonymous auth failures, node ops, manifest imports; superuser only)
-curl -sS -H "X-API-Key: $TOKEN" 'http://localhost:20900/api/audit/list?noTenant=true' | python3 -m json.tool
+qod audit list --no-tenant
 
-# Exhaustive action vocabulary for exact ?action= filters
-curl -sS -H "X-API-Key: $TOKEN" 'http://localhost:20900/api/audit/actions' | python3 -m json.tool
+# Exhaustive action vocabulary for exact --action filters
+qod audit actions
 ```
 
 Filters: `family`, `tenant` (superuser: returns only that tenant's rows; null-tenant rows not included when this is set), `noTenant=true` (superuser: only null-tenant rows; wins over `tenant`), `actor`, `action` (exact), `q` (substring on action/target), `from`, `to` (ISO-8601), `limit` (max 500), `before` (keyset cursor). Results are newest-first.
@@ -1147,17 +1128,15 @@ Statement history records every FlightSQL statement (including reads). Raw rows 
 
 ```bash
 # Most recent 50 statements for a tenant
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/history/statements?tenant=acme&limit=50' | python3 -m json.tool
+qod history statements --tenant acme --limit 50
 
 # Page through with the keyset cursor (use nextBefore from the previous response)
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/history/statements?before=<nextBefore-from-previous-page>'
+qod history statements --before <nextBefore-from-previous-page>
 
 # Find yesterday's slow statements: fetch the window, filter durationMs locally
 # (there is no duration filter parameter on the endpoint)
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/history/statements?tenant=acme&pool=bi&from=2026-07-05T00:00:00Z&to=2026-07-06T00:00:00Z&limit=500' \
+qod --json history statements --tenant acme --pool bi \
+  --from 2026-07-05T00:00:00Z --to 2026-07-06T00:00:00Z --limit 500 \
   | python3 -c "
 import sys, json
 rows = json.load(sys.stdin).get('statements', [])
@@ -1167,14 +1146,12 @@ for r in sorted(slow, key=lambda x: -x.get('durationMs', 0)):
 "
 
 # Hourly trend for the last 7 days
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/history/trends?granularity=hour&tenant=acme&pool=bi&from=2026-06-29T00:00:00Z&to=2026-07-06T00:00:00Z' \
-  | python3 -m json.tool
+qod history trends --granularity hour --tenant acme --pool bi \
+  --from 2026-06-29T00:00:00Z --to 2026-07-06T00:00:00Z
 
 # Daily trend for the last 30 days
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/history/trends?granularity=day&tenant=acme&from=2026-06-06T00:00:00Z&to=2026-07-06T00:00:00Z' \
-  | python3 -m json.tool
+qod history trends --granularity day --tenant acme \
+  --from 2026-06-06T00:00:00Z --to 2026-07-06T00:00:00Z
 ```
 
 Statement filters: `tenant`, `pool`, `user`, `status` (`ok`, `denied`, `transient`, `permanent`, `no-node`, `no-pool`, or `pin-lost`), `q` (substring on SQL), `from`, `to` (ISO-8601), `limit` (max 500), `before` (keyset cursor). Results are newest-first.
@@ -1197,17 +1174,14 @@ Durable per-tenant / per-pool / per-user metering over daily rollups. Tenant-sco
 history endpoints: superusers see all tenants, tenant admins are pinned to their own.
 
 ```bash
-# Month-to-date per tenant (defaults: current calendar month UTC, groupBy=tenant)
-curl -sS -H "X-API-Key: $TOKEN" 'http://localhost:20900/api/usage' | python3 -m json.tool
+# Month-to-date per tenant (defaults: current calendar month UTC, group-by tenant)
+qod usage
 
 # A closed month per pool, for billing
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/usage?from=2026-06-01T00:00:00Z&to=2026-07-01T00:00:00Z&groupBy=pool&tenant=acme' \
-  | python3 -m json.tool
+qod usage --from 2026-06-01T00:00:00Z --to 2026-07-01T00:00:00Z --group-by pool --tenant acme
 
 # CSV extraction for billing (columns per the spec contract)
-curl -sS -H "X-API-Key: $TOKEN" \
-  'http://localhost:20900/api/usage?from=2026-06-01T00:00:00Z&to=2026-07-01T00:00:00Z' \
+qod --json usage --from 2026-06-01T00:00:00Z --to 2026-07-01T00:00:00Z \
   | jq -r '["tenant","statements","errors","denied","engine_ms"],
            (.groups[] | [.tenant, .statements, .errors, .denied, .engineMs]) | @csv'
 ```
@@ -1221,75 +1195,40 @@ oldest daily bucket still retained.
 |---|---|---|
 | `QOD_USAGE_RETENTION_DAYS` | `400` | Delete daily rollup buckets older than N days (hourly purge); `0` = keep forever |
 
-## Ad-hoc queries
+## Ad-hoc queries (qod sql)
 
-`scripts/adbc.sh` runs a single SQL statement against the FlightSQL edge and prints the result as a terminal table. It's the quickest way to confirm what a given user actually sees - handy for spot-checking ACL, column-, and row-level policies. On first run it provisions an ADBC driver venv under `${QOD_ADBC_VENV:-$HOME/.cache/qod-adbc/venv}`; behind a proxy set `PIP_PROXY` so the one-time install can reach PyPI.
+`qod sql` runs SQL against the FlightSQL edge and prints a terminal table
+(`--csv`, or the global `--json`, for machine output). `qod login` stores the
+edge host/port/TLS and the SQL username in the active CLI profile, so after a
+login it needs no flags beyond the routing target. It's the quickest way to
+confirm what a given user actually sees - handy for spot-checking ACL,
+column-, and row-level policies.
 
 ```bash
-# Query as a tenant user (Basic auth + tenant/pool routing headers).
-# --insecure trusts the edge's self-signed dev cert.
-scripts/adbc.sh --url grpc+tls://localhost:31338 \
-  --user alice --password demo-alice \
-  --tenant acme --pool bi --insecure \
-  --query "SELECT c_mktsegment, count(*) FROM tpch1.customer GROUP BY 1 ORDER BY 1"
+# Query as the profile's user (prompts once for the SQL password)
+qod sql --tenant acme --pool bi \
+  "SELECT c_mktsegment, count(*) FROM tpch1.customer GROUP BY 1 ORDER BY 1"
 
-# Same query as the bootstrap superuser (system realm) -- bypasses RLS/CLS,
-# so diffing the two outputs shows exactly what a policy filtered or masked.
-scripts/adbc.sh --url grpc+tls://localhost:31338 \
-  --user root --password demo-root \
-  --tenant acme --pool bi --superuser --insecure \
-  --query "SELECT c_mktsegment, count(*) FROM tpch1.customer GROUP BY 1 ORDER BY 1"
+# Same query as a superuser (system realm) - bypasses RLS/CLS, so diffing the
+# two outputs shows exactly what a policy filtered or masked. Keep one CLI
+# profile per principal and pick one with --profile.
+qod --profile root sql --tenant acme --pool bi --superuser \
+  "SELECT c_mktsegment, count(*) FROM tpch1.customer GROUP BY 1 ORDER BY 1"
 
-# SQL on stdin instead of --query; edge with TLS off uses grpc://
-echo "SELECT 1" | scripts/adbc.sh --url grpc://localhost:31338 --tenant acme --pool bi
+# Interactive REPL (\q quits), or a script file (first error aborts, exit 1)
+qod sql
+qod sql --file setup.sql
+echo "SELECT 1" | qod sql --file -
 ```
 
-Flags: `--url` (required), `--user` / `--password` (or `LT_USER` / `LT_PASSWORD`), `--query` (or `LT_QUERY`, or stdin), `--tenant` / `--pool` (or `LT_TENANT` / `LT_POOL`), `--superuser`, `--insecure`. Unqualified table names resolve against the pool's default schema, but the FlightSQL prepare-time probe needs a real table - schema-qualify (`tpch1.customer`) if you hit "Table … does not exist" at prepare.
+Connection settings resolve like every other CLI setting: flags > `QOD_HOST` /
+`QOD_PORT` / `QOD_TLS` / `QOD_USER` / `QOD_PASSWORD` / `QOD_TENANT` /
+`QOD_POOL` / `QOD_SUPERUSER` env vars > the profile written by `qod login`.
+Unqualified table names resolve against the pool's default schema, but the
+FlightSQL prepare-time probe needs a real table - schema-qualify
+(`tpch1.customer`) if you hit "Table … does not exist" at prepare.
 
 Two-part names are only unambiguous when the head is a schema in the pool's default catalog, as in `tpch1.customer` above. When the head instead names an attached catalog (the tenant-db itself, e.g. `acme_tpch`, or a federation alias) under ACL, it's rejected as ambiguous - the engine would bind it catalog-first while the ACL check can't tell which catalog you meant. Write the full three-part form instead: `acme_tpch.tpch1.customer`.
-
-## Load testing
-
-`--tenant` and `--pool` are REQUIRED on every invocation (or set `LT_TENANT` / `LT_POOL`). The demo bootstrap creates tenants `acme` + `globex` with pool `bi`.
-
-```bash
-# Defaults: 8 workers × 100 iterations against the live edge (TLS on)
-./scripts/tpch-load-test/tpch-load-test.py --tenant acme --pool bi
-
-# Higher concurrency
-./scripts/tpch-load-test/tpch-load-test.py --tenant acme --pool bi \
-  --workers 24 --iterations 50 --warmup 5
-
-# Custom credentials / URL
-LT_USER=alice LT_PASSWORD=secret \
-  ./scripts/tpch-load-test/tpch-load-test.py --tenant acme --pool bi
-
-# Or pin tenant/pool via env vars
-LT_TENANT=acme LT_POOL=bi ./scripts/tpch-load-test/tpch-load-test.py
-
-# Single query repeated
-LT_QUERY='SELECT count(*) FROM lineitem' \
-  ./scripts/tpch-load-test/tpch-load-test.py --tenant acme --pool bi
-
-# System-realm login (bootstrap `admin`, qodstate_user.tenant IS NULL).
-# Adds the `superuser=true` gRPC header; tenant/pool still drive routing.
-./scripts/tpch-load-test/tpch-load-test.py --tenant acme --pool bi --superuser
-LT_SUPERUSER=true LT_TENANT=acme LT_POOL=bi ./scripts/tpch-load-test/tpch-load-test.py
-
-# TPC-DS workload (requires `scripts/load-tpcds-dbgen.sh` to have seeded the
-# globex_tpcds tenant-db; --schema defaults to tpcds1 to match the SF=1 seed).
-./scripts/tpch-load-test/tpch-load-test.py --workload tpcds --tenant globex --pool bi
-LT_WORKLOAD=tpcds LT_TENANT=globex LT_POOL=bi ./scripts/tpch-load-test/tpch-load-test.py
-```
-
-Reports throughput, success rate, latency percentiles (p50/p95/p99). Two curated workloads ship:
-
-- `--workload tpch` (default) - TPC-H subset (Q1, Q3, Q5, Q6, Q10, Q12, Q14) against schema `tpch1`.
-- `--workload tpcds` - TPC-DS subset (Q3, Q7, Q19, Q42, Q52, Q55, Q98) against schema `tpcds1`. Mixes per-group aggregation, 5- and 6-way joins, top-N, and a window function (Q98's `OVER (PARTITION BY i_class)`).
-
-Override `--schema` (or `$LT_SCHEMA`) when the target tenant-db was seeded at a non-1 scale factor (e.g. `--schema tpcds10`).
-
-The Python script needs `pip install adbc_driver_flightsql adbc_driver_manager pyarrow`. The auto-install on first run prints the right command if anything is missing.
 
 ## Hardening (lockdown, pod security, network policy, reader eviction)
 
@@ -1350,9 +1289,8 @@ opt-in except pod security:
     nodes immediately so the new posture takes effect:
     ```bash
     # Per-pool override (superuser only; restarts the pool's nodes immediately).
-    # lockdown: "inherit" (default, follow QOD_NODE_LOCKDOWN) | "on" | "off"
-    curl -sS -X POST "http://localhost:20900/api/pool/setLockdown" -H "X-API-Key: $TOKEN" -H 'Content-Type: application/json' \
-      -d '{"tenant":"acme","tenantDb":"acme_tpch","pool":"bi","lockdown":"off"}'
+    # --lockdown: inherit (default, follow QOD_NODE_LOCKDOWN) | on | off
+    qod pool set-lockdown --tenant acme --db acme_tpch --pool bi --lockdown off
     ```
   - Verify: with the flag on, `SELECT * FROM read_text('/etc/passwd')` and
     `ATTACH ':memory:' AS x` are denied for a tenant user, `SET
@@ -1380,8 +1318,9 @@ opt-in except pod security:
   and the object store) and `networkpolicy-manager.yaml` (ingress on
   `:20900`/`:31338` from `networkPolicy.ingressFrom`, egress to node pods,
   Postgres, DNS, optional SMTP). Tune `networkPolicy.postgres.cidr`,
-  `networkPolicy.objectStore.cidrs`, and `networkPolicy.nodePortRange` in
-  `charts/quack-on-demand/values.yaml`. Sanity-check a rendered policy with
+  `networkPolicy.objectStore.cidrs`, and `networkPolicy.nodePortRange` in the
+  chart values (`helm show values oci://ghcr.io/starlake-ai/charts/quack-on-demand`).
+  Sanity-check a rendered policy with
   `helm template --set networkPolicy.enabled=true` before applying.
 
 - **Catalog-reader idle eviction** - each cached `DuckLakeCatalogReader`
@@ -1404,13 +1343,12 @@ opt-in except pod security:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `/api/*` returns 401 | `QOD_API_KEY` is set but the header is missing/wrong | Pass `X-API-Key: <key>` or log in via `/api/auth/login` |
-| `no node with role READONLY or DUAL` | All nodes flipped unhealthy (port unreachable) | Check `pgrep -fl spawn-quack-node`; if 0, run `stop` + `start` (reconcile respawns) |
-| `access denied: missing RO grant on ...` | ACL is enabled and the user has no matching grant | Add the grant via the role-permission API or set `QOD_ACL_ENABLED=false` |
+| `/api/*` returns 401 | No valid credential on the call (missing/wrong key, expired session) | `qod login`, or pass `X-API-Key: <key>` on raw REST calls |
+| `no node with role READONLY or DUAL` | All nodes flipped unhealthy (port unreachable) | Check `pgrep -fl spawn-quack-node`; if 0, run `qod stop` + `qod start` (reconcile respawns) |
+| `access denied: missing RO grant on ...` | ACL is enabled and the user has no matching grant | Add the grant via `qod role permission grant` or set `QOD_ACL_ENABLED=false` |
 | `session expired; please reconnect` | Bearer token unknown (manager restarted between calls) | Re-login or pass Basic credentials |
-| `Could not connect to server` for `http://127.0.0.1:21NNN/quack` | Quack child died after manager restart | Reconcile respawns on next boot; until then `pool/delete` + `pool/create` |
-| Python load test: "PyArrow not installed" | Missing pyarrow | `pip install --break-system-packages pyarrow` on macOS |
-| Manager (or spawned node) hangs at startup right after `BaseAllocator` log line, java pegged at 100% CPU | `INSTALL quack` is blocked by a corporate proxy - DuckDB is silently retrying to fetch the extension from `extensions.duckdb.org` | Pass `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` env vars to the process (container `-e` or shell env). See README "Behind a corporate proxy". |
+| `Could not connect to server` for `http://127.0.0.1:21NNN/quack` | Quack child died after manager restart | Reconcile respawns on next boot; until then `qod pool delete` + `qod pool create` |
+| Manager (or spawned node) hangs at startup right after `BaseAllocator` log line, java pegged at 100% CPU | `INSTALL quack` is blocked by a corporate proxy - DuckDB is silently retrying to fetch the extension from `extensions.duckdb.org` | Pass `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` env vars to the process (container `-e` or shell env). See "Behind a corporate proxy" in the project README on GitHub. |
 
 ## Where state lives
 
@@ -1419,15 +1357,14 @@ opt-in except pod security:
 - **Federation** - `qodstate_federated_source`, `qodstate_federated_secret`
 - **DuckLake catalog metadata** - `ducklake_*` tables in each managed tenant-db's own Postgres database (`${tenant}_${suffix}`), separate from the control plane
 - **DuckLake data files** - `defaultMetastore.dataPath` on disk (or s3://, gs://, az://)
-- **Self-signed TLS cert** - `certs/server-{cert,key}.pem` (auto-generated by `openssl req -x509` on first boot if missing)
-- **Manager log on startup script invocation** - `/tmp/quack-startup.log`
+- **Self-signed TLS cert** - `certs/server-{cert,key}.pem` under `qod start`'s state dir (the platform user-data dir), auto-generated on first boot if missing
+- **Manager log** - `qod start` runs the manager in the foreground; its log is the terminal output
 
 ## When operating
 
 - The default admin password is `admin`. Rotate via `QOD_ADMIN_PASSWORD` before exposing the edge.
-- The REST API is OPEN by default (no `QOD_API_KEY` set). Set the env var or restrict the listening interface before going beyond localhost.
-- All scalars in `application.conf` have matching `QOD_*` env-var overrides. Prefer env vars over editing the file (the conf is bundled into the jar at build time).
-- When in doubt about state, check `docs/superpowers/FOLLOWUPS.md` - it's the authoritative list of known issues and recently-closed work, headed by a `HEAD <sha>` line so you can see the baseline.
+- With no `QOD_API_KEY` pinned, boot generates a random one and prints it in a startup banner; it changes on every restart, so pin `QOD_API_KEY` (and `QOD_SESSION_JWT_SECRET`) before any non-localhost deploy.
+- All config scalars have matching `QOD_*` env-var overrides. Prefer env vars over editing `application.conf` (it is bundled into the jar at build time).
 
 ## Common UI URLs
 

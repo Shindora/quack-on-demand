@@ -22,3 +22,23 @@ class HaPreconditionsSpec extends AnyFlatSpec with Matchers:
     HaPreconditions.validate(haEnabled = true, "kubernetes", "").isLeft shouldBe true
     HaPreconditions.validate(haEnabled = true, "kubernetes", "   ").isLeft shouldBe true
   }
+
+  it should "refuse HA combined with the embedded control plane" in {
+    val result = HaPreconditions.validate(
+      haEnabled = true,
+      runtimeType = "kubernetes",
+      sessionJwtSecret = "a-very-long-and-stable-secret-value",
+      embeddedPostgres = true
+    )
+    result.isLeft shouldBe true
+    result.left.toOption.get should include("QOD_PG_EMBEDDED")
+  }
+
+  it should "accept HA with an external Postgres" in {
+    HaPreconditions.validate(
+      haEnabled = true,
+      runtimeType = "kubernetes",
+      sessionJwtSecret = "a-very-long-and-stable-secret-value",
+      embeddedPostgres = false
+    ) shouldBe Right(())
+  }

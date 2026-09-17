@@ -93,6 +93,7 @@ object Main extends IOApp with LazyLogging:
   given ProductHint[RoutingConfig]             = ProductHint[RoutingConfig](camelMapping)
   given ProductHint[AutoscaleConfig]           = ProductHint[AutoscaleConfig](camelMapping)
   given ProductHint[ManagedObjectStoreConfig]  = ProductHint[ManagedObjectStoreConfig](camelMapping)
+  given ProductHint[EmbeddedPostgresConfig]    = ProductHint[EmbeddedPostgresConfig](camelMapping)
   given ProductHint[SmtpConfig]                = ProductHint[SmtpConfig](camelMapping)
   given ProductHint[McpConfig]                 = ProductHint[McpConfig](camelMapping)
   given ProductHint[PatConfig]                 = ProductHint[PatConfig](camelMapping)
@@ -121,6 +122,7 @@ object Main extends IOApp with LazyLogging:
   given ConfigReader[RoutingConfig]            = deriveReader[RoutingConfig]
   given ConfigReader[AutoscaleConfig]          = deriveReader[AutoscaleConfig]
   given ConfigReader[ManagedObjectStoreConfig] = deriveReader[ManagedObjectStoreConfig]
+  given ConfigReader[EmbeddedPostgresConfig]   = deriveReader[EmbeddedPostgresConfig]
   given ConfigReader[SmtpConfig]               = deriveReader[SmtpConfig]
   given ConfigReader[McpConfig]                = deriveReader[McpConfig]
   given ConfigReader[PatConfig]                = deriveReader[PatConfig]
@@ -158,6 +160,47 @@ object Main extends IOApp with LazyLogging:
       case _ =>
         normalManagerRun
 
+  /** Runs `boot` with the control plane's Postgres coordinates resolved.
+    *
+    * With `embeddedPostgres.enabled = false` (the default) this is the identity: `boot` receives
+    * both configs verbatim and no server is started, so existing deployments are untouched.
+    *
+    * With it enabled, a persistent embedded Postgres is started first, the control-plane database
+    * is ensured, and ONLY the five Postgres coordinates are projected onto `mgrCfg`. `authCfg`'s
+    * `database` sub-block (`jdbcUrl`/`username`/`password`) is ALSO re-anchored to the same live
+    * server: those fields are HOCON substitutions of `defaultMetastore.*` resolved at config-load
+    * time, before this server exists, so left alone they would still point at the config-file
+    * coordinates while `seedAdminUsers` writes the admin row into the embedded server -- the auth
+    * split-brain this wrapper exists to close. See `EmbeddedControlPlane.applyAuthCoordinates` for
+    * the per-key env-override rule. The server is stopped (never deleted) on every exit path via
+    * `guarantee`, including a failed boot, including a failure in the control-plane database ensure
+    * step.
+    *
+    * This is deliberately NOT `DemoConfig.overlay`: it does not touch `apiKey`, `runtimeType`,
+    * `nativeClient`, TLS, or ACL, so a persistent embedded install keeps the normal secure posture.
+    * `DemoConfig.overlay` remains reachable only from `DemoRunner.runDemo`.
+    */
+  private[quack] def withEmbeddedControlPlane(
+      mgrCfg: ManagerConfig,
+      authCfg: AuthenticationConfig,
+      env: String => Option[String] = sys.env.get
+  )(boot: (ManagerConfig, AuthenticationConfig) => IO[ExitCode]): IO[ExitCode] =
+    if !mgrCfg.embeddedPostgres.enabled then boot(mgrCfg, authCfg)
+    else
+      IO.blocking(ai.starlake.quack.boot.EmbeddedControlPlane.start(mgrCfg.embeddedPostgres))
+        .flatMap { cp =>
+          (IO.blocking(cp.ensureDatabase(mgrCfg.defaultMetastore.dbName)) *>
+            boot(
+              ai.starlake.quack.boot.EmbeddedControlPlane.applyCoordinates(mgrCfg, cp),
+              ai.starlake.quack.boot.EmbeddedControlPlane.applyAuthCoordinates(
+                authCfg,
+                cp,
+                mgrCfg.defaultMetastore.dbName,
+                env
+              )
+            )).guarantee(IO.blocking(cp.stop()))
+        }
+
   private def normalManagerRun: IO[ExitCode] =
     val source      = ConfigSource.default
     val mgrCfg      = source.at("quack-on-demand").loadOrThrow[ManagerConfig]
@@ -166,15 +209,17 @@ object Main extends IOApp with LazyLogging:
     val aclCfg      = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
     val lockdownCfg = source.at("quack-flightsql.nodeLockdown").loadOrThrow[NodeLockdownConfig]
     val metricsCfg  = source.at("quack-on-demand.metrics").loadOrThrow[MetricsConfig]
-    bootManager(
-      mgrCfg,
-      edgeCfg,
-      authCfg,
-      aclCfg,
-      metricsCfg,
-      lockdownCfg = lockdownCfg,
-      modules = ai.starlake.quack.ondemand.module.ModuleLoader.discover()
-    )
+    withEmbeddedControlPlane(mgrCfg, authCfg) { (resolved, resolvedAuth) =>
+      bootManager(
+        resolved,
+        edgeCfg,
+        resolvedAuth,
+        aclCfg,
+        metricsCfg,
+        lockdownCfg = lockdownCfg,
+        modules = ai.starlake.quack.ondemand.module.ModuleLoader.discover()
+      )
+    }
 
   private[quack] def bootManager(
       mgrCfg0: ManagerConfig,
@@ -193,7 +238,8 @@ object Main extends IOApp with LazyLogging:
       .validate(
         mgrCfg.ha.enabled,
         mgrCfg.runtimeType,
-        mgrCfg.auth.management.sessionJwtSecret
+        mgrCfg.auth.management.sessionJwtSecret,
+        mgrCfg.embeddedPostgres.enabled
       )
       .left
       .foreach(msg => sys.error(msg))

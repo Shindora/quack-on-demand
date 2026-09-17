@@ -257,9 +257,13 @@ final class PoolSupervisor(
         if tdData.nonEmpty then withDb.updated("dataPath", tdData) else withDb.removed("dataPath")
 
       case TenantDbKind.InMemory =>
-        merged
-          .updated("dbName", td.metastore.getOrElse("dbName", "memory"))
-          .removed("dataPath")
+        // dataPath is never a catalog for this kind, but when the row carries one it is the
+        // object-store SCOPE the per-database CREATE SECRET needs (see the InMemory arm of
+        // TenantDb.validate). Inherit nothing from the manager default: only the row's own field
+        // counts, or the node would get a DuckLake directory as its secret scope.
+        val withDb = merged.updated("dbName", td.metastore.getOrElse("dbName", "memory"))
+        if td.dataPath.nonEmpty then withDb.updated("dataPath", td.dataPath)
+        else withDb.removed("dataPath")
 
   /** True when `key`'s tenant-db is in [[dataPathBlocked]]. False when the pool has no persisted
     * row (InMemory-only test pools): such a pool never wrote to the store, so it can't race a
@@ -316,6 +320,29 @@ final class PoolSupervisor(
     snap.tenants.foreach(t => tenants.put(t.id, t))
     snap.tenantDbs.foreach(td => tenantDbs.put(td.id, td))
     snap.pools.foreach(p => poolRows.put(p.id, p))
+    // Federation blob resolution, per tenant-db and cached for the duration of this restore()
+    // call: createPool resolves it via federationBlobOf and stores it on PoolState.extraSetupSql,
+    // but restore() used to skip that call entirely, so any pool respawned after a manager
+    // restart (or an HA replica rehydrating off a qod_topology NOTIFY) came back without its
+    // federation ATTACH aliases. One JDBC read per federated tenant-db per restore is accepted:
+    // topology NOTIFYs are infrequent and the loop below is already O(pools). The bridge to
+    // unsafeRunSync mirrors the established sync-call precedent elsewhere in the edge
+    // (FlightSqlRouter, FlightProducerImpl); a resolution failure must never fail restore()/boot.
+    val fedBlobCache = scala.collection.mutable.Map.empty[String, scala.util.Try[String]]
+    def resolvedBlobFor(td: TenantDb): scala.util.Try[String] =
+      fedBlobCache.getOrElseUpdate(
+        td.id, {
+          val attempt = scala.util.Try(federationBlobOf(td.id).unsafeRunSync().getOrElse(""))
+          attempt.failed.foreach { e =>
+            logger.warn(
+              s"restore: federation blob resolution failed for tenant-db '${td.name}': " +
+                s"${e.getMessage}; nodes respawned from this state will lack federation " +
+                "aliases until it is re-saved"
+            )
+          }
+          attempt
+        }
+      )
     snap.pools.foreach { p =>
       val opt = for
         td <- tenantDbs.get(p.tenantDbId)
@@ -326,6 +353,11 @@ final class PoolSupervisor(
         poolIdByKey.put(key, p.id)
         val nodesHere = snap.nodes.filter(_.poolKey == key)
         val merged    = effectiveMetastoreFor(td)
+        // On resolution failure, fall back to this supervisor's PREVIOUS in-memory blob for this
+        // pool (a warm restore()/NOTIFY replay), else "" (a cold restore() with nothing to fall
+        // back on - see the failure-path test in PoolSupervisorSpec).
+        val extraSetupSql = resolvedBlobFor(td)
+          .getOrElse(pools.get(key).map(_.extraSetupSql).getOrElse(""))
         pools.put(
           key,
           PoolState(
@@ -334,11 +366,13 @@ final class PoolSupervisor(
             distribution = p.distribution,
             metastore = merged,
             s3 = td.objectStore,
+            kindWire = td.kind.wireValue,
             maxConcurrentPerNode = p.maxConcurrentPerNode,
             disabled = p.disabled,
             suspended = p.suspended,
             dbInitSql = td.initSql,
             initSql = p.initSql,
+            extraSetupSql = extraSetupSql,
             // Session defaults for SQL validation / policy-rewrite. Omitting these degraded every
             // restored pool to the metastore's schemaName ("main"), so schema-qualified refs
             // stopped matching tenant-db grants after a restart / NOTIFY rehydration.
@@ -589,10 +623,10 @@ final class PoolSupervisor(
   /** NodeSpec for an ephemeral Spec 09 maintenance node. Never registered in the Router or
     * NodeLoadTracker; the caller owns the full lifecycle. Borrows a serving pool's resolved config
     * (metastore, s3, kindWire, init SQL) so it ATTACHes the same catalog the same way; falls back
-    * to the effective metastore + the tenant-db's own `objectStore` when the tenant-db has no pool
-    * yet, so a per-db-credentialed bucket still authors its `CREATE SECRET` on a donor-less run.
-    * The pool segment is the reserved name `__maint` so node ids can't collide with a serving
-    * pool's.
+    * to the effective metastore + the tenant-db's own `objectStore` and `kind` when the tenant-db
+    * has no pool yet, so a per-db-credentialed bucket still authors its `CREATE SECRET` and a
+    * duckdb-file / memory tenant-db still spawns with its own wire kind on a donor-less run. The
+    * pool segment is the reserved name `__maint` so node ids can't collide with a serving pool's.
     */
   def maintenanceNodeSpec(tenantName: String, tenantDbName: String): Option[NodeSpec] =
     findTenantDb(tenantName, tenantDbName).map { td =>
@@ -610,7 +644,7 @@ final class PoolSupervisor(
         metastore = metastore,
         s3 = s3,
         maxConcurrent = 1,
-        kindWire = donor.map(_.kindWire).getOrElse("ducklake"),
+        kindWire = donor.map(_.kindWire).getOrElse(td.kind.wireValue),
         extraSetupSql = donor
           .map(s => PoolSupervisor.joinInitAndBlob(s.initSql, s.extraSetupSql))
           .getOrElse(""),

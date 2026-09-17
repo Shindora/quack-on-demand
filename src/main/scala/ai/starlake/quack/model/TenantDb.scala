@@ -188,8 +188,13 @@ object TenantDb {
         else validateSafety(td)
 
       case TenantDbKind.InMemory =>
+        // `dataPath` is permitted (and optional) here, but it is NOT a catalog: the spawn
+        // script's `memory)` arm never ATTACHes it and never mkdirs it. It exists solely as the
+        // SCOPE for the per-database object-store secret
+        // ([[ai.starlake.quack.ondemand.runtime.ObjectStoreSecret.sql]] derives the scope from
+        // dataPath and emits nothing without one), which is what lets a memory database of views
+        // over remote parquet actually read. Injection safety still applies via validateSafety.
         if td.metastore.nonEmpty then Some("kind=memory requires empty metastore")
-        else if td.dataPath.nonEmpty then Some("kind=memory requires empty dataPath")
-        else None
+        else validateSafety(td)
     }
 }
