@@ -412,6 +412,7 @@ object Main extends IOApp with LazyLogging:
       mgrCfg.defaultMetastore.asMap,
       dbAdmin,
       federationBlobOf,
+      federatedTenantDbIds = () => manifestFedStore.map(s => s.tenantDbIdsWithSources()),
       onTenantDbDeleted = catalogReaders.evict,
       onTenantDbChanged = catalogReaders.evict,
       onPoolTeardown = key => { placementDirectory.clear(key); localityTracker.clear(key) },

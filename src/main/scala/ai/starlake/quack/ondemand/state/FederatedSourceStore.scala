@@ -18,6 +18,30 @@ trait FederatedSourceOps:
   def getSecret(sourceId: String, name: String): Option[FederatedSecret]
   def listSecrets(sourceId: String): List[FederatedSecret]
 
+  /** Tenant-db ids that have at least one ENABLED federated source. Backs
+    * [[ai.starlake.quack.ondemand.PoolSupervisor.restore]]'s skip-resolution guard: a tenant-db
+    * absent from this set has nothing to resolve, so restore() never opens a connection for it.
+    */
+  def tenantDbIdsWithSources(): Set[String]
+
+object FederatedSourceStore:
+
+  /** Appends `connectTimeout` and `socketTimeout` (pgjdbc units: SECONDS) to a JDBC URL so a
+    * fresh-per-call connection (see `withConn` below) can never hang a caller indefinitely on a
+    * half-dead Postgres. Handles both a bare URL and one that already carries a query string, and
+    * never overrides a timeout the caller's URL already sets.
+    */
+  def withTimeouts(jdbcUrl: String, connectSec: Int = 10, socketSec: Int = 30): String =
+    val hasQuery   = jdbcUrl.contains("?")
+    val hasConnect = jdbcUrl.contains("connectTimeout=")
+    val hasSocket  = jdbcUrl.contains("socketTimeout=")
+    val extras     = List(
+      Option.when(!hasConnect)(s"connectTimeout=$connectSec"),
+      Option.when(!hasSocket)(s"socketTimeout=$socketSec")
+    ).flatten
+    if extras.isEmpty then jdbcUrl
+    else jdbcUrl + (if hasQuery then "&" else "?") + extras.mkString("&")
+
 /** Postgres-backed CRUD against `qodstate_federated_source` and `qodstate_federated_secret`.
   * Cascade-delete on source -> secret is enforced by the FK constraint, so deleting a source
   * automatically wipes its secrets.
@@ -30,8 +54,12 @@ class FederatedSourceStore(
 
   Class.forName("org.postgresql.Driver")
 
+  // Bounded once at construction: every caller of withConn (handlers, blob builder loads via
+  // listEnabledSources/listSecrets, tenantDbIdsWithSources) benefits without a per-call cost.
+  private val boundedUrl = FederatedSourceStore.withTimeouts(jdbcUrl)
+
   private def withConn[A](f: Connection => A): A =
-    val c = DriverManager.getConnection(jdbcUrl, user, password)
+    val c = DriverManager.getConnection(boundedUrl, user, password)
     try f(c)
     finally c.close()
 
@@ -99,6 +127,20 @@ class FederatedSourceStore(
         |FROM qodstate_federated_source
         |WHERE tenant_db_id = ? AND disabled = false ORDER BY alias""".stripMargin
     )
+  }
+
+  def tenantDbIdsWithSources(): Set[String] = withConn { c =>
+    val ps = c.prepareStatement(
+      "SELECT DISTINCT tenant_db_id FROM qodstate_federated_source WHERE disabled = false"
+    )
+    try
+      val rs = ps.executeQuery()
+      try
+        val buf = scala.collection.mutable.Set.empty[String]
+        while rs.next() do buf += rs.getString("tenant_db_id")
+        buf.toSet
+      finally rs.close()
+    finally ps.close()
   }
 
   private def queryWithTd(c: Connection, tenantDbId: String, sql: String): List[FederatedSource] =

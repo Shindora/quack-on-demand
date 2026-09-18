@@ -139,6 +139,8 @@ class HandlerAuditSpec extends AnyFlatSpec with Matchers:
       secrets.values.find(s => s.federatedSourceId == sourceId && s.name == name)
     def listSecrets(sourceId: String): List[FederatedSecret] =
       secrets.values.filter(_.federatedSourceId == sourceId).toList.sortBy(_.name)
+    def tenantDbIdsWithSources(): Set[String] =
+      sources.values.filterNot(_.disabled).map(_.tenantDbId).toSet
 
   // ---------------------------------------------------------------------------
   // Build FederatedSourceHandlers over the in-memory store.

@@ -1898,6 +1898,119 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     supB.get(key).get.extraSetupSql shouldBe ""
   }
 
+  // ---------- #101: restore() skips blob resolution for non-federated tenant-dbs, bounded ----------
+  //
+  // federatedTenantDbIds narrows resolution to the tenant-dbs the caller (Main, wired to
+  // FederatedSourceStore.tenantDbIdsWithSources) reports as actually having federated sources.
+  // A td outside that set is never resolved at all - the same fallback as a resolution failure,
+  // but silent, because "no federated sources" is the expected common case, not an error.
+
+  it should "skip federation blob resolution for a tenant-db outside federatedTenantDbIds " +
+    "(cold restore, no in-memory carry-forward to fall back on)" in {
+      val store5 = new InMemoryControlPlaneStore()
+      // Seed via a supervisor with NO filter (mirrors "resolve the federation blob on a cold
+      // restore()" above), so the seed itself does not depend on the behavior under test.
+      val supA = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store5)
+      supA.createTenant(Tenant("acme")).unsafeRunSync()
+      supA.createTenantDb(
+        tenantName = "acme", suffix = "default", kind = TenantDbKind.InMemory,
+        metastore = Map.empty, dataPath = ""
+      ).unsafeRunSync()
+      supA.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+
+      var invoked = false
+      val supB = new PoolSupervisor(
+        fakeBackend(),
+        new NodeLoadTracker,
+        store5,
+        federationBlobOf = _ => IO { invoked = true; Some("ATTACH 'fed.db' AS fedx;") },
+        federatedTenantDbIds = () => Some(Set.empty)
+      )
+
+      supB.restore()
+
+      invoked shouldBe false
+      supB.get(key).get.extraSetupSql shouldBe ""
+    }
+
+  it should "resolve federation blob for a tenant-db that IS a member of federatedTenantDbIds" in {
+    val store6 = new InMemoryControlPlaneStore()
+    var invoked = false
+    val sup6 = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store6,
+      federationBlobOf = _ => IO { invoked = true; Some("ATTACH 'fed.db' AS fedx;") },
+      federatedTenantDbIds = () => None // not used to create the pool; set below post-hoc
+    )
+    sup6.createTenant(Tenant("acme")).unsafeRunSync()
+    val tdId = sup6.createTenantDb(
+      tenantName = "acme", suffix = "default", kind = TenantDbKind.InMemory,
+      metastore = Map.empty, dataPath = ""
+    ).unsafeRunSync().toOption.get.id
+    sup6.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+
+    // Fresh (cold) supervisor over the same store, this time scoped to the real td id.
+    val sup6b = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store6,
+      federationBlobOf = _ => IO { invoked = true; Some("ATTACH 'fed.db' AS fedx;") },
+      federatedTenantDbIds = () => Some(Set(tdId))
+    )
+    invoked = false
+    sup6b.restore()
+
+    invoked shouldBe true
+    sup6b.get(key).get.extraSetupSql should include("ATTACH 'fed.db' AS fedx;")
+  }
+
+  it should "degrade a throwing federatedTenantDbIds supplier to resolving every tenant-db" in {
+    val store7 = new InMemoryControlPlaneStore()
+    var invoked = false
+    val supA = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store7)
+    supA.createTenant(Tenant("acme")).unsafeRunSync()
+    supA.createTenantDb(
+      tenantName = "acme", suffix = "default", kind = TenantDbKind.InMemory,
+      metastore = Map.empty, dataPath = ""
+    ).unsafeRunSync()
+    supA.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+
+    val supB = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store7,
+      federationBlobOf = _ => IO { invoked = true; Some("ATTACH 'fed.db' AS fedx;") },
+      federatedTenantDbIds = () => throw new RuntimeException("boom")
+    )
+    noException should be thrownBy supB.restore()
+
+    invoked shouldBe true
+    supB.get(key).get.extraSetupSql should include("ATTACH 'fed.db' AS fedx;")
+  }
+
+  it should "not hang restore() when federationBlobOf never completes, bounded by blobResolveTimeout" in {
+    val store8 = new InMemoryControlPlaneStore()
+    val supA   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store8)
+    supA.createTenant(Tenant("acme")).unsafeRunSync()
+    supA.createTenantDb(
+      tenantName = "acme", suffix = "default", kind = TenantDbKind.InMemory,
+      metastore = Map.empty, dataPath = ""
+    ).unsafeRunSync()
+    supA.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+
+    val supB = new PoolSupervisor(
+      fakeBackend(),
+      new NodeLoadTracker,
+      store8,
+      federationBlobOf = _ => IO.never,
+      blobResolveTimeout = 100.millis
+    )
+    noException should be thrownBy supB.restore()
+
+    supB.get(key).get.extraSetupSql shouldBe ""
+  }
+
   // ---------- restore() carries the tenant-db's own kindWire (live-smoke regression) ----------
   //
   // Narrower sibling of the test above: that one also pins extraSetupSql. This one isolates
