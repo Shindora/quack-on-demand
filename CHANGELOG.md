@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Federation store connections now carry connect/socket timeouts, and restore() no longer
+  resolves the federation blob for tenant-dbs that have no federated sources.**
+  `FederatedSourceStore` opened a fresh JDBC connection per call with no `socketTimeout`, so a
+  half-dead federation Postgres could hang any caller indefinitely - including manager boot,
+  since `PoolSupervisor.restore()` re-resolves the federation blob per tenant-db on every boot
+  and HA topology NOTIFY. The store's connections now carry `connectTimeout`/`socketTimeout`
+  (10s/30s, never overriding a value the caller's URL already sets), `restore()` skips
+  resolution entirely for a tenant-db with no federated sources (one cheap set-query per
+  restore instead of a connection per tenant-db), and the resolution that does happen is bounded
+  by a 15s timeout, degrading to the existing WARN-and-fallback path instead of hanging. Fixes
+  #101.
+
 ## 0.9.2
 
 - **`qod serve <target>` takes you from your own data to a queryable gateway

@@ -73,6 +73,18 @@ final class PoolSupervisor(
     defaultMetastore: Map[String, String] = Map.empty,
     dbAdmin: DbAdmin = NoopDbAdmin,
     federationBlobOf: String => IO[Option[String]] = _ => IO.pure(None),
+    /** Tenant-db ids that have at least one federated source, fetched once per `restore()` call
+      * (see below). `None` means "resolve for every tenant-db" (the pre-#101 default, also the
+      * degrade-to path when the supplier throws); `Some(ids)` lets restore() skip resolution
+      * entirely for a tenant-db outside the set instead of opening a connection for it.
+      */
+    federatedTenantDbIds: () => Option[Set[String]] = () => None,
+    /** Upper bound on a single federationBlobOf call during restore(). A stall past this (e.g. a
+      * half-dead federation Postgres) degrades to the existing WARN + fallback path instead of
+      * hanging restore()/boot; see the resolvedBlobFor comment below.
+      */
+    blobResolveTimeout: scala.concurrent.duration.FiniteDuration =
+      scala.concurrent.duration.DurationInt(15).seconds,
     /** Fired after a tenant-db row is removed ([[deleteTenantDb]] or cascaded via
       * [[deleteTenant]]). Default no-op; Main evicts the
       * [[ai.starlake.quack.ondemand.catalog.DuckLakeCatalogReader]] cache so the per-tenant-db
@@ -324,24 +336,48 @@ final class PoolSupervisor(
     // call: createPool resolves it via federationBlobOf and stores it on PoolState.extraSetupSql,
     // but restore() used to skip that call entirely, so any pool respawned after a manager
     // restart (or an HA replica rehydrating off a qod_topology NOTIFY) came back without its
-    // federation ATTACH aliases. One JDBC read per federated tenant-db per restore is accepted:
-    // topology NOTIFYs are infrequent and the loop below is already O(pools). The bridge to
-    // unsafeRunSync mirrors the established sync-call precedent elsewhere in the edge
-    // (FlightSqlRouter, FlightProducerImpl); a resolution failure must never fail restore()/boot.
+    // federation ATTACH aliases. Cost is now one set-query (federatedTenantDbIds) per restore()
+    // plus 1+N connections (FederationBlobBuilder.assemble) per FEDERATED tenant-db only - a
+    // tenant-db with no federated sources never opens a connection. A stall is bounded twice
+    // over: socketTimeout at the store (FederatedSourceStore.withTimeouts) and blobResolveTimeout
+    // here. The bridge to unsafeRunSync mirrors the established sync-call precedent elsewhere in
+    // the edge (FlightSqlRouter, FlightProducerImpl); a resolution failure must never fail
+    // restore()/boot.
+    //
+    // A throwing federatedTenantDbIds supplier degrades to None (resolve for every tenant-db,
+    // the pre-#101 behavior) with one WARN, rather than silently skipping everything.
+    val fedTds: Option[Set[String]] = scala.util.Try(federatedTenantDbIds()) match
+      case scala.util.Success(ids) => ids
+      case scala.util.Failure(e)   =>
+        logger.warn(
+          s"restore: federatedTenantDbIds() failed: ${e.getMessage}; resolving federation " +
+            "blobs for every tenant-db this restore instead of just the federated ones"
+        )
+        None
     val fedBlobCache = scala.collection.mutable.Map.empty[String, scala.util.Try[String]]
     def resolvedBlobFor(td: TenantDb): scala.util.Try[String] =
       fedBlobCache.getOrElseUpdate(
-        td.id, {
-          val attempt = scala.util.Try(federationBlobOf(td.id).unsafeRunSync().getOrElse(""))
+        td.id,
+        if fedTds.exists(!_.contains(td.id)) then
+          // Not a federated tenant-db (per the just-fetched filter): skip resolution entirely,
+          // same fallback path as a resolution failure below, minus the WARN - this is the
+          // expected common case, not an error.
+          scala.util.Failure(new java.util.NoSuchElementException("not a federated tenant-db"))
+        else
+          val attempt = scala.util.Try(
+            federationBlobOf(td.id).timeout(blobResolveTimeout).unsafeRunSync().getOrElse("")
+          )
           attempt.failed.foreach { e =>
+            val bound = e match
+              case _: java.util.concurrent.TimeoutException => s" (bound: $blobResolveTimeout)"
+              case _                                        => ""
             logger.warn(
-              s"restore: federation blob resolution failed for tenant-db '${td.name}': " +
+              s"restore: federation blob resolution failed for tenant-db '${td.name}'$bound: " +
                 s"${e.getMessage}; nodes respawned from this state will lack federation " +
                 "aliases until it is re-saved"
             )
           }
           attempt
-        }
       )
     snap.pools.foreach { p =>
       val opt = for

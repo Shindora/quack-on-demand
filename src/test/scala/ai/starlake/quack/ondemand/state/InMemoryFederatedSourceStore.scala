@@ -4,11 +4,11 @@ import ai.starlake.quack.model.{FederatedSecret, FederatedSource}
 
 import scala.collection.mutable
 
-/** Process-local fixture for unit tests that exercise manifest federation
-  * round-trips without standing up a Postgres. Extends [[FederatedSourceStore]]
-  * and overrides every public method to delegate to in-memory maps so the JDBC
-  * layer is never reached. The fake JDBC URL passed to the superclass constructor
-  * is unused because all overriding methods bypass `withConn` entirely. */
+/** Process-local fixture for unit tests that exercise manifest federation round-trips without
+  * standing up a Postgres. Extends [[FederatedSourceStore]] and overrides every public method to
+  * delegate to in-memory maps so the JDBC layer is never reached. The fake JDBC URL passed to the
+  * superclass constructor is unused because all overriding methods bypass `withConn` entirely.
+  */
 final class InMemoryFederatedSourceStore
     extends FederatedSourceStore("jdbc:unused", "unused", "unused"):
 
@@ -32,6 +32,9 @@ final class InMemoryFederatedSourceStore
 
   override def listEnabledSources(tenantDbId: String): List[FederatedSource] =
     listSources(tenantDbId).filterNot(_.disabled)
+
+  override def tenantDbIdsWithSources(): Set[String] =
+    srcs.values.filterNot(_.disabled).map(_.tenantDbId).toSet
 
   // ---------------- FederatedSecret ----------------
 
