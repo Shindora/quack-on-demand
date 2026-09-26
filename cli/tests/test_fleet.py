@@ -44,7 +44,7 @@ def test_node_list_flattens_pools_with_a_server_column(monkeypatch):
     monkeypatch.setattr(rest.RestClient, "request", fake_request)
     out = runner.invoke(app, ["--json", "node", "list"])
     assert out.exit_code == 0, out.output
-    rows = json.loads(out.output)
+    rows = json.loads(out.stdout)
     assert calls == [("GET", "/api/pool/list")]
     assert [(r["node"], r["server"], r["serverState"]) for r in rows] == [
         ("quack-acme-acme-tpch-bi-1", "s1", "reachable"),

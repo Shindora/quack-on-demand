@@ -330,7 +330,7 @@ class Agent:
             r = self.http.post(f"{self.manager_url}/api/fleet/heartbeat", json=body,
                                headers={"X-Fleet-Token": self.join_token}, timeout=10.0)
         except Exception as exc:  # network: keep the node running, retry later
-            sys.stderr.write(f"qod agent: heartbeat failed: {exc}\n")
+            sys.stderr.write(f"qod agent: heartbeat to {self.manager_url} failed: {exc}\n")
             self._mark_disconnected()
             return BACKOFF_MIN_S
         if not r.is_success:
