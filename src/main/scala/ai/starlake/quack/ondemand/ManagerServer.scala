@@ -456,7 +456,9 @@ final class ManagerServer(
     // superuser-gated per request inside the handler.
     val fleetEndpoints: List[ServerEndpoint[Any, IO]] = fleet.toList.flatMap { h =>
       List[ServerEndpoint[Any, IO]](
-        FleetEndpoints.heartbeat.serverLogic { case (req, token) => h.heartbeat(req, token) },
+        FleetEndpoints.heartbeat.serverLogic { case (req, token, forwardedFor, remote) =>
+          h.heartbeat(req, token, remote.map(_.getAddress), forwardedFor)
+        },
         FleetEndpoints.listServers.serverLogic(token => h.listServers(token)(scopeOfToken)),
         FleetEndpoints.drainServer.serverLogic { case (req, token) =>
           h.drain(req, token)(scopeOfToken)
@@ -466,6 +468,9 @@ final class ManagerServer(
         },
         FleetEndpoints.removeServer.serverLogic { case (req, token) =>
           h.remove(req, token)(scopeOfToken)
+        },
+        FleetEndpoints.approveServer.serverLogic { case (req, token) =>
+          h.approve(req, token)(scopeOfToken)
         }
       )
     }

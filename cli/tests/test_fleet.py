@@ -14,11 +14,13 @@ def test_fleet_servers_and_ops(monkeypatch):
     assert runner.invoke(app, ["fleet", "drain", "srv-1"]).exit_code == 0
     assert runner.invoke(app, ["fleet", "undrain", "srv-1"]).exit_code == 0
     assert runner.invoke(app, ["fleet", "remove", "srv-1"]).exit_code == 0
+    assert runner.invoke(app, ["fleet", "approve", "srv-1"]).exit_code == 0
     assert calls == [
         ("GET", "/api/fleet/servers", None),
         ("POST", "/api/fleet/server/drain", {"name": "srv-1"}),
         ("POST", "/api/fleet/server/undrain", {"name": "srv-1"}),
         ("POST", "/api/fleet/server/remove", {"name": "srv-1"}),
+        ("POST", "/api/fleet/server/approve", {"name": "srv-1"}),
     ]
 
 

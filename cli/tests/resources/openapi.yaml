@@ -4580,6 +4580,11 @@ paths:
         required: false
         schema:
           type: string
+      - name: X-Forwarded-For
+        in: header
+        required: false
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -4594,7 +4599,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/FleetHeartbeatResponse'
         '400':
-          description: 'Invalid value for: body, Invalid value for: header X-Fleet-Token'
+          description: 'Invalid value for: body, Invalid value for: header X-Fleet-Token,
+            Invalid value for: header X-Forwarded-For, Invalid value'
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/fleet/server/approve:
+    post:
+      operationId: postApiFleetServerApprove
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      - name: qod_session
+        in: cookie
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetServerOpRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+        '400':
+          description: 'Invalid value for: body, Invalid value for: header X-API-Key,
+            Invalid value for: cookie qod_session'
           content:
             text/plain:
               schema:
@@ -7678,12 +7720,15 @@ components:
       type: object
       required:
       - heartbeatSec
+      - approval
       properties:
         heartbeatSec:
           type: integer
           format: int32
         assignment:
           $ref: '#/components/schemas/FleetAssignmentDto'
+        approval:
+          type: string
     FleetNodeReportDto:
       title: FleetNodeReportDto
       type: object
@@ -7732,6 +7777,7 @@ components:
       - nodeState
       - joinedAt
       - lastHeartbeatAt
+      - approval
       properties:
         name:
           type: string
@@ -7772,6 +7818,14 @@ components:
         joinedAt:
           type: string
         lastHeartbeatAt:
+          type: string
+        approval:
+          type: string
+        approvedBy:
+          type: string
+        approvedAt:
+          type: string
+        sourceAddr:
           type: string
     FleetServerListResponse:
       title: FleetServerListResponse
@@ -9248,6 +9302,8 @@ components:
         prepareDurationMs:
           type: integer
           format: int64
+        serverName:
+          type: string
     StatementHistoryResponse:
       title: StatementHistoryResponse
       type: object

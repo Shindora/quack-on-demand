@@ -2,7 +2,7 @@ package ai.starlake.quack.ondemand.api
 
 import ai.starlake.quack.FleetConfig
 import ai.starlake.quack.ondemand.auth.SessionScope
-import ai.starlake.quack.ondemand.fleet.ServerLiveness
+import ai.starlake.quack.ondemand.fleet.{Cidr, ClientAddress, ServerLiveness}
 import ai.starlake.quack.ondemand.ha.StateChangePublisher
 import ai.starlake.quack.ondemand.runtime.FleetQuackBackend
 import ai.starlake.quack.ondemand.state.{
@@ -18,6 +18,7 @@ import cats.effect.IO
 import com.typesafe.scalalogging.LazyLogging
 import sttp.model.StatusCode
 
+import java.net.InetAddress
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
@@ -27,8 +28,8 @@ import scala.util.Try
   * (constant-time compare against the join token), never a session or API key. No clock here: every
   * timestamp is the store's.
   *
-  * The admin server endpoints (list / drain / undrain / remove) are superuser or static key only
-  * and answer `400 fleet_disabled` when `backend` is None (runtimeType is not fleet).
+  * The admin server endpoints (list / drain / undrain / remove / approve) are superuser or static
+  * key only and answer `400 fleet_disabled` when `backend` is None (runtimeType is not fleet).
   */
 final class FleetHandlers(
     store: FleetServerStore,
@@ -40,6 +41,10 @@ final class FleetHandlers(
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 
   private val ValidStates = Set("none", "starting", "running", "failed", "stopped")
+
+  // Parsed once; FleetConfig validated both at boot.
+  private val autoApproveList = cfg.autoApproveCidrs
+  private val trustedProxies  = cfg.trustedProxyCidrs
 
   private def tokenOk(provided: Option[String]): Boolean =
     cfg.joinToken.nonEmpty && provided.exists(p =>
@@ -70,7 +75,15 @@ final class FleetHandlers(
         Left((StatusCode.BadGateway, ErrorResponse("backend_error", FleetHandlers.StoreError)))
     }
 
-  def heartbeat(req: FleetHeartbeatRequest, token: Option[String]): Out[FleetHeartbeatResponse] =
+  /** `peer` is the TCP peer; `forwardedFor` is believed only when the peer is a trusted proxy. The
+    * resolved address decides auto-approval (QOD_FLEET_AUTO_APPROVE); an unknown one never does.
+    */
+  def heartbeat(
+      req: FleetHeartbeatRequest,
+      token: Option[String],
+      peer: Option[InetAddress],
+      forwardedFor: Option[String]
+  ): Out[FleetHeartbeatResponse] =
     val startedAt = req.node.startedAt.map(s => Try(Instant.parse(s)).toOption)
     // Not a fleet manager: no server rows may be written, whoever the caller (on a local or K8s
     // manager the route sits behind the API-key guard, so a static-key caller reaches it).
@@ -99,7 +112,9 @@ final class FleetHandlers(
         req.node.error,
         startedAt.flatten
       )
-      val hb = Heartbeat(
+      val source = ClientAddress.resolve(peer, forwardedFor, trustedProxies)
+      val autoOk = source.exists(a => Cidr.anyContains(autoApproveList, a))
+      val hb     = Heartbeat(
         req.name,
         req.advertiseHost,
         req.nodePort,
@@ -109,8 +124,8 @@ final class FleetHandlers(
         req.cpus,
         req.memoryBytes,
         report,
-        sourceAddr = None,
-        autoApprove = true
+        sourceAddr = source.map(_.getHostAddress),
+        autoApprove = autoOk
       )
       val record: Out[FleetHeartbeatResponse] =
         IO.blocking(store.recordHeartbeat(hb)).flatMap {
@@ -122,15 +137,30 @@ final class FleetHandlers(
                 "drain it before re-addressing"
             )
           case outcome =>
-            if outcome == HeartbeatOutcome.Joined then
-              logger.info(
-                s"fleet: server '${req.name}' joined from ${req.advertiseHost}:${req.nodePort}"
-              )
             IO.blocking(store.get(req.name)).map { row =>
+              val approval = if row.exists(_.approved) then "approved" else "pending"
+              if outcome == HeartbeatOutcome.Joined then
+                val from = hb.sourceAddr.getOrElse("an unknown address")
+                logger.info(
+                  s"fleet: server '${req.name}' joined from $from " +
+                    s"(advertises ${req.advertiseHost}:${req.nodePort}): " +
+                    (if approval == "approved" then "auto-approved"
+                     else "pending approval (source not in QOD_FLEET_AUTO_APPROVE)")
+                )
+                audit.restAs(
+                  req.name,
+                  "fleet",
+                  "control-plane",
+                  AuditActions.FleetJoin,
+                  "ok",
+                  target = Some(req.name),
+                  detail = Map("source" -> from, "approval" -> approval)
+                )
               Right(
                 FleetHeartbeatResponse(
                   cfg.heartbeatSec,
-                  row.flatMap(_.assignment).map(FleetHandlers.toDto)
+                  row.flatMap(_.assignment).map(FleetHandlers.toDto),
+                  approval
                 )
               )
             }
@@ -165,7 +195,11 @@ final class FleetHandlers(
       cpus = r.cpus,
       memoryBytes = r.memoryBytes,
       joinedAt = r.joinedAt.toString,
-      lastHeartbeatAt = r.lastHeartbeatAt.toString
+      lastHeartbeatAt = r.lastHeartbeatAt.toString,
+      approval = if r.approved then "approved" else "pending",
+      approvedBy = r.approvedBy,
+      approvedAt = r.approvedAt.map(_.toString),
+      sourceAddr = r.sourceAddr
     )
 
   def listServers(apiKey: Option[String])(
@@ -181,7 +215,7 @@ final class FleetHandlers(
           }
         }
 
-  /** Common shape of the three mutations: superuser gate (denied audit row), fleet gate, 404 on an
+  /** Common shape of the server mutations: superuser gate (denied audit row), fleet gate, 404 on an
     * unknown name, then `f` with an ok / error audit row. A raised error maps to 502 with an error
     * audit row.
     */
@@ -229,6 +263,17 @@ final class FleetHandlers(
     serverOp(req, apiKey, AuditActions.FleetUndrain)(scopeOf) { (_, row) =>
       // Published like drain: the server is schedulable again, peers should see it.
       IO.blocking(store.setUnschedulable(row.name, false)) *>
+        IO.delay(publish.topologyChanged()).as(Right(()))
+    }
+
+  /** Let a pending server take nodes. Idempotent; the first approver and time are kept. The next
+    * reconcile pass fills pending slots onto it.
+    */
+  def approve(req: FleetServerOpRequest, apiKey: Option[String])(
+      scopeOf: String => Option[SessionScope]
+  ): Out[Unit] =
+    serverOp(req, apiKey, AuditActions.FleetApprove)(scopeOf) { (_, row) =>
+      IO.blocking(store.approve(row.name, audit.actorOf(apiKey)._1)) *>
         IO.delay(publish.topologyChanged()).as(Right(()))
     }
 

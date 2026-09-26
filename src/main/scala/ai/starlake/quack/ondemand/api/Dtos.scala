@@ -332,7 +332,15 @@ final case class FleetAssignmentDto(
     extraSetupSql: String,
     lockdownSql: String
 )
-final case class FleetHeartbeatResponse(heartbeatSec: Int, assignment: Option[FleetAssignmentDto])
+
+/** `approval` is approved | pending: a pending server gets no assignment until it is approved (`qod
+  * fleet approve`, or its address added to QOD_FLEET_AUTO_APPROVE).
+  */
+final case class FleetHeartbeatResponse(
+    heartbeatSec: Int,
+    assignment: Option[FleetAssignmentDto],
+    approval: String
+)
 
 /** One fleet server (GET /api/fleet/servers). `liveness` is reachable | unreachable | dead;
   * `silentSeconds` is measured on the database clock. The pool key fields come from the current
@@ -356,7 +364,11 @@ final case class FleetServerDto(
     cpus: Option[Int],
     memoryBytes: Option[Long],
     joinedAt: String,
-    lastHeartbeatAt: String
+    lastHeartbeatAt: String,
+    approval: String,           // approved | pending
+    approvedBy: Option[String], // auto | upgrade | the approving admin
+    approvedAt: Option[String],
+    sourceAddr: Option[String] // resolved address of the latest heartbeat
 )
 final case class FleetServerListResponse(servers: List[FleetServerDto])
 final case class FleetServerOpRequest(name: String)

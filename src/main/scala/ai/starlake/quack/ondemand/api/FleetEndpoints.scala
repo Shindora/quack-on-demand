@@ -18,7 +18,7 @@ object FleetEndpoints:
 
   /** Public at the api-key guard only when runtimeType=fleet; the handler checks X-Fleet-Token. */
   val heartbeat: PublicEndpoint[
-    (FleetHeartbeatRequest, Option[String]),
+    (FleetHeartbeatRequest, Option[String], Option[String], Option[java.net.InetSocketAddress]),
     (sttp.model.StatusCode, ErrorResponse),
     FleetHeartbeatResponse,
     Any
@@ -27,6 +27,9 @@ object FleetEndpoints:
       .in("fleet" / "heartbeat")
       .in(jsonBody[FleetHeartbeatRequest])
       .in(header[Option[String]]("X-Fleet-Token"))
+      // Believed only from QOD_FLEET_TRUSTED_PROXIES; the peer address is the default.
+      .in(header[Option[String]]("X-Forwarded-For"))
+      .in(extractFromRequest(_.connectionInfo.remote))
       .out(jsonBody[FleetHeartbeatResponse])
 
   // Admin surface: superuser session or static key only (checked in the handler).
@@ -71,5 +74,16 @@ object FleetEndpoints:
   ] =
     base.post
       .in("fleet" / "server" / "remove")
+      .in(jsonBody[FleetServerOpRequest])
+      .in(authToken)
+
+  val approveServer: PublicEndpoint[
+    (FleetServerOpRequest, Option[String]),
+    (sttp.model.StatusCode, ErrorResponse),
+    Unit,
+    Any
+  ] =
+    base.post
+      .in("fleet" / "server" / "approve")
       .in(jsonBody[FleetServerOpRequest])
       .in(authToken)

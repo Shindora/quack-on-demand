@@ -21,12 +21,15 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import sttp.model.StatusCode
 
+import java.net.InetAddress
 import java.time.Instant
 
 class FleetHandlersSpec extends AnyFlatSpec with Matchers:
-  private val t0        = Instant.parse("2026-09-25T10:00:00Z")
-  private val hbCfg     = FleetConfig(joinToken = "secret", heartbeatSec = 7)
-  private def fixture() =
+  private val t0                            = Instant.parse("2026-09-25T10:00:00Z")
+  private val hbCfg                         = FleetConfig(joinToken = "secret", heartbeatSec = 7)
+  private val loopback: Option[InetAddress] = Some(InetAddress.getByName("127.0.0.1"))
+  private def addr(s: String): Option[InetAddress] = Some(InetAddress.getByName(s))
+  private def fixture()                            =
     val store   = new InMemoryFleetServerStore(clock = () => t0)
     val backend = new FleetQuackBackend(store, hbCfg, clock = () => t0)
     (store, new FleetHandlers(store, hbCfg, backend = Some(backend)))
@@ -45,23 +48,28 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
 
   "heartbeat" should "401 on a wrong or missing token" in {
     val (_, h) = fixture()
-    h.heartbeat(req(), Some("nope")).unsafeRunSync().left.map(e => (e._1, e._2.error)) shouldBe
+    h.heartbeat(req(), Some("nope"), loopback, None)
+      .unsafeRunSync()
+      .left
+      .map(e => (e._1, e._2.error)) shouldBe
       Left((StatusCode.Unauthorized, "fleet_unauthorized"))
-    h.heartbeat(req(), None).unsafeRunSync().left.map(_._1) shouldBe Left(StatusCode.Unauthorized)
-    h.heartbeat(req(), Some("secret")).unsafeRunSync().isRight shouldBe true
+    h.heartbeat(req(), None, loopback, None).unsafeRunSync().left.map(_._1) shouldBe Left(
+      StatusCode.Unauthorized
+    )
+    h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync().isRight shouldBe true
   }
 
   it should "insert on first contact and answer with no assignment and the interval" in {
     val (store, h) = fixture()
-    h.heartbeat(req(), Some("secret")).unsafeRunSync() shouldBe
-      Right(FleetHeartbeatResponse(7, None))
+    h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync() shouldBe
+      Right(FleetHeartbeatResponse(7, None, "approved"))
     store.get("srv-1").map(r => (r.joinedAt, r.cpus, r.memoryBytes)) shouldBe
       Some((t0, Some(8), Some(64L << 30)))
   }
 
   it should "return the current assignment" in {
     val (store, h) = fixture()
-    h.heartbeat(req(), Some("secret")).unsafeRunSync()
+    h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync()
     store.claim(
       FleetAssignment(
         0,
@@ -79,25 +87,32 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       30,
       None
     )
-    val r = h.heartbeat(req(), Some("secret")).unsafeRunSync().toOption.get
+    val r = h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync().toOption.get
     r.assignment.map(a => (a.nodeId, a.epoch, a.poolKey.tenant, a.env("pgHost"))) shouldBe
       Some(("n1", 1L, "acme", "h"))
   }
 
   it should "409 an address change on a known name even when idle (no takeover)" in {
     val (store, h) = fixture()
-    h.heartbeat(req(), Some("secret")).unsafeRunSync()
-    val e = h.heartbeat(req(host = "10.0.0.2"), Some("secret")).unsafeRunSync().left.toOption.get
+    h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync()
+    val e = h
+      .heartbeat(req(host = "10.0.0.2"), Some("secret"), loopback, None)
+      .unsafeRunSync()
+      .left
+      .toOption
+      .get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "address_change_refused")
     store.setUnschedulable("srv-1", true)
-    h.heartbeat(req(host = "10.0.0.2"), Some("secret")).unsafeRunSync().isRight shouldBe true
+    h.heartbeat(req(host = "10.0.0.2"), Some("secret"), loopback, None)
+      .unsafeRunSync()
+      .isRight shouldBe true
     store.get("srv-1").map(_.advertiseHost) shouldBe Some("10.0.0.2")
   }
 
   it should "400 an unknown node state" in {
     val (_, h) = fixture()
     val bad    = req().copy(node = FleetNodeReportDto(0, None, "sleeping", None, None, None))
-    h.heartbeat(bad, Some("secret")).unsafeRunSync().left.map(_._2.error) shouldBe
+    h.heartbeat(bad, Some("secret"), loopback, None).unsafeRunSync().left.map(_._2.error) shouldBe
       Left("invalid_node_state")
   }
 
@@ -105,7 +120,10 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     val (_, h) = fixture()
     val bad    =
       req().copy(node = FleetNodeReportDto(0, None, "none", None, None, Some("yesterday")))
-    h.heartbeat(bad, Some("secret")).unsafeRunSync().left.map(e => (e._1, e._2.error)) shouldBe
+    h.heartbeat(bad, Some("secret"), loopback, None)
+      .unsafeRunSync()
+      .left
+      .map(e => (e._1, e._2.error)) shouldBe
       Left((StatusCode.BadRequest, "invalid_started_at"))
   }
 
@@ -136,7 +154,7 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       hbCfg,
       backend = Some(new FleetQuackBackend(failing, hbCfg, clock = () => t0))
     )
-    val e = h.heartbeat(req(), Some("secret")).unsafeRunSync().left.toOption.get
+    val e = h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync().left.toOption.get
     (e._1, e._2.error) shouldBe (StatusCode.BadGateway, "backend_error")
     // A fixed message: the cause goes to the manager log, never to the caller.
     e._2.message shouldBe "fleet store error, see manager log"
@@ -146,9 +164,84 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
   it should "400 fleet_disabled and write no server row when the manager is not in fleet mode" in {
     val store = new InMemoryFleetServerStore(clock = () => t0)
     val h     = new FleetHandlers(store, hbCfg, backend = None)
-    h.heartbeat(req(), Some("secret")).unsafeRunSync().left.map(e => (e._1, e._2.error)) shouldBe
+    h.heartbeat(req(), Some("secret"), loopback, None)
+      .unsafeRunSync()
+      .left
+      .map(e => (e._1, e._2.error)) shouldBe
       Left((StatusCode.BadRequest, "fleet_disabled"))
     store.list() shouldBe Nil
+  }
+
+  private def approvalFixture(autoApprove: String, trustedProxies: String = "") =
+    val cfg = FleetConfig(
+      joinToken = "secret",
+      heartbeatSec = 7,
+      autoApprove = autoApprove,
+      trustedProxies = trustedProxies
+    )
+    val store   = new InMemoryFleetServerStore(clock = () => t0)
+    val backend = new FleetQuackBackend(store, cfg, clock = () => t0)
+    (store, new FleetHandlers(store, cfg, backend = Some(backend)))
+
+  "heartbeat approval" should "leave a server joined from outside the list pending" in {
+    val (store, h) = approvalFixture("10.0.0.0/8")
+    val r          = h.heartbeat(req(), Some("secret"), addr("192.168.1.5"), None).unsafeRunSync()
+    r shouldBe Right(FleetHeartbeatResponse(7, None, "pending"))
+    val row = store.get("srv-1").get
+    (row.approved, row.sourceAddr) shouldBe (false, Some("192.168.1.5"))
+  }
+
+  it should "approve a server joined from inside the list" in {
+    val (store, h) = approvalFixture("10.0.0.0/8")
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None)
+      .unsafeRunSync()
+      .map(_.approval) shouldBe
+      Right("approved")
+    store.get("srv-1").get.approvedBy shouldBe Some("auto")
+  }
+
+  it should "approve nobody automatically with an empty list" in {
+    val (store, h) = approvalFixture("")
+    h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync().map(_.approval) shouldBe
+      Right("pending")
+  }
+
+  it should "ignore X-Forwarded-For from a peer that is not a trusted proxy" in {
+    val (store, h) = approvalFixture("10.0.0.0/8")
+    h.heartbeat(req(), Some("secret"), addr("192.168.1.5"), Some("10.0.0.9"))
+      .unsafeRunSync()
+      .map(_.approval) shouldBe Right("pending")
+    store.get("srv-1").get.sourceAddr shouldBe Some("192.168.1.5")
+  }
+
+  it should "believe X-Forwarded-For behind a trusted proxy" in {
+    val (store, h) = approvalFixture("10.0.0.0/8", trustedProxies = "192.168.1.0/24")
+    h.heartbeat(req(), Some("secret"), addr("192.168.1.1"), Some("10.0.0.9"))
+      .unsafeRunSync()
+      .map(_.approval) shouldBe Right("approved")
+    store.get("srv-1").get.sourceAddr shouldBe Some("10.0.0.9")
+  }
+
+  it should "leave an unknown address pending behind a trusted proxy" in {
+    val (store, h) = approvalFixture("0.0.0.0/0,::/0", trustedProxies = "192.168.1.0/24")
+    h.heartbeat(req(), Some("secret"), addr("192.168.1.1"), Some("garbage"))
+      .unsafeRunSync()
+      .map(_.approval) shouldBe Right("pending")
+    store.get("srv-1").get.sourceAddr shouldBe None
+  }
+
+  it should "approve a waiting server once the list is widened (manager restart)" in {
+    val (store, strict) = approvalFixture("10.0.0.0/8")
+    strict.heartbeat(req(), Some("secret"), addr("192.168.1.5"), None).unsafeRunSync()
+    val widened = new FleetHandlers(
+      store,
+      FleetConfig(joinToken = "secret", heartbeatSec = 7),
+      backend = Some(new FleetQuackBackend(store, hbCfg, clock = () => t0))
+    )
+    widened
+      .heartbeat(req(), Some("secret"), addr("192.168.1.5"), None)
+      .unsafeRunSync()
+      .map(_.approval) shouldBe Right("approved")
   }
 
   // --- Admin surface (Task 8) ----------------------------------------------------------------
@@ -250,6 +343,66 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     )
     h.listServers(Some("k"))(superuser).unsafeRunSync().left.map(_._2.error) shouldBe
       Left("fleet_disabled")
+  }
+
+  "approve" should "approve a pending server, idempotently, superuser only" in {
+    val (store, h) = adminFixture()
+    store.recordHeartbeat(
+      Heartbeat(
+        "p",
+        "10.0.0.1",
+        21900,
+        None,
+        None,
+        None,
+        None,
+        None,
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = Some("10.0.0.1"),
+        autoApprove = false
+      )
+    )
+    h.approve(FleetServerOpRequest("p"), Some("k"))(tenantAdmin)
+      .unsafeRunSync()
+      .left
+      .map(_._1) shouldBe
+      Left(StatusCode.Forbidden)
+    store.get("p").get.approved shouldBe false
+    h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync() shouldBe Right(())
+    val row = store.get("p").get
+    row.approved shouldBe true
+    row.approvedBy should not be empty
+    h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync() shouldBe Right(())
+    h.approve(FleetServerOpRequest("ghost"), Some("k"))(superuser)
+      .unsafeRunSync()
+      .left
+      .map(e => (e._1, e._2.error)) shouldBe Left((StatusCode.NotFound, "not_found"))
+  }
+
+  "listServers" should "carry approval, approver, time and source address" in {
+    val (store, h) = adminFixture()
+    store.recordHeartbeat(
+      Heartbeat(
+        "p",
+        "10.0.0.1",
+        21900,
+        None,
+        None,
+        None,
+        None,
+        None,
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = Some("192.168.1.5"),
+        autoApprove = false
+      )
+    )
+    beat(store, "a", "10.0.0.2")
+    val servers =
+      h.listServers(Some("k"))(superuser).unsafeRunSync().toOption.get.servers.sortBy(_.name)
+    servers.map(s => (s.name, s.approval)) shouldBe List("a" -> "approved", "p" -> "pending")
+    servers.find(_.name == "p").get.sourceAddr shouldBe Some("192.168.1.5")
+    servers.find(_.name == "a").get.approvedBy shouldBe Some("auto")
+    servers.find(_.name == "a").get.approvedAt should not be empty
   }
 
   /** Delegating store that records releases and can run a hook just before setUnschedulable. */
