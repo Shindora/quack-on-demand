@@ -1586,6 +1586,18 @@ on suspicion (every heartbeat carries the token, so after a rotation restart eac
 did not install. Managers and servers must share a private network: the manager-to-node hop is
 plain HTTP.
 
+**Approving servers.** `QOD_FLEET_AUTO_APPROVE` on the manager lists the networks (CIDRs,
+comma-separated) whose servers are approved as they join; the default `0.0.0.0/0,::/0` approves
+everyone, and an empty value approves no one automatically. A server outside the list joins as
+`pending approval`, heartbeats, and takes no node; its agent logs "waiting for approval". Check
+where it came from and approve it:
+
+    qod fleet servers            # approval, sourceAddr columns
+    qod fleet approve <name>
+
+Behind a load balancer, list it in `QOD_FLEET_TRUSTED_PROXIES` or every server appears to come
+from the balancer. Removing a server forgets its approval.
+
 systemd unit (`/etc/systemd/system/qod-agent.service`):
 
 ```

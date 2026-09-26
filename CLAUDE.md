@@ -305,7 +305,17 @@ HA replicas agree. `NoFreeServer(reason)` is the one failure the supervisor tole
 stays pending and reconcile fills it when a server joins (`MissingSlots`). Silent past
 `heartbeatTimeoutSec` = unroutable but kept; past `reassignAfterSec` = dead, respawned elsewhere
 through `claimReplacing` (release the dead holder and claim the replacement in ONE store
-transaction, rolled back when no server qualifies). With no free server the dead server keeps
+transaction, rolled back when no server qualifies).
+Join approval (Liquibase `0041`): a new server row starts unapproved and the claim query skips it
+(`AND s.approved`), so a pending server never receives an assignment or its credentials. The
+heartbeat handler resolves the client address from the TCP peer (`X-Forwarded-For` only when the
+peer is in `QOD_FLEET_TRUSTED_PROXIES`, walked from the right; unknown never matches) and
+auto-approves when it is in `QOD_FLEET_AUTO_APPROVE` (default `0.0.0.0/0,::/0`, boot WARNs while
+open; empty = none). Pending servers are re-judged every heartbeat, approved ones never; `qod fleet
+approve` / `POST /api/fleet/server/approve` approves by hand; `remove` forgets approval. Existing
+rows were backfilled `approved_by = 'upgrade'`. Design:
+docs/superpowers/specs/2026-09-26-fleet-join-approval-design.md.
+With no free server the dead server keeps
 its assignment and its node row, so if it returns first its agent still runs the node at the
 same epoch and reconcile adopts it with no restart; a drained or removed holder's node goes
 pending instead. A partial or cancelled spawn rolls back the nodes it started (`spawnAll`,
