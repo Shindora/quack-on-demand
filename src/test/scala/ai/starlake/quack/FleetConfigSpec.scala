@@ -17,6 +17,8 @@ class FleetConfigSpec extends AnyFlatSpec with Matchers:
     cfg.fleet.startupTimeoutSec shouldBe 120
     cfg.fleet.stopTimeoutSec shouldBe 60
     cfg.fleet.ephemeral shouldBe "fleet"
+    cfg.fleet.autoApprove shouldBe "0.0.0.0/0,::/0"
+    cfg.fleet.trustedProxies shouldBe ""
   }
 
   it should "read the camelCase keys of an overlay, not only the defaults" in {
@@ -82,3 +84,43 @@ class FleetConfigSpec extends AnyFlatSpec with Matchers:
         .validateForRuntime("fleet", duckdbOnHost = true) shouldBe Right(())
       FleetConfig(ephemeral = "local").ephemeralLocal shouldBe true
     }
+
+  it should "read autoApprove and trustedProxies from an overlay" in {
+    val cfg = ConfigSource
+      .string(
+        """quack-on-demand.fleet { autoApprove = "10.0.0.0/8", trustedProxies = "192.168.1.1" }"""
+      )
+      .withFallback(ConfigSource.default)
+      .at("quack-on-demand")
+      .loadOrThrow[ManagerConfig]
+    cfg.fleet.autoApproveCidrs.map(_.toString) shouldBe List("10.0.0.0/8")
+    cfg.fleet.trustedProxyCidrs.map(_.toString) shouldBe List("192.168.1.1")
+  }
+
+  it should "refuse a bad CIDR, naming the env var" in {
+    intercept[IllegalArgumentException](
+      FleetConfig(autoApprove = "10.0.0.0/8,nope")
+    ).getMessage should
+      include("QOD_FLEET_AUTO_APPROVE")
+    intercept[IllegalArgumentException](FleetConfig(trustedProxies = "300.0.0.1")).getMessage should
+      include("QOD_FLEET_TRUSTED_PROXIES")
+  }
+
+  it should "treat an empty autoApprove as approving nobody" in {
+    FleetConfig(autoApprove = "").autoApproveCidrs shouldBe Nil
+  }
+
+  it should "warn only when auto-approval admits a whole address family" in {
+    FleetConfig().openAutoApproveWarning.get should include("QOD_FLEET_AUTO_APPROVE")
+    FleetConfig(autoApprove = "::/0").openAutoApproveWarning should not be empty
+    FleetConfig(autoApprove = "10.0.0.0/8,::1").openAutoApproveWarning shouldBe None
+    FleetConfig(autoApprove = "").openAutoApproveWarning shouldBe None
+  }
+
+  it should "register both keys with their env vars" in {
+    val entries = ConfigRegistry.collect(List("quack-on-demand" -> classOf[ManagerConfig]))
+    entries.find(_.path == "quack-on-demand.fleet.autoApprove").map(_.envVar) shouldBe
+      Some("QOD_FLEET_AUTO_APPROVE")
+    entries.find(_.path == "quack-on-demand.fleet.trustedProxies").map(_.envVar) shouldBe
+      Some("QOD_FLEET_TRUSTED_PROXIES")
+  }
