@@ -243,6 +243,8 @@ class Agent:
         self.connected: bool | None = None
         # The last failed-heartbeat line, so its hint is printed once rather than every retry.
         self.last_failure: str | None = None
+        # The manager's last approval answer (approved | pending), so the line prints on change only.
+        self.approval: str | None = None
         # Monotonic deadline of the scheduled restart of a failed node; None while none is scheduled.
         self.next_restart_at: float | None = None
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -413,6 +415,7 @@ class Agent:
         # kill the agent: log it, keep whatever node runs, and heartbeat again after the backoff.
         try:
             reply = r.json()
+            self._note_approval(reply.get("approval"))
             self._reconcile(reply.get("assignment"))
             return float(reply.get("heartbeatSec", 5))
         except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
@@ -430,6 +433,19 @@ class Agent:
     def _mark_disconnected(self) -> None:
         if self.connected:
             self.connected = False
+
+    def _note_approval(self, approval: str | None) -> None:
+        """One line when the manager's approval of this server changes. None (a manager predating
+        approval) and a first `approved` print nothing: the connected line already said enough."""
+        if approval is None or approval == self.approval:
+            return
+        if approval == "pending":
+            sys.stderr.write(f"qod agent: server '{self.name}' is waiting for approval on the manager\n")
+            sys.stderr.write(f"qod agent:   hint: an admin approves it with `qod fleet approve {self.name}`, "
+                             "or adds this server's address to QOD_FLEET_AUTO_APPROVE on the manager\n")
+        elif self.approval == "pending":
+            sys.stderr.write(f"qod agent: server '{self.name}' approved\n")
+        self.approval = approval
 
     def run_forever(self) -> None:
         self.reap_orphan()

@@ -467,3 +467,23 @@ def test_hint_is_printed_once_per_distinct_failure(tmp_path, capsys):
     err = capsys.readouterr().err.splitlines()
     assert sum("hint:" in l for l in err) == 2
     assert "10.0.0.7:21900" in next(l for l in err if "hint:" in l)
+
+
+def test_pending_approval_is_announced_once_then_approved(tmp_path, capsys):
+    pending = lambda: FakeResponse(200, {"heartbeatSec": 5, "assignment": None, "approval": "pending"})
+    approved = FakeResponse(200, {"heartbeatSec": 5, "assignment": None, "approval": "approved"})
+    agent = make_agent(FakeHttp([pending(), pending(), approved]), lambda *a, **k: FakeProc(), tmp_path)
+    for _ in range(3):
+        agent.run_once()
+    err = capsys.readouterr().err.splitlines()
+    assert sum("waiting for approval" in l for l in err) == 1
+    assert sum("qod fleet approve srv-1" in l for l in err) == 1
+    assert any("server 'srv-1' approved" in l for l in err)
+
+
+def test_an_approved_or_legacy_reply_prints_no_approval_line(tmp_path, capsys):
+    approved = FakeResponse(200, {"heartbeatSec": 5, "assignment": None, "approval": "approved"})
+    legacy = FakeResponse(200, {"heartbeatSec": 5, "assignment": None})
+    agent = make_agent(FakeHttp([approved, legacy]), lambda *a, **k: FakeProc(), tmp_path)
+    agent.run_once(); agent.run_once()
+    assert "approv" not in capsys.readouterr().err
