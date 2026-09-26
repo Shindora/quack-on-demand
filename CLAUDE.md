@@ -309,7 +309,9 @@ transaction, rolled back when no server qualifies). With no free server the dead
 its assignment and its node row, so if it returns first its agent still runs the node at the
 same epoch and reconcile adopts it with no restart; a drained or removed holder's node goes
 pending instead. A partial or cancelled spawn rolls back the nodes it started (`spawnAll`,
-`guaranteeCase`).
+`guaranteeCase`). The server holding an assignment is the truth for a live node's address and
+token: reconcile adopts through `QuackBackend.located` and rewrites a node row that still names
+the previous server (a manager that died between the claim and the node row write).
 A known name reporting a new address is refused unless drained (shared-token takeover guard).
 `QOD_FLEET_EPHEMERAL=local` runs maintenance and merge nodes on the manager host instead of a
 fleet server. Manager-to-node is plain HTTP: fleet mode needs a private network. Design:

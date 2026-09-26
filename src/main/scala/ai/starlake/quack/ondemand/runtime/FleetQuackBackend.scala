@@ -200,6 +200,23 @@ final class FleetQuackBackend(
       .byNodeId(nodeId)
       .exists(r => livenessOf(r) == ServerLiveness.Reachable && r.nodeState == "running")
 
+  /** The server holding `node`'s assignment is the truth: `start` writes its address and the
+    * assignment's token into the node, but a manager that dies between the claim and the node row
+    * write leaves the row naming the previous server.
+    */
+  override def located(node: RunningNode): IO[RunningNode] = IO.blocking {
+    store.byNodeId(node.nodeId).flatMap(r => r.assignment.map(a => (r, a))) match
+      case Some((row, a)) =>
+        val current = node.copy(
+          host = row.advertiseHost,
+          port = row.nodePort,
+          token = a.token,
+          serverName = Some(row.name)
+        )
+        if current == node then node else current
+      case None => node
+  }
+
   /** Filtered on the pool key inside the assignment only; node-id prefixes are ambiguous. */
   override def liveNodeIds(key: PoolKey): IO[Option[Set[String]]] = IO.blocking {
     Some(

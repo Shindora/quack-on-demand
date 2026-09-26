@@ -426,6 +426,33 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
     }
   }
 
+  it should "rewrite a live node's row when its assignment moved to another server without the row" in {
+    val fx = new Fx
+    fx.run {
+      fx.join("a")
+      fx.sup.createPool(fx.key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+      fx.rowServer(id(1)) shouldBe Some("a")
+      // `a` dies; a respawn moves -1 to `b` (new token), and the manager dies before writing the
+      // node row: the row still names `a`, its address and its token.
+      fx.kill("a")
+      fx.join("b")
+      val moved = fx.inner.get("a").get.assignment.get.copy(token = "moved")
+      fx.inner.claimReplacing(moved, 30, None).isRight shouldBe true
+      fx.eventually(fx.inner.get("b").get.nodeState == "running")
+      fx.holder(id(1)) shouldBe List("b")
+      fx.sup.reconcile().unsafeRunSync()
+      // Live on `b`, so adopted, but at `b`'s address and token rather than the stale row's.
+      val b    = fx.inner.get("b").get
+      val row  = fx.cp.listNodes(fx.sup.poolId(fx.key).get).find(_.nodeId == id(1)).get
+      val live = fx.sup.get(fx.key).get.nodes.find(_.nodeId == id(1)).get
+      for n <- List(row, live) do
+        n.serverName shouldBe Some("b")
+        (n.host, n.port) shouldBe (b.advertiseHost, b.nodePort)
+        n.token shouldBe "moved"
+      fx.holder(id(1)) shouldBe List("b") // adopted in place: no respawn, no new claim
+    }
+  }
+
   it should "no free server: the dead node keeps its row and assignment; when its server returns before capacity appears the node is adopted and serves again (same epoch, no restart)" in {
     val fx = new Fx
     fx.join("a")
