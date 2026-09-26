@@ -278,6 +278,13 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
         s.claim(assignment("n1"), 30, None) shouldBe Left(ClaimMiss.NoneFree)
     }
 
+    it should "count a pending server as neither free nor fitting (NoneFree, not NoneFits)" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("small", memoryBytes = Some(8L << 30), autoApprove = false))
+        s.claim(assignment("n1"), 30, Some(64L << 30)) shouldBe Left(ClaimMiss.NoneFree)
+    }
+
     it should "approve a pending server on a later heartbeat whose source is now in the list" in withStore {
       h =>
         val s = h.store
@@ -430,6 +437,7 @@ class PostgresFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetS
       try
         val row = pg.get("old").get
         (row.approved, row.approvedBy) shouldBe (true, Some("upgrade"))
+        row.approvedAt should not be empty
         pg.recordHeartbeat(hb("new", autoApprove = false))
         pg.get("new").get.approved shouldBe false
       finally pg.close()

@@ -1578,12 +1578,14 @@ final class PostgresControlPlaneStore(
 
   override def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome = withConn { c =>
     // One transaction, so a concurrent `delete(name)` cannot interleave between the statements
-    // below and leave a heartbeat pointing at a vanished server. Still no lock on an existing
-    // server row: INSERT ... ON CONFLICT DO NOTHING and a plain SELECT take none, so a concurrent
-    // claim's FOR UPDATE OF s SKIP LOCKED never skips it. A row deleted and committed between
-    // our statements (READ COMMITTED: each statement takes a fresh snapshot) shows up as an empty
-    // SELECT or an FK violation on the heartbeat insert; either rolls back and retries once, and
-    // the retry's INSERT re-creates the row (a re-join).
+    // below and leave a heartbeat pointing at a vanished server. INSERT ... ON CONFLICT DO
+    // NOTHING and a plain SELECT take no lock on an existing server row; step 2b's approval
+    // UPDATE does lock the row, but only while it is still pending (AND NOT approved), and a
+    // concurrent claim's FOR UPDATE OF s SKIP LOCKED already ignores pending rows, so it never
+    // skips over one for that reason. A row deleted and committed between our statements (READ
+    // COMMITTED: each statement takes a fresh snapshot) shows up as an empty SELECT or an FK
+    // violation on the heartbeat insert; either rolls back and retries once, and the retry's
+    // INSERT re-creates the row (a re-join).
     c.setAutoCommit(false)
     try
       def attempt(retriesLeft: Int): HeartbeatOutcome =
