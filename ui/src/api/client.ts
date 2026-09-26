@@ -261,6 +261,7 @@ export const api = {
   drainServer:   (name: string) => post<void>('/fleet/server/drain', { name }),
   undrainServer: (name: string) => post<void>('/fleet/server/undrain', { name }),
   removeServer:  (name: string) => post<void>('/fleet/server/remove', { name }),
+  approveServer: (name: string) => post<void>('/fleet/server/approve', { name }),
 
   // Tenants
   listTenants:      () => get<TenantListResponse>('/tenant/list'),

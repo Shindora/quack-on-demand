@@ -16,7 +16,7 @@ export default function Servers() {
   // Poll-cycle error (e.g. a transient fetch failure). Cleared on the next
   // successful poll.
   const [err, setErr] = useState<string | null>(null);
-  // Error from a drain/undrain/remove click, kept separate from `err` so a
+  // Error from an approve/drain/undrain/remove click, kept separate from `err` so a
   // subsequent successful poll doesn't silently wipe it before the operator
   // has seen it - cleared only by starting another action or dismissing it.
   const [actionErr, setActionErr] = useState<string | null>(null);
@@ -121,8 +121,14 @@ export default function Servers() {
                   <td>
                     <code>{s.name}</code>
                     {s.unschedulable && <span className="badge warn" style={{ marginLeft: 6 }}>drained</span>}
+                    {s.approval === 'pending' && <span className="badge warn" style={{ marginLeft: 6 }}>pending approval</span>}
                   </td>
-                  <td><code>{s.advertiseHost}:{s.nodePort}</code></td>
+                  <td>
+                    <code>{s.advertiseHost}:{s.nodePort}</code>
+                    {s.sourceAddr && s.sourceAddr !== s.advertiseHost && (
+                      <span className="subtle" title="Address the heartbeat came from"> from {s.sourceAddr}</span>
+                    )}
+                  </td>
                   <td>
                     <LivenessBadge liveness={s.liveness} />
                     {s.liveness !== 'reachable' && (
@@ -149,6 +155,11 @@ export default function Servers() {
                     {s.duckdbVersion && <span className="subtle"> / duckdb {s.duckdbVersion}</span>}
                   </td>
                   <td className="actions">
+                    {s.approval === 'pending' && (
+                      <>
+                        <button type="button" className="copy-btn" onClick={() => void act(() => api.approveServer(s.name))}>Approve</button>{' '}
+                      </>
+                    )}
                     {s.unschedulable
                       ? <button type="button" className="copy-btn" onClick={() => void act(() => api.undrainServer(s.name))}>Undrain</button>
                       : <button type="button" className="copy-btn" onClick={() => void act(() => api.drainServer(s.name))}>Drain</button>}
