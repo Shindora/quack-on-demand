@@ -26,6 +26,12 @@ class CidrSpec extends AnyFlatSpec with Matchers:
     Cidr.parseAddress("300.1.1.1") shouldBe None
     Cidr.parseAddress("1.2.3") shouldBe None
     Cidr.parseAddress("") shouldBe None
+    // These are shaped like the old Ipv6Literal regex (contains a ':') but start with '.', which
+    // is not a hex digit or ':'. InetAddress.getByName only skips the resolver when the first
+    // character is a hex digit or ':'; anything else, including these, falls through to a real
+    // DNS lookup. The regex anchor below must reject them before getByName is ever called.
+    Cidr.parseAddress(".:") shouldBe None
+    Cidr.parseAddress(".1::1") shouldBe None
   }
 
   "parse" should "accept a CIDR or a bare address (a single-host block)" in {

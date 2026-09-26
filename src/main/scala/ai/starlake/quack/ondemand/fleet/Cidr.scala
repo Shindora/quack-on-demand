@@ -27,12 +27,15 @@ final class Cidr private (network: Array[Byte], val prefix: Int, text: String):
 
 object Cidr:
   private val Ipv4Literal = """(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})""".r
-  private val Ipv6Literal = """[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*""".r
+  private val Ipv6Literal = """(?=.*:)[0-9A-Fa-f:][0-9A-Fa-f:.]*""".r
 
   /** A literal IPv4 or IPv6 address, never a DNS lookup: `InetAddress.getByName` resolves host
     * names, so only strings shaped like a literal reach it, and IPv4 is built from its octets.
-    * Surrounding brackets are accepted. The JDK returns an IPv4-mapped IPv6 literal
-    * (`::ffff:10.0.0.5`) as an IPv4 address.
+    * `InetAddress.getByName` only takes its literal-parsing path when the string starts with a hex
+    * digit or ':', so the IPv6 branch requires exactly that (plus a ':' somewhere in the string)
+    * before ever calling it; anything else (e.g. a string starting with '.') would otherwise fall
+    * through to the system resolver. Surrounding brackets are accepted. The JDK returns an
+    * IPv4-mapped IPv6 literal (`::ffff:10.0.0.5`) as an IPv4 address.
     */
   def parseAddress(raw: String): Option[InetAddress] =
     raw.trim.stripPrefix("[").stripSuffix("]") match
