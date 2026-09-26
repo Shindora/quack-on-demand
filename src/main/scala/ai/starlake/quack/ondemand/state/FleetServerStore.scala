@@ -61,7 +61,14 @@ final case class FleetServerRow(
     nodeState: String, // none | starting | running | failed | stopped | stale
     nodeError: Option[String],
     nodePid: Option[Long],
-    nodeStartedAt: Option[Instant]
+    nodeStartedAt: Option[Instant],
+    // Approval (Liquibase 0041): a server takes nodes only once approved. `approvedBy` is `auto`,
+    // `upgrade` (joined before approval existed) or the approving admin's username.
+    approved: Boolean,
+    approvedAt: Option[Instant],
+    approvedBy: Option[String],
+    // The resolved client address of the latest heartbeat, never the agent-reported one.
+    sourceAddr: Option[String]
 )
 
 /** Heartbeat upsert input: everything the agent reports. */
@@ -74,7 +81,13 @@ final case class Heartbeat(
     duckdbVersion: Option[String],
     cpus: Option[Int],
     memoryBytes: Option[Long],
-    node: NodeReport
+    node: NodeReport,
+    // The resolved client address; None when unknown.
+    sourceAddr: Option[String],
+    // The manager's decision for this heartbeat's source (in QOD_FLEET_AUTO_APPROVE). Approves a
+    // server that is not approved yet; ignored for an approved one. Required: a default would
+    // silently decide approval for the caller.
+    autoApprove: Boolean
 )
 
 sealed trait HeartbeatOutcome
@@ -96,10 +109,14 @@ trait FleetServerStore:
     * name must not be claimable by another machine. A report whose `assignmentEpoch` or node id is
     * not the server row's is stored with node_state = stale, except `none` and `stopped`, which are
     * stored as reported (see `FleetServerStore.effectiveState`).
+    *
+    * A new server row starts unapproved; `hb.autoApprove` approves it (`approved_by = auto`), on
+    * the join or on any later heartbeat while it is still pending. An approved server is never
+    * re-judged.
     */
   def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome
 
-  /** Atomically claim one free server: unassigned, schedulable, heartbeat within
+  /** Atomically claim one free server: approved, unassigned, schedulable, heartbeat within
     * `reachableWithinSec` of the DB clock, and (when `requiredMemoryBytes` is set) either no
     * reported capacity or capacity >= the requirement; oldest join first. Writes the assignment
     * with a bumped epoch, the server's own node_port and claimed_at = now(); `assignment.epoch` and
@@ -138,7 +155,13 @@ trait FleetServerStore:
   def list(): List[FleetServerRow]
   def byNodeId(nodeId: String): Option[FleetServerRow]
   def setUnschedulable(name: String, value: Boolean): Boolean // false when unknown
-  def delete(name: String): Boolean                           // heartbeat row cascades
+
+  /** Approve a server by name, recording `by`. Idempotent: an approved server keeps its first
+    * approver and time. False when the name is unknown.
+    */
+  def approve(name: String, by: String): Boolean
+
+  def delete(name: String): Boolean // heartbeat row cascades
 
 object FleetServerStore:
   /** The stale rule both implementations share: a `none` or `stopped` report is stored as is; any

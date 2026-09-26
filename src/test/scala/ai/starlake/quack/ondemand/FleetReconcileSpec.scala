@@ -244,7 +244,12 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
   /** A fake `qod agent`: reports the assignment it holds as running; once unassigned, reports
     * `stopped` under the epoch and node id it last ran, like the real agent.
     */
-  private final class Agent(store: FleetServerStore, val name: String, host: String):
+  private final class Agent(
+      store: FleetServerStore,
+      val name: String,
+      host: String,
+      autoApprove: Boolean
+  ):
     @volatile var paused: Boolean = false
     // When set, the agent reports its assignment `failed` instead of `running`.
     @volatile var failing: Boolean = false
@@ -267,7 +272,19 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
             case Some(a) => NodeReport(a.epoch, Some(a.nodeId), "stopped", None, None, None)
             case None    => NodeReport(0, None, "none", None, None, None)
       store.recordHeartbeat(
-        Heartbeat(name, host, 21900, Some("t"), Some("linux"), Some("1.5"), Some(8), None, node)
+        Heartbeat(
+          name,
+          host,
+          21900,
+          Some("t"),
+          Some("linux"),
+          Some("1.5"),
+          Some(8),
+          None,
+          node,
+          sourceAddr = Some(host),
+          autoApprove = autoApprove
+        )
       )
 
   private final class Fx(locker: PoolLocker = PoolLocker.noop):
@@ -296,8 +313,8 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
       .unsafeRunSync()
 
     /** Joins a server (one immediate beat, one second apart, so join order is deterministic). */
-    def join(name: String): Agent =
-      val a = new Agent(store, name, s"10.0.0.${agents.size + 1}")
+    def join(name: String, autoApprove: Boolean = true): Agent =
+      val a = new Agent(store, name, s"10.0.0.${agents.size + 1}", autoApprove)
       agents.put(name, a); clockNow = clockNow.plusSeconds(1); a.beat(); a
 
     /** Every 10ms: one simulated second passes and every unpaused agent beats. */
@@ -421,6 +438,22 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
       fx.inner.get("a").get.assignmentEpoch shouldBe orphan.assignmentEpoch + 2
       fx.inner.get("a").get.assignment.map(_.token) should not be Some("t")
       fx.inner.get("b").get.assignedNodeId shouldBe None
+      fx.rowServer(id(1)) shouldBe Some("a")
+      fx.sup.pendingCount(fx.key) shouldBe 0
+    }
+  }
+
+  it should "fill a pending slot only once the waiting server is approved" in {
+    val fx = new Fx
+    fx.run {
+      fx.join("a", autoApprove = false)
+      fx.sup.createPool(fx.key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+      fx.sup.pendingCount(fx.key) shouldBe 1
+      fx.sup.pendingReason(fx.key) shouldBe Some("none_free")
+      fx.holder(id(1)) shouldBe Nil
+      fx.inner.approve("a", "admin") shouldBe true
+      fx.sup.reconcile().unsafeRunSync()
+      fx.holder(id(1)) shouldBe List("a")
       fx.rowServer(id(1)) shouldBe Some("a")
       fx.sup.pendingCount(fx.key) shouldBe 0
     }

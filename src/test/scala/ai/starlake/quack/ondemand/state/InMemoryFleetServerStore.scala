@@ -62,7 +62,11 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             FleetServerStore.effectiveState(hb.node, 0L, None),
             hb.node.error,
             hb.node.pid,
-            hb.node.startedAt
+            hb.node.startedAt,
+            approved = hb.autoApprove,
+            approvedAt = Option.when(hb.autoApprove)(now),
+            approvedBy = Option.when(hb.autoApprove)("auto"),
+            sourceAddr = hb.sourceAddr
           )
         )
         HeartbeatOutcome.Joined
@@ -85,7 +89,11 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
               FleetServerStore.effectiveState(hb.node, r.assignmentEpoch, r.assignedNodeId),
             nodeError = hb.node.error,
             nodePid = hb.node.pid,
-            nodeStartedAt = hb.node.startedAt
+            nodeStartedAt = hb.node.startedAt,
+            approved = r.approved || hb.autoApprove,
+            approvedAt = if r.approved then r.approvedAt else Option.when(hb.autoApprove)(now),
+            approvedBy = if r.approved then r.approvedBy else Option.when(hb.autoApprove)("auto"),
+            sourceAddr = hb.sourceAddr
           )
         )
         HeartbeatOutcome.Updated
@@ -100,7 +108,7 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
       val now  = clock()
       val free = rows.values
         .filter(r =>
-          r.assignedNodeId.isEmpty && !r.unschedulable &&
+          r.approved && r.assignedNodeId.isEmpty && !r.unschedulable &&
             Duration.between(r.lastHeartbeatAt, now).getSeconds < reachableWithinSec
         )
         .toList
@@ -166,5 +174,16 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
     synchronized(rows.values.find(_.assignedNodeId.contains(nodeId)).map(withSilent))
   def setUnschedulable(name: String, value: Boolean): Boolean = synchronized {
     rows.get(name).map(r => rows.put(name, r.copy(unschedulable = value))).isDefined
+  }
+  def approve(name: String, by: String): Boolean = synchronized {
+    rows.get(name) match
+      case None                  => false
+      case Some(r) if r.approved => true
+      case Some(r)               =>
+        rows.put(
+          name,
+          r.copy(approved = true, approvedAt = Some(clock()), approvedBy = Some(by))
+        )
+        true
   }
   def delete(name: String): Boolean = synchronized(rows.remove(name).isDefined)

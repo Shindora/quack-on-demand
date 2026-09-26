@@ -1618,8 +1618,8 @@ final class PostgresControlPlaneStore(
   private def heartbeatOnce(c: Connection, hb: Heartbeat): Option[HeartbeatOutcome] =
     // 1. First contact: insert the server row; a no-op for a known name.
     val ins = c.prepareStatement(
-      """INSERT INTO qodstate_fleet_server (name, advertise_host, node_port)
-        |VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING""".stripMargin
+      """INSERT INTO qodstate_fleet_server (name, advertise_host, node_port, approved)
+        |VALUES (?, ?, ?, false) ON CONFLICT (name) DO NOTHING""".stripMargin
     )
     val joined =
       try
@@ -1665,17 +1665,26 @@ final class PostgresControlPlaneStore(
             addr.setString(3, hb.name)
             addr.executeUpdate()
           finally addr.close()
+        // 2b. Approval: a server not approved yet is approved when the caller judged this
+        // heartbeat's source to be in QOD_FLEET_AUTO_APPROVE; an approved one is never re-judged.
+        if hb.autoApprove then
+          val ap = c.prepareStatement(
+            """UPDATE qodstate_fleet_server SET approved = true, approved_at = now(),
+              |  approved_by = 'auto' WHERE name = ? AND NOT approved""".stripMargin
+          )
+          try { ap.setString(1, hb.name); ap.executeUpdate(); () }
+          finally ap.close()
         // 3. Heartbeat row: the only row this handler rewrites every interval.
         val up = c.prepareStatement(
           """INSERT INTO qodstate_fleet_heartbeat
             |  (name, last_heartbeat_at, agent_version, os, duckdb_version, cpus, memory_bytes,
-            |   node_state, node_error, node_pid, node_started_at)
-            |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            |   node_state, node_error, node_pid, node_started_at, source_addr)
+            |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             |ON CONFLICT (name) DO UPDATE SET
             |  last_heartbeat_at = now(), agent_version = EXCLUDED.agent_version, os = EXCLUDED.os,
             |  duckdb_version = EXCLUDED.duckdb_version, cpus = EXCLUDED.cpus, memory_bytes = EXCLUDED.memory_bytes,
             |  node_state = EXCLUDED.node_state, node_error = EXCLUDED.node_error, node_pid = EXCLUDED.node_pid,
-            |  node_started_at = EXCLUDED.node_started_at""".stripMargin
+            |  node_started_at = EXCLUDED.node_started_at, source_addr = EXCLUDED.source_addr""".stripMargin
         )
         try
           up.setString(1, hb.name)
@@ -1686,6 +1695,7 @@ final class PostgresControlPlaneStore(
           up.setString(7, FleetServerStore.effectiveState(hb.node, rowEpoch, assignedNodeId))
           setNullable(up, 8, hb.node.error); setNullableLong(up, 9, hb.node.pid);
           setNullableInstant(up, 10, hb.node.startedAt)
+          setNullable(up, 11, hb.sourceAddr)
           up.executeUpdate()
         finally up.close()
         if joined then HeartbeatOutcome.Joined else HeartbeatOutcome.Updated
@@ -1743,7 +1753,7 @@ final class PostgresControlPlaneStore(
     val pick = c.prepareStatement(
       """SELECT s.name, s.assignment_epoch, s.node_port FROM qodstate_fleet_server s
         |JOIN qodstate_fleet_heartbeat h USING (name)
-        |WHERE s.assigned_node_id IS NULL AND NOT s.unschedulable
+        |WHERE s.approved AND s.assigned_node_id IS NULL AND NOT s.unschedulable
         |  AND h.last_heartbeat_at > now() - make_interval(secs => ?)
         |  AND (? IS NULL OR h.memory_bytes IS NULL OR h.memory_bytes >= ?)
         |ORDER BY s.joined_at LIMIT 1 FOR UPDATE OF s SKIP LOCKED""".stripMargin
@@ -1779,7 +1789,7 @@ final class PostgresControlPlaneStore(
             |  count(*) FILTER (WHERE ? IS NULL OR h.memory_bytes IS NULL OR h.memory_bytes >= ?)
             |    AS fitting
             |FROM qodstate_fleet_server s JOIN qodstate_fleet_heartbeat h USING (name)
-            |WHERE s.assigned_node_id IS NULL AND NOT s.unschedulable
+            |WHERE s.approved AND s.assigned_node_id IS NULL AND NOT s.unschedulable
             |  AND h.last_heartbeat_at > now() - make_interval(secs => ?)""".stripMargin
         )
         requiredMemoryBytes match
@@ -1840,6 +1850,19 @@ final class PostgresControlPlaneStore(
     finally ps.close()
   }
 
+  override def approve(name: String, by: String): Boolean = withConn { c =>
+    // CASE reads the pre-update row: an approved server keeps its first approver and time.
+    val ps = c.prepareStatement(
+      """UPDATE qodstate_fleet_server SET
+        |  approved_at = CASE WHEN approved THEN approved_at ELSE now() END,
+        |  approved_by = CASE WHEN approved THEN approved_by ELSE ? END,
+        |  approved = true
+        |WHERE name = ?""".stripMargin
+    )
+    try { ps.setString(1, by); ps.setString(2, name); ps.executeUpdate() == 1 }
+    finally ps.close()
+  }
+
   override def delete(name: String): Boolean = withConn { c =>
     val ps = c.prepareStatement("DELETE FROM qodstate_fleet_server WHERE name = ?")
     try { ps.setString(1, name); ps.executeUpdate() == 1 }
@@ -1849,6 +1872,7 @@ final class PostgresControlPlaneStore(
   private val FleetSelect =
     """SELECT s.name, s.advertise_host, s.node_port, s.joined_at, s.unschedulable, s.assigned_node_id,
       |  s.assignment::text AS assignment, s.assignment_epoch, s.claimed_at,
+      |  s.approved, s.approved_at, s.approved_by, h.source_addr,
       |  EXTRACT(EPOCH FROM now() - s.claimed_at)::bigint AS claim_age_seconds,
       |  h.last_heartbeat_at, EXTRACT(EPOCH FROM now() - h.last_heartbeat_at)::bigint AS silent_seconds,
       |  h.agent_version, h.os, h.duckdb_version, h.cpus, h.memory_bytes,
@@ -1891,7 +1915,11 @@ final class PostgresControlPlaneStore(
       nodeState = rs.getString("node_state"),
       nodeError = Option(rs.getString("node_error")),
       nodePid = Option(rs.getObject("node_pid")).map(_.asInstanceOf[Number].longValue),
-      nodeStartedAt = Option(rs.getTimestamp("node_started_at")).map(_.toInstant)
+      nodeStartedAt = Option(rs.getTimestamp("node_started_at")).map(_.toInstant),
+      approved = rs.getBoolean("approved"),
+      approvedAt = Option(rs.getTimestamp("approved_at")).map(_.toInstant),
+      approvedBy = Option(rs.getString("approved_by")),
+      sourceAddr = Option(rs.getString("source_addr"))
     )
 
   // ---------------- helpers ----------------

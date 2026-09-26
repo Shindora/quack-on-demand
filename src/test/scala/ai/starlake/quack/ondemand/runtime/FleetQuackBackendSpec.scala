@@ -77,7 +77,9 @@ class FleetQuackBackendSpec extends AnyFlatSpec with Matchers:
           Some("1.5"),
           Some(8),
           memoryBytes,
-          node
+          node,
+          sourceAddr = None,
+          autoApprove = true
         )
       )
 

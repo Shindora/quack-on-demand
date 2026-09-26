@@ -108,7 +108,9 @@ final class FleetHandlers(
         req.duckdbVersion,
         req.cpus,
         req.memoryBytes,
-        report
+        report,
+        sourceAddr = None,
+        autoApprove = true
       )
       val record: Out[FleetHeartbeatResponse] =
         IO.blocking(store.recordHeartbeat(hb)).flatMap {

@@ -130,6 +130,7 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       def byNodeId(nodeId: String): Option[FleetServerRow]        = None
       def setUnschedulable(name: String, value: Boolean): Boolean = false
       def delete(name: String): Boolean                           = false
+      def approve(name: String, by: String): Boolean              = false
     val h = new FleetHandlers(
       failing,
       hbCfg,
@@ -170,7 +171,9 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
         None,
         Some(4),
         Some(32L << 30),
-        NodeReport(0, None, "none", None, None, None)
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = None,
+        autoApprove = true
       )
     )
   private def assignment(nodeId: String) =
@@ -276,7 +279,8 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     def setUnschedulable(name: String, value: Boolean): Boolean =
       beforeSetUnschedulable()
       inner.setUnschedulable(name, value)
-    def delete(name: String): Boolean = inner.delete(name)
+    def delete(name: String): Boolean              = inner.delete(name)
+    def approve(name: String, by: String): Boolean = inner.approve(name, by)
 
   private final class CountingPublisher extends StateChangePublisher:
     var topology                = 0

@@ -5,6 +5,7 @@ import ai.starlake.quack.ondemand.state.testkit.TestPostgres
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.nio.file.{Files, Paths}
 import java.time.Instant
 import java.util.concurrent.{CountDownLatch, Executors}
 import scala.util.Try
@@ -24,7 +25,9 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       host: String = "10.0.0.1",
       port: Int = 21900,
       memoryBytes: Option[Long] = Some(64L << 30),
-      node: NodeReport = NodeReport(0, None, "none", None, None, None)
+      node: NodeReport = NodeReport(0, None, "none", None, None, None),
+      autoApprove: Boolean = true,
+      source: Option[String] = Some("10.0.0.1")
   ): Heartbeat =
     Heartbeat(
       name,
@@ -35,7 +38,9 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       Some("1.5.5"),
       Some(16),
       memoryBytes,
-      node
+      node,
+      sourceAddr = source,
+      autoApprove = autoApprove
     )
 
   def assignment(nodeId: String): FleetAssignment =
@@ -262,6 +267,70 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       s.list().map(_.name) shouldBe List("b")
       s.recordHeartbeat(hb("a")) shouldBe HeartbeatOutcome.Joined // re-join after delete
     }
+
+    it should "keep a server joined from outside the auto-approve list pending and never claim it" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("p", autoApprove = false)) shouldBe HeartbeatOutcome.Joined
+        val row = s.get("p").get
+        (row.approved, row.approvedBy, row.approvedAt) shouldBe (false, None, None)
+        row.sourceAddr shouldBe Some("10.0.0.1")
+        s.claim(assignment("n1"), 30, None) shouldBe Left(ClaimMiss.NoneFree)
+    }
+
+    it should "approve a pending server on a later heartbeat whose source is now in the list" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("p", autoApprove = false))
+        s.recordHeartbeat(hb("p")) shouldBe HeartbeatOutcome.Updated
+        val row = s.get("p").get
+        (row.approved, row.approvedBy) shouldBe (true, Some("auto"))
+        row.approvedAt should not be empty
+        s.claim(assignment("n1"), 30, None).map(_.name) shouldBe Right("p")
+    }
+
+    it should "never un-approve an approved server" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("a"))
+      s.recordHeartbeat(hb("a", autoApprove = false))
+      s.get("a").get.approved shouldBe true
+    }
+
+    it should "record the latest source address" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("a", source = Some("10.0.0.1")))
+      s.recordHeartbeat(hb("a", source = Some("10.0.0.2")))
+      s.get("a").get.sourceAddr shouldBe Some("10.0.0.2")
+      s.recordHeartbeat(hb("a", source = None))
+      s.get("a").get.sourceAddr shouldBe None
+    }
+
+    it should "approve by admin once, keeping the first approver, false for an unknown name" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("p", autoApprove = false))
+        s.approve("p", "alice") shouldBe true
+        val first = s.get("p").get
+        (first.approved, first.approvedBy) shouldBe (true, Some("alice"))
+        s.approve("p", "bob") shouldBe true
+        s.get("p").get.approvedBy shouldBe Some("alice")
+        s.get("p").get.approvedAt shouldBe first.approvedAt
+        s.approve("ghost", "alice") shouldBe false
+    }
+
+    it should "refuse an address change for a pending server like any other" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("p", autoApprove = false))
+      s.recordHeartbeat(hb("p", host = "10.0.0.9", autoApprove = false)) shouldBe
+        HeartbeatOutcome.AddressChangeRefused
+    }
+
+    it should "forget approval on delete: a re-join is judged again" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("a")); s.delete("a")
+      s.recordHeartbeat(hb("a", autoApprove = false)) shouldBe HeartbeatOutcome.Joined
+      s.get("a").get.approved shouldBe false
+    }
 }
 
 class InMemoryFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetServerStoreBehaviour:
@@ -327,4 +396,42 @@ class PostgresFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetS
       finally other.close()
       pg.claim(assignment("n1"), 30, Some(64L << 30)).map(_.name) shouldBe Right("big")
       pg.claim(assignment("n2"), 30, Some(64L << 30)) shouldBe Left(ClaimMiss.NoneFits)
+  }
+
+  it should "keep servers that joined before 0041 approved (upgrade backfill)" in {
+    TestPostgres.ensureReachable()
+    val dbName = s"qodfs_test_${System.nanoTime()}"
+    TestPostgres.psql("postgres", s"""CREATE DATABASE "$dbName"""")
+    try
+      val url    = TestPostgres.dbUrl(dbName)
+      val master =
+        Paths.get(getClass.getResource("/db/changelog/db.changelog-master.yaml").toURI)
+      val upTo = master.resolveSibling("master-upto-0040-test.yaml")
+      val text = Files.readString(master)
+      val cut  = text.indexOf("  - include:\n      file: db/changelog/0041-")
+      cut should be > 0
+      Files.writeString(upTo, text.substring(0, cut))
+      try
+        new LiquibaseRunner(
+          url,
+          TestPostgres.pgUser,
+          TestPostgres.pgPass,
+          "db/changelog/master-upto-0040-test.yaml"
+        ).run()
+      finally Files.deleteIfExists(upTo)
+      TestPostgres.psql(
+        dbName,
+        "INSERT INTO qodstate_fleet_server (name, advertise_host, node_port) " +
+          "VALUES ('old', '10.0.0.1', 21900); " +
+          "INSERT INTO qodstate_fleet_heartbeat (name) VALUES ('old')"
+      )
+      new LiquibaseRunner(url, TestPostgres.pgUser, TestPostgres.pgPass).run()
+      val pg = new PostgresControlPlaneStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+      try
+        val row = pg.get("old").get
+        (row.approved, row.approvedBy) shouldBe (true, Some("upgrade"))
+        pg.recordHeartbeat(hb("new", autoApprove = false))
+        pg.get("new").get.approved shouldBe false
+      finally pg.close()
+    finally Try(TestPostgres.dropDatabase(dbName))
   }

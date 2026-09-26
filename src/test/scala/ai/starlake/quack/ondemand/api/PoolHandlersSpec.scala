@@ -790,7 +790,9 @@ class PoolHandlersSpec extends AnyFlatSpec with Matchers:
         None,
         None,
         None,
-        NodeReport(0, None, "none", None, None, None)
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = None,
+        autoApprove = true
       )
     )
     fleet.backdate("srv-1", 100)
