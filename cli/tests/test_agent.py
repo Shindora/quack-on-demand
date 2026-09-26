@@ -6,7 +6,7 @@ import sys
 import httpx
 import pytest
 
-from qod_cli.agent import Agent
+from qod_cli.agent import Agent, network_hint, status_hint
 
 # qod agent is POSIX-only (Linux, macOS): it relies on process groups (os.killpg) and
 # start_new_session. The typer wrapper refuses to run on Windows, and so do these tests.
@@ -259,7 +259,7 @@ def test_non_2xx_reply_logs_the_manager_error_code_at_warn(tmp_path, capsys):
     not_json.text = "<html>bad gateway</html>"
     agent = make_agent(FakeHttp([refused, unauthorized, not_json]), lambda *a, **k: FakeProc(), tmp_path)
     assert agent.run_once() == 5 and agent.run_once() == 5 and agent.run_once() == 5
-    err = capsys.readouterr().err.splitlines()
+    err = [l for l in capsys.readouterr().err.splitlines() if "hint:" not in l]
     assert "WARN" in err[0] and "409" in err[0] and "address_change_refused" in err[0]
     assert "WARN" in err[1] and "fleet_unauthorized" in err[1]
     assert "WARN" in err[2] and "502" in err[2] and "bad gateway" in err[2]
@@ -403,3 +403,67 @@ def test_default_advertise_host_refuses_loopback(monkeypatch):
     monkeypatch.setattr(agent_mod.socket, "gethostbyname", gai)
     with pytest.raises(SystemExit):
         agent_mod.default_advertise_host()
+
+
+def _real_error(url):
+    """The exception httpx really raises for url, so the hints match live failures."""
+    try:
+        httpx.post(url, timeout=2.0)
+    except Exception as exc:
+        return exc
+    raise AssertionError(f"{url} unexpectedly answered")
+
+
+@pytest.fixture
+def plain_http_port():
+    import http.server, threading
+    srv = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1]
+    srv.shutdown()
+
+
+def test_https_to_a_plain_http_port_suggests_http_with_insecure(plain_http_port):
+    url = f"https://127.0.0.1:{plain_http_port}"
+    hint = network_hint(_real_error(url), url)
+    assert f"--manager http://127.0.0.1:{plain_http_port} --insecure" in hint
+
+
+def test_unresolvable_host_names_the_host():
+    url = "https://qod-no-such-host.invalid:20900"
+    hint = network_hint(_real_error(url), url)
+    assert "'qod-no-such-host.invalid' does not resolve" in hint
+
+
+def test_refused_connection_names_the_port():
+    import socket
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    url = f"http://127.0.0.1:{port}"
+    assert f"nothing listens on 127.0.0.1:{port}" in network_hint(_real_error(url), url)
+
+
+def test_unrecognised_network_error_has_no_hint():
+    assert network_hint(RuntimeError("boom"), "https://mgr:20900") is None
+
+
+@pytest.mark.parametrize("status,code,expected", [
+    (409, "address_change_refused", "qod fleet drain srv-1"),
+    (401, "fleet_unauthorized", "QOD_FLEET_JOIN_TOKEN"),
+    (401, None, "QOD_RUNTIME_TYPE=fleet"),
+    (400, "fleet_disabled", "QOD_RUNTIME_TYPE=fleet"),
+    (404, None, "REST address"),
+    (502, "backend_error", "manager log"),
+])
+def test_rejected_heartbeat_hints(status, code, expected):
+    assert expected in status_hint(status, code, name="srv-1", address="10.0.0.7:21900")
+
+
+def test_hint_is_printed_once_per_distinct_failure(tmp_path, capsys):
+    refused = lambda: FakeResponse(409, {"error": "address_change_refused", "message": "known"})
+    ok = FakeResponse(200, {"heartbeatSec": 5, "assignment": None})
+    agent = make_agent(FakeHttp([refused(), refused(), ok, refused()]), lambda *a, **k: FakeProc(), tmp_path)
+    for _ in range(4):
+        agent.run_once()
+    err = capsys.readouterr().err.splitlines()
+    assert sum("hint:" in l for l in err) == 2
+    assert "10.0.0.7:21900" in next(l for l in err if "hint:" in l)

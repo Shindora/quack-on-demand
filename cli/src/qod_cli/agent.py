@@ -126,6 +126,70 @@ def _error_of(r) -> str:
     return getattr(r, "text", "") or ""
 
 
+def _error_code_of(r) -> str | None:
+    try:
+        body = r.json()
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return body.get("error") if isinstance(body, dict) else None
+
+
+def _causes(exc: BaseException) -> list[BaseException]:
+    """exc and its __cause__/__context__ chain: httpx wraps the socket or ssl error."""
+    seen: list[BaseException] = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    return seen
+
+
+def network_hint(exc: BaseException, manager_url: str) -> str | None:
+    """A likely fix for a heartbeat that never reached the manager, or None when unrecognised."""
+    url = httpx.URL(manager_url)
+    host, port = url.host, url.port or (443 if url.scheme == "https" else 80)
+    chain = _causes(exc)
+    text = " ".join(str(e) for e in chain)
+    if "WRONG_VERSION_NUMBER" in text and url.scheme == "https":
+        plain = str(url.copy_with(scheme="http")).rstrip("/")
+        return (f"{host}:{port} answered plain HTTP to a TLS handshake (the manager's REST port has "
+                f"no TLS of its own). Use --manager {plain} --insecure")
+    if "CERTIFICATE_VERIFY_FAILED" in text:
+        return (f"the certificate presented by {host}:{port} is not trusted by this host (self-signed, "
+                "or issued for another name); use a certificate this host trusts, or a host name it covers")
+    if any(isinstance(e, socket.gaierror) for e in chain) or any(
+        m in text for m in ("nodename nor servname", "Name or service not known",
+                            "Temporary failure in name resolution", "getaddrinfo failed")):
+        return (f"host '{host}' does not resolve from this machine; check the --manager host name "
+                "(or QOD_MANAGER_URL), or use the manager's IP address")
+    if any(isinstance(e, ConnectionRefusedError) for e in chain) or "Connection refused" in text:
+        return (f"nothing listens on {host}:{port}; check the manager is running and that {port} is its "
+                "REST port (default 20900)")
+    if any(isinstance(e, httpx.TimeoutException) for e in chain):
+        return (f"no answer from {host}:{port} within 10s; check the network route and any firewall "
+                "between this server and the manager")
+    return None
+
+
+def status_hint(status: int, code: str | None, *, name: str, address: str) -> str | None:
+    """A likely fix for a heartbeat the manager rejected, or None when unrecognised."""
+    if code == "address_change_refused":
+        return (f"server '{name}' is registered with another address than {address}. Either start this "
+                f"agent with a different --name, or on the manager run `qod fleet drain {name}` (then "
+                f"`qod fleet undrain {name}` once it reconnects) or `qod fleet remove {name}`")
+    if code == "fleet_unauthorized":
+        return ("the join token does not match the manager's; set QOD_FLEET_JOIN_TOKEN to the value "
+                "the manager was started with")
+    if code == "fleet_disabled" or (status == 401 and code is None):
+        return ("the manager is not running in fleet mode; start it with QOD_RUNTIME_TYPE=fleet and "
+                "QOD_FLEET_JOIN_TOKEN, or check --manager points at the fleet manager")
+    if status == 404:
+        return ("no fleet heartbeat endpoint at this URL; check --manager is the manager's REST address "
+                "(default port 20900) and that the manager is recent enough to support fleet mode")
+    if code == "backend_error":
+        return "the manager could not reach its control-plane database; see the manager log (retrying)"
+    return None
+
+
 class _Node:
     def __init__(self, assignment: dict, proc, started_at: float):
         self.assignment, self.proc, self.started_at = assignment, proc, started_at
@@ -177,6 +241,8 @@ class Agent:
         # None until the first successful heartbeat, then False while heartbeats fail: drives the
         # one-line "connected" / "reconnected" status, never repeated on every heartbeat.
         self.connected: bool | None = None
+        # The last failed-heartbeat line, so its hint is printed once rather than every retry.
+        self.last_failure: str | None = None
         # Monotonic deadline of the scheduled restart of a failed node; None while none is scheduled.
         self.next_restart_at: float | None = None
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -330,13 +396,15 @@ class Agent:
             r = self.http.post(f"{self.manager_url}/api/fleet/heartbeat", json=body,
                                headers={"X-Fleet-Token": self.join_token}, timeout=10.0)
         except Exception as exc:  # network: keep the node running, retry later
-            sys.stderr.write(f"qod agent: heartbeat to {self.manager_url} failed: {exc}\n")
-            self._mark_disconnected()
+            self._report_failure(f"heartbeat to {self.manager_url} failed: {exc}",
+                                 network_hint(exc, self.manager_url))
             return BACKOFF_MIN_S
         if not r.is_success:
-            sys.stderr.write(f"qod agent: WARN manager answered {r.status_code}: {_error_of(r)}\n")
-            self._mark_disconnected()
+            hint = status_hint(r.status_code, _error_code_of(r), name=self.name,
+                               address=f"{self.advertise_host}:{self.node_port}")
+            self._report_failure(f"WARN manager answered {r.status_code}: {_error_of(r)}", hint)
             return BACKOFF_MIN_S
+        self.last_failure = None
         if not self.connected:
             verb = "connected" if self.connected is None else "reconnected"
             sys.stderr.write(f"qod agent: {verb} to manager {self.manager_url} as server '{self.name}'\n")
@@ -350,6 +418,14 @@ class Agent:
         except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
             sys.stderr.write(f"qod agent: could not act on the manager's reply: {exc!r}\n")
             return BACKOFF_MIN_S
+
+    def _report_failure(self, message: str, hint: str | None) -> None:
+        """Log every failed heartbeat; the hint only when the failure changes, not every 5 s."""
+        sys.stderr.write(f"qod agent: {message}\n")
+        if hint and message != self.last_failure:
+            sys.stderr.write(f"qod agent:   hint: {hint}\n")
+        self.last_failure = message
+        self._mark_disconnected()
 
     def _mark_disconnected(self) -> None:
         if self.connected:
