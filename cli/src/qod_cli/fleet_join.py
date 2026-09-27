@@ -403,7 +403,7 @@ class FleetMember:
     def run_once(self) -> float:
         cpus, mem = self.capacity()
         body = {"name": self.name, "advertiseHost": self.advertise_host, "nodePort": self.node_port,
-                "agentVersion": __version__, "os": f"{sys.platform}-{platform.machine()}",
+                "qodVersion": __version__, "os": f"{sys.platform}-{platform.machine()}",
                 "duckdbVersion": self.duckdb_version, "cpus": cpus, "memoryBytes": mem, "node": self._report()}
         try:
             r = self.http.post(f"{self.manager_url}/api/fleet/heartbeat", json=body,

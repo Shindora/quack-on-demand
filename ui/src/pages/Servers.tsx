@@ -154,7 +154,7 @@ export default function Servers() {
                     {s.nodeError && <span className="badge bad" style={{ marginLeft: 6 }}>error</span>}
                   </td>
                   <td>
-                    {s.agentVersion ?? '-'}
+                    {s.qodVersion ?? '-'}
                     {s.duckdbVersion && <span className="subtle"> / duckdb {s.duckdbVersion}</span>}
                   </td>
                   <td className="actions">

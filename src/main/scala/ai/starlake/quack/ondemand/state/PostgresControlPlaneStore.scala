@@ -1709,18 +1709,18 @@ final class PostgresControlPlaneStore(
         // 3. Heartbeat row: the only row this handler rewrites every interval.
         val up = c.prepareStatement(
           """INSERT INTO qodstate_fleet_heartbeat
-            |  (name, last_heartbeat_at, agent_version, os, duckdb_version, cpus, memory_bytes,
+            |  (name, last_heartbeat_at, qod_version, os, duckdb_version, cpus, memory_bytes,
             |   node_state, node_error, node_pid, node_started_at, source_addr)
             |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             |ON CONFLICT (name) DO UPDATE SET
-            |  last_heartbeat_at = now(), agent_version = EXCLUDED.agent_version, os = EXCLUDED.os,
+            |  last_heartbeat_at = now(), qod_version = EXCLUDED.qod_version, os = EXCLUDED.os,
             |  duckdb_version = EXCLUDED.duckdb_version, cpus = EXCLUDED.cpus, memory_bytes = EXCLUDED.memory_bytes,
             |  node_state = EXCLUDED.node_state, node_error = EXCLUDED.node_error, node_pid = EXCLUDED.node_pid,
             |  node_started_at = EXCLUDED.node_started_at, source_addr = EXCLUDED.source_addr""".stripMargin
         )
         try
           up.setString(1, hb.name)
-          setNullable(up, 2, hb.agentVersion); setNullable(up, 3, hb.os);
+          setNullable(up, 2, hb.qodVersion); setNullable(up, 3, hb.os);
           setNullable(up, 4, hb.duckdbVersion)
           setNullableInt(up, 5, hb.cpus)
           setNullableLong(up, 6, hb.memoryBytes)
@@ -1991,7 +1991,7 @@ final class PostgresControlPlaneStore(
       |  s.approved, s.approved_at, s.approved_by, s.approved_source, h.source_addr,
       |  EXTRACT(EPOCH FROM now() - s.claimed_at)::bigint AS claim_age_seconds,
       |  h.last_heartbeat_at, EXTRACT(EPOCH FROM now() - h.last_heartbeat_at)::bigint AS silent_seconds,
-      |  h.agent_version, h.os, h.duckdb_version, h.cpus, h.memory_bytes,
+      |  h.qod_version, h.os, h.duckdb_version, h.cpus, h.memory_bytes,
       |  h.node_state, h.node_error, h.node_pid, h.node_started_at
       |FROM qodstate_fleet_server s JOIN qodstate_fleet_heartbeat h USING (name)""".stripMargin
 
@@ -2023,7 +2023,7 @@ final class PostgresControlPlaneStore(
       silentSeconds = rs.getLong("silent_seconds"),
       claimAgeSeconds =
         Option(rs.getObject("claim_age_seconds")).map(_.asInstanceOf[Number].longValue),
-      agentVersion = Option(rs.getString("agent_version")),
+      qodVersion = Option(rs.getString("qod_version")),
       os = Option(rs.getString("os")),
       duckdbVersion = Option(rs.getString("duckdb_version")),
       cpus = Option(rs.getObject("cpus")).map(_.asInstanceOf[Number].intValue),

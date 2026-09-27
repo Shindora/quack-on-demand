@@ -110,7 +110,7 @@ export interface FleetServer {
   pool?: string | null;
   nodeState: string;
   nodeError?: string | null;
-  agentVersion?: string | null;
+  qodVersion?: string | null;
   duckdbVersion?: string | null;
   cpus?: number | null;
   memoryBytes?: number | null;

@@ -55,7 +55,7 @@ final case class FleetServerRow(
     // silentSeconds, measured by the store so a manager whose JVM clock drifts from the
     // database never misjudges how old a claim is.
     claimAgeSeconds: Option[Long],
-    agentVersion: Option[String],
+    qodVersion: Option[String],
     os: Option[String],
     duckdbVersion: Option[String],
     cpus: Option[Int],
@@ -82,7 +82,7 @@ final case class Heartbeat(
     name: String,
     advertiseHost: String,
     nodePort: Int,
-    agentVersion: Option[String],
+    qodVersion: Option[String],
     os: Option[String],
     duckdbVersion: Option[String],
     cpus: Option[Int],
