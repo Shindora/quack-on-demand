@@ -791,7 +791,9 @@ class PoolHandlersSpec extends AnyFlatSpec with Matchers:
         None,
         None,
         NodeReport(0, None, "none", None, None, None),
-        sourceAddr = None,
+        // Needs an approved row to exercise liveness display; the source must be known for an
+        // auto-approval to be constructible.
+        sourceAddr = Some("10.0.0.1"),
         autoApprove = true
       )
     )

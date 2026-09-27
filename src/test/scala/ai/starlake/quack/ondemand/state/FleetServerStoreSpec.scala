@@ -308,10 +308,13 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
 
     it should "record the latest source address" in withStore { h =>
       val s = h.store
-      s.recordHeartbeat(hb("a", source = Some("10.0.0.1")))
-      s.recordHeartbeat(hb("a", source = Some("10.0.0.2")))
+      // Pending throughout (autoApprove = false): an approved, bound row moving to an unknown
+      // source is refused instead (see "refuse an approved server heartbeating from another
+      // source" below), so a pending server is what exercises plain source tracking down to None.
+      s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.1")))
+      s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.2")))
       s.get("a").get.sourceAddr shouldBe Some("10.0.0.2")
-      s.recordHeartbeat(hb("a", source = None))
+      s.recordHeartbeat(hb("a", autoApprove = false, source = None))
       s.get("a").get.sourceAddr shouldBe None
     }
 
@@ -535,10 +538,9 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
         // Same name, advertised host and port, from a source outside the list.
         s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.6.6.6"))) shouldBe
           HeartbeatOutcome.ApprovalUnbound
-        // An unknown source never binds, whatever the caller judged.
+        // An unknown source never binds. (The caller-judged autoApprove=true, source=None
+        // combination is now unrepresentable: Heartbeat itself refuses it, see HeartbeatSpec.)
         s.recordHeartbeat(hb("a", autoApprove = false, source = None)) shouldBe
-          HeartbeatOutcome.ApprovalUnbound
-        s.recordHeartbeat(hb("a", autoApprove = true, source = None)) shouldBe
           HeartbeatOutcome.ApprovalUnbound
         val after = s.get("a").get
         (after.approved, after.approvedBy, after.approvedAt, after.approvedSource) shouldBe
@@ -599,6 +601,27 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
         row.sourceAddr shouldBe Some("10.0.0.1")
     }
 }
+
+/** Outside the shared behaviour: pins the `Heartbeat` invariant itself, not a store's handling of
+  * it.
+  */
+class HeartbeatSpec extends AnyFlatSpec with Matchers:
+  "Heartbeat" should "refuse to be built as an auto-approval from an unknown source" in
+    intercept[IllegalArgumentException] {
+      Heartbeat(
+        "a",
+        "10.0.0.1",
+        21900,
+        None,
+        None,
+        None,
+        None,
+        None,
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = None,
+        autoApprove = true
+      )
+    }
 
 class InMemoryFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetServerStoreBehaviour:
   private def withMem(test: FleetStoreHarness => Unit): Unit =

@@ -92,7 +92,13 @@ final case class Heartbeat(
     // server that is not approved yet; ignored for an approved one. Required: a default would
     // silently decide approval for the caller.
     autoApprove: Boolean
-)
+):
+  // An auto-approval must bind to the source it was judged from; an unbound approval is exactly
+  // the dangerous state the join-approval fix exists to prevent.
+  require(
+    sourceAddr.isDefined || !autoApprove,
+    "a heartbeat can only be auto-approved from a known source address"
+  )
 
 sealed trait HeartbeatOutcome
 object HeartbeatOutcome:

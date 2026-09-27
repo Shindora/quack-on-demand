@@ -371,7 +371,9 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
         Some(4),
         Some(32L << 30),
         NodeReport(0, None, "none", None, None, None),
-        sourceAddr = None,
+        // This helper builds an already-approved row for admin-surface tests unrelated to
+        // approval binding; the source must be known for an auto-approval to be constructible.
+        sourceAddr = Some(host),
         autoApprove = true
       )
     )
