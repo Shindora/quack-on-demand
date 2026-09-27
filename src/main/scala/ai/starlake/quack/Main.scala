@@ -1614,6 +1614,7 @@ object Main extends IOApp with LazyLogging:
             ai.starlake.quack.ondemand.branch.BranchCloner(meta).clone(parentDb, branchDb, path),
           mergeExecutor = ai.starlake.quack.boot.BranchWiring
             .mergeExecutor(mgrCfg.branching, ephemeralBackend, adapter),
+          mergeFence = ai.starlake.quack.ondemand.branch.PostgresMergeFence,
           counter = ai.starlake.quack.boot.BranchWiring.changeCounter(
             previewExecutor,
             b => branchService.poolKeyOf(b),
