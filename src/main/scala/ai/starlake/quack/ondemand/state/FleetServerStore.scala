@@ -102,6 +102,15 @@ object HeartbeatOutcome:
       extends HeartbeatOutcome // known name, other address, not drained or still assigned
   case object SourceChangeRefused
       extends HeartbeatOutcome // approved name, heartbeat from another source than it is bound to
+  case object ApprovalUnbound
+      extends HeartbeatOutcome // approved name bound to no source, heartbeat from outside the list
+
+/** What an admin [[FleetServerStore.approve]] did. */
+enum ApproveResult:
+  case Approved        // pending server approved, bound to its latest known source
+  case AlreadyApproved // no change: the first approver, time and binding are kept
+  case NotFound        // no server by that name
+  case SourceUnknown   // pending server whose latest heartbeat has no known source: refused
 
 /** Why a claim found nothing. */
 enum ClaimMiss:
@@ -125,10 +134,15 @@ trait FleetServerStore:
     * before `hb.autoApprove` applies, so the new address is judged on that same heartbeat.
     *
     * An approval is bound to a source (`approvedSource`): the auto-approving heartbeat's, or the
-    * latest one on an admin [[approve]]; an unbound approved row binds to the first known source. A
-    * heartbeat for an approved row from another source (an unknown one included) is refused
-    * (`SourceChangeRefused`, nothing written) unless `hb.autoApprove` (rebind to the new source) or
-    * the row is drained and unassigned (approval reset, judged again).
+    * latest one on an admin [[approve]]. A heartbeat for an approved row from another source (an
+    * unknown one included) is refused (`SourceChangeRefused`, nothing written) unless
+    * `hb.autoApprove` (rebind to the new source) or the row is drained and unassigned (approval
+    * reset, judged again).
+    *
+    * An approved row bound to no source (servers approved before Liquibase 0042) binds only to a
+    * known source with `hb.autoApprove`. From any other source (an unknown one included) it is
+    * refused (`ApprovalUnbound`, nothing written) unless drained and unassigned (approval reset,
+    * judged again): whoever heartbeats first with the name must not inherit the approval.
     */
   def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome
 
@@ -172,11 +186,12 @@ trait FleetServerStore:
   def byNodeId(nodeId: String): Option[FleetServerRow]
   def setUnschedulable(name: String, value: Boolean): Boolean // false when unknown
 
-  /** Approve a server by name, recording `by` and binding the latest heartbeat's source (None when
-    * unknown: bound on the next known one). Idempotent: an approved server keeps its first
-    * approver, time and binding. False when the name is unknown.
+  /** Approve a server by name, recording `by` and binding the latest heartbeat's source, read
+    * atomically with the write. `SourceUnknown` (nothing written) when that source is unknown: an
+    * approval never starts unbound. Idempotent: an approved server keeps its first approver, time
+    * and binding (`AlreadyApproved`). `NotFound` when the name is unknown.
     */
-  def approve(name: String, by: String): Boolean
+  def approve(name: String, by: String): ApproveResult
 
   def delete(name: String): Boolean // heartbeat row cascades
 

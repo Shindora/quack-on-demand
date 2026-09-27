@@ -451,7 +451,8 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
       fx.sup.pendingCount(fx.key) shouldBe 1
       fx.sup.pendingReason(fx.key) shouldBe Some("none_free")
       fx.holder(id(1)) shouldBe Nil
-      fx.inner.approve("a", "admin") shouldBe true
+      fx.inner.approve("a", "admin") shouldBe
+        ai.starlake.quack.ondemand.state.ApproveResult.Approved
       fx.sup.reconcile().unsafeRunSync()
       fx.holder(id(1)) shouldBe List("a")
       fx.rowServer(id(1)) shouldBe Some("a")

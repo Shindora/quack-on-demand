@@ -7,6 +7,7 @@ import ai.starlake.quack.ondemand.fleet.ServerLiveness
 import ai.starlake.quack.ondemand.ha.StateChangePublisher
 import ai.starlake.quack.ondemand.runtime.FleetQuackBackend
 import ai.starlake.quack.ondemand.state.{
+  ApproveResult,
   ClaimMiss,
   FleetAssignment,
   FleetServerRow,
@@ -148,7 +149,7 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       def byNodeId(nodeId: String): Option[FleetServerRow]        = None
       def setUnschedulable(name: String, value: Boolean): Boolean = false
       def delete(name: String): Boolean                           = false
-      def approve(name: String, by: String): Boolean              = false
+      def approve(name: String, by: String): ApproveResult        = ApproveResult.NotFound
     val h = new FleetHandlers(
       failing,
       hbCfg,
@@ -304,6 +305,49 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None)
       .unsafeRunSync()
       .map(_.assignment.map(_.nodeId)) shouldBe Right(Some("n1"))
+  }
+
+  it should "409 approval_unbound for a heartbeat from outside the list on an unbound approval" in {
+    val (store, h) = approvalFixture("10.0.0.0/8")
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None).unsafeRunSync()
+    store.claim(
+      FleetAssignment(
+        0,
+        "n1",
+        PoolKey("acme", "db", "bi"),
+        21900,
+        "tok",
+        "memory",
+        Map("pgPassword" -> "p"),
+        "",
+        "",
+        "",
+        ""
+      ),
+      30,
+      None
+    )
+    // As the 0042 upgrade leaves a server that joined before the source was recorded.
+    store.unbind("srv-1")
+    // Same name, advertised host and port, from a source outside the list.
+    val e = h
+      .heartbeat(req(), Some("secret"), addr("192.168.1.5"), None)
+      .unsafeRunSync()
+      .left
+      .toOption
+      .get
+    (e._1, e._2.error) shouldBe (StatusCode.Conflict, "approval_unbound")
+    e._2.message shouldBe "server 'srv-1' was approved before its source address was recorded " +
+      "and this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it and approve it " +
+      "again (`qod fleet drain srv-1`, then `qod fleet approve srv-1`)"
+    e._2.message should not include "\u2014"
+    val row = store.get("srv-1").get
+    (row.approved, row.approvedSource, row.sourceAddr) shouldBe (true, None, Some("10.1.2.3"))
+    // A heartbeat from inside the list binds the approval and gets the assignment.
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None)
+      .unsafeRunSync()
+      .map(_.assignment.map(_.nodeId)) shouldBe Right(Some("n1"))
+    store.get("srv-1").get.approvedSource shouldBe Some("10.1.2.3")
   }
 
   // --- Admin surface (Task 8) ----------------------------------------------------------------
@@ -463,6 +507,32 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .map(e => (e._1, e._2.error)) shouldBe Left((StatusCode.NotFound, "not_found"))
   }
 
+  it should "409 source_unknown for a pending server whose source is unknown" in {
+    val (store, h) = adminFixture()
+    store.recordHeartbeat(
+      Heartbeat(
+        "p",
+        "10.0.0.1",
+        21900,
+        None,
+        None,
+        None,
+        None,
+        None,
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = None,
+        autoApprove = false
+      )
+    )
+    val e =
+      h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync().left.toOption.get
+    (e._1, e._2.error) shouldBe (StatusCode.Conflict, "source_unknown")
+    e._2.message shouldBe "server 'p' has no known source address yet; approve it after its " +
+      "next heartbeat, and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy"
+    val row = store.get("p").get
+    (row.approved, row.approvedBy, row.approvedSource) shouldBe (false, None, None)
+  }
+
   "listServers" should "carry approval, approver, time and source address" in {
     val (store, h) = adminFixture()
     store.recordHeartbeat(
@@ -529,8 +599,8 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     def setUnschedulable(name: String, value: Boolean): Boolean =
       beforeSetUnschedulable()
       inner.setUnschedulable(name, value)
-    def delete(name: String): Boolean              = inner.delete(name)
-    def approve(name: String, by: String): Boolean = inner.approve(name, by)
+    def delete(name: String): Boolean                    = inner.delete(name)
+    def approve(name: String, by: String): ApproveResult = inner.approve(name, by)
 
   private final class CountingPublisher extends StateChangePublisher:
     var topology                = 0

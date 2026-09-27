@@ -18,6 +18,9 @@ trait FleetStoreHarness:
   /** Moves a server's claimed_at `seconds` into the past (the store clock advancing on a claim). */
   def backdateClaim(name: String, seconds: Long): Unit
 
+  /** Clears an approved server's source binding, as the 0042 upgrade leaves pre-existing rows. */
+  def unbind(name: String): Unit
+
 trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
 
   def hb(
@@ -312,17 +315,34 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       s.get("a").get.sourceAddr shouldBe None
     }
 
-    it should "approve by admin once, keeping the first approver, false for an unknown name" in withStore {
+    it should "approve by admin once, keeping the first approver, NotFound for an unknown name" in withStore {
       h =>
         val s = h.store
         s.recordHeartbeat(hb("p", autoApprove = false))
-        s.approve("p", "alice") shouldBe true
+        s.approve("p", "alice") shouldBe ApproveResult.Approved
         val first = s.get("p").get
         (first.approved, first.approvedBy) shouldBe (true, Some("alice"))
-        s.approve("p", "bob") shouldBe true
+        s.approve("p", "bob") shouldBe ApproveResult.AlreadyApproved
         s.get("p").get.approvedBy shouldBe Some("alice")
         s.get("p").get.approvedAt shouldBe first.approvedAt
-        s.approve("ghost", "alice") shouldBe false
+        s.get("p").get.approvedSource shouldBe first.approvedSource
+        s.approve("ghost", "alice") shouldBe ApproveResult.NotFound
+    }
+
+    it should "refuse an admin approval while the server's source is unknown" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("p", autoApprove = false, source = None)) shouldBe
+        HeartbeatOutcome.Joined
+      s.approve("p", "alice") shouldBe ApproveResult.SourceUnknown
+      val pending = s.get("p").get
+      (pending.approved, pending.approvedBy, pending.approvedAt, pending.approvedSource) shouldBe
+        (false, None, None, None)
+      // Once a heartbeat carries a known source, the approval binds it.
+      s.recordHeartbeat(hb("p", autoApprove = false, source = Some("10.0.0.3")))
+      s.approve("p", "alice") shouldBe ApproveResult.Approved
+      val row = s.get("p").get
+      (row.approved, row.approvedBy, row.approvedSource) shouldBe
+        (true, Some("alice"), Some("10.0.0.3"))
     }
 
     it should "refuse an address change for a pending server like any other" in withStore { h =>
@@ -375,7 +395,7 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       h =>
         val s = h.store
         s.recordHeartbeat(hb("a", autoApprove = false))
-        s.approve("a", "alice") shouldBe true
+        s.approve("a", "alice") shouldBe ApproveResult.Approved
         s.setUnschedulable("a", true)
         s.recordHeartbeat(hb("a", autoApprove = false)) shouldBe HeartbeatOutcome.Updated
         val row = s.get("a").get
@@ -478,9 +498,9 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
     it should "bind an admin approval to the latest source address" in withStore { h =>
       val s = h.store
       s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.7")))
-      s.approve("a", "alice") shouldBe true
+      s.approve("a", "alice") shouldBe ApproveResult.Approved
       s.get("a").get.approvedSource shouldBe Some("10.0.0.7")
-      s.approve("a", "bob") shouldBe true // idempotent: keeps the first binding too
+      s.approve("a", "bob") shouldBe ApproveResult.AlreadyApproved // keeps the first binding too
       s.get("a").get.approvedSource shouldBe Some("10.0.0.7")
       s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.7"))) shouldBe
         HeartbeatOutcome.Updated
@@ -488,23 +508,73 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
         HeartbeatOutcome.SourceChangeRefused
     }
 
-    it should "bind an approval with an unknown source on the first known source" in withStore {
+    it should "bind an unbound approval only to a source inside the list" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("a", source = Some("10.0.0.1")))
+      h.unbind("a")
+      val first = s.get("a").get
+      first.approvedSource shouldBe None
+      s.recordHeartbeat(hb("a", autoApprove = true, source = Some("10.0.0.3"))) shouldBe
+        HeartbeatOutcome.Updated
+      val row = s.get("a").get
+      (row.approved, row.approvedBy, row.approvedAt) shouldBe
+        (true, first.approvedBy, first.approvedAt)
+      row.approvedSource shouldBe Some("10.0.0.3")
+      s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.4"))) shouldBe
+        HeartbeatOutcome.SourceChangeRefused
+    }
+
+    it should "refuse an unbound approval heartbeating from outside the list, row untouched" in withStore {
       h =>
         val s = h.store
-        s.recordHeartbeat(hb("a", autoApprove = false, source = None))
-        s.approve("a", "alice") shouldBe true
-        s.get("a").get.approvedSource shouldBe None
-        // Still unknown: nothing to bind, the heartbeat is normal.
+        s.recordHeartbeat(hb("a", source = Some("10.0.0.1")))
+        s.claim(assignment("n1"), 30, None).isRight shouldBe true
+        h.unbind("a")
+        h.backdate("a", 60)
+        val before = s.get("a").get
+        // Same name, advertised host and port, from a source outside the list.
+        s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.6.6.6"))) shouldBe
+          HeartbeatOutcome.ApprovalUnbound
+        // An unknown source never binds, whatever the caller judged.
         s.recordHeartbeat(hb("a", autoApprove = false, source = None)) shouldBe
-          HeartbeatOutcome.Updated
-        s.get("a").get.approvedSource shouldBe None
-        s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.3"))) shouldBe
+          HeartbeatOutcome.ApprovalUnbound
+        s.recordHeartbeat(hb("a", autoApprove = true, source = None)) shouldBe
+          HeartbeatOutcome.ApprovalUnbound
+        val after = s.get("a").get
+        (after.approved, after.approvedBy, after.approvedAt, after.approvedSource) shouldBe
+          (true, before.approvedBy, before.approvedAt, None)
+        after.sourceAddr shouldBe Some("10.0.0.1")
+        after.lastHeartbeatAt shouldBe before.lastHeartbeatAt
+        after.assignedNodeId shouldBe Some("n1")
+        after.assignmentEpoch shouldBe before.assignmentEpoch
+        // Drained but still assigned: refused as well.
+        s.setUnschedulable("a", true)
+        s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.6.6.6"))) shouldBe
+          HeartbeatOutcome.ApprovalUnbound
+        val drained = s.get("a").get
+        (drained.approved, drained.approvedSource, drained.assignedNodeId) shouldBe
+          (true, None, Some("n1"))
+        drained.lastHeartbeatAt shouldBe before.lastHeartbeatAt
+    }
+
+    it should "judge again a drained, unassigned unbound approval heartbeating from outside the list" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("a", source = Some("10.0.0.1")))
+        h.unbind("a")
+        // Schedulable (not drained): refused.
+        s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.7"))) shouldBe
+          HeartbeatOutcome.ApprovalUnbound
+        s.setUnschedulable("a", true)
+        s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.7"))) shouldBe
           HeartbeatOutcome.Updated
         val row = s.get("a").get
-        (row.approved, row.approvedBy, row.approvedSource) shouldBe
-          (true, Some("alice"), Some("10.0.0.3"))
-        s.recordHeartbeat(hb("a", autoApprove = false, source = Some("10.0.0.4"))) shouldBe
-          HeartbeatOutcome.SourceChangeRefused
+        (row.approved, row.approvedBy, row.approvedAt, row.approvedSource) shouldBe
+          (false, None, None, None)
+        row.sourceAddr shouldBe Some("10.0.0.7")
+        // Pending now: an admin approval binds the source it is judged from.
+        s.approve("a", "alice") shouldBe ApproveResult.Approved
+        s.get("a").get.approvedSource shouldBe Some("10.0.0.7")
     }
 
     it should "clear the source binding when a drained server re-addresses" in withStore { h =>
@@ -537,7 +607,8 @@ class InMemoryFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetS
     test(new FleetStoreHarness:
       def store: FleetServerStore                          = mem
       def backdate(name: String, seconds: Long): Unit      = mem.backdate(name, seconds)
-      def backdateClaim(name: String, seconds: Long): Unit = mem.backdateClaim(name, seconds))
+      def backdateClaim(name: String, seconds: Long): Unit = mem.backdateClaim(name, seconds)
+      def unbind(name: String): Unit                       = mem.unbind(name))
   "InMemoryFleetServerStore" should behave like storeBehaviour(withMem)
 
 class PostgresFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetServerStoreBehaviour:
@@ -569,6 +640,11 @@ class PostgresFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetS
         TestPostgres.psql(
           dbName,
           s"UPDATE qodstate_fleet_server SET claimed_at = claimed_at - interval '$seconds seconds' WHERE name = '$name'"
+        )
+      def unbind(name: String): Unit =
+        TestPostgres.psql(
+          dbName,
+          s"UPDATE qodstate_fleet_server SET approved_source = NULL WHERE name = '$name'"
         ))
   }
 
@@ -629,8 +705,14 @@ class PostgresFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetS
         (row.approved, row.approvedBy) shouldBe (true, Some("upgrade"))
         row.approvedAt should not be empty
         row.approvedSource shouldBe None
-        // Trust on first use: the first heartbeat with a known source binds the backfilled row.
-        pg.recordHeartbeat(hb("old", autoApprove = false, source = Some("10.0.0.1"))) shouldBe
+        // No trust on first use: a source outside the list cannot bind the backfilled row.
+        pg.recordHeartbeat(hb("old", autoApprove = false, source = Some("10.0.0.2"))) shouldBe
+          HeartbeatOutcome.ApprovalUnbound
+        val kept = pg.get("old").get
+        (kept.approved, kept.approvedBy, kept.approvedSource) shouldBe
+          (true, Some("upgrade"), None)
+        // One inside the list binds it; another source is then refused as usual.
+        pg.recordHeartbeat(hb("old", autoApprove = true, source = Some("10.0.0.1"))) shouldBe
           HeartbeatOutcome.Updated
         pg.get("old").get.approvedSource shouldBe Some("10.0.0.1")
         pg.recordHeartbeat(hb("old", autoApprove = false, source = Some("10.0.0.2"))) shouldBe

@@ -78,7 +78,9 @@ class FleetQuackBackendSpec extends AnyFlatSpec with Matchers:
           Some(8),
           memoryBytes,
           node,
-          sourceAddr = None,
+          // The handler only auto-approves a known source; an unknown one would leave an
+          // unbound approval that the next heartbeat refuses (approval_unbound).
+          sourceAddr = Some(host),
           autoApprove = true
         )
       )

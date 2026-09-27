@@ -6,6 +6,7 @@ import ai.starlake.quack.ondemand.fleet.{Cidr, ClientAddress, ServerLiveness}
 import ai.starlake.quack.ondemand.ha.StateChangePublisher
 import ai.starlake.quack.ondemand.runtime.FleetQuackBackend
 import ai.starlake.quack.ondemand.state.{
+  ApproveResult,
   FleetAssignment,
   FleetServerRow,
   FleetServerStore,
@@ -142,6 +143,14 @@ final class FleetHandlers(
               "source_change_refused",
               s"server '${req.name}' is approved from another address; drain it before " +
                 "moving it, or add the new address to QOD_FLEET_AUTO_APPROVE"
+            )
+          case HeartbeatOutcome.ApprovalUnbound =>
+            fail(
+              StatusCode.Conflict,
+              "approval_unbound",
+              s"server '${req.name}' was approved before its source address was recorded and " +
+                "this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it and approve " +
+                s"it again (`qod fleet drain ${req.name}`, then `qod fleet approve ${req.name}`)"
             )
           case outcome =>
             IO.blocking(store.get(req.name)).map { row =>
@@ -286,14 +295,26 @@ final class FleetHandlers(
     }
 
   /** Let a pending server take nodes. Idempotent; the first approver and time are kept. The next
-    * reconcile pass fills pending slots onto it.
+    * reconcile pass fills pending slots onto it. Refused (409 source_unknown) while the server's
+    * latest heartbeat has no known source address: the approval is bound to that source.
     */
   def approve(req: FleetServerOpRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[Unit] =
     serverOp(req, apiKey, AuditActions.FleetApprove)(scopeOf) { (_, row) =>
-      IO.blocking(store.approve(row.name, audit.actorOf(apiKey)._1)) *>
-        IO.delay(publish.topologyChanged()).as(Right(()))
+      IO.blocking(store.approve(row.name, audit.actorOf(apiKey)._1)).flatMap {
+        case ApproveResult.NotFound =>
+          fail(StatusCode.NotFound, "not_found", s"no such server '${row.name}'")
+        // An approval with no known source would bind to whoever heartbeats first.
+        case ApproveResult.SourceUnknown =>
+          fail(
+            StatusCode.Conflict,
+            "source_unknown",
+            s"server '${row.name}' has no known source address yet; approve it after its next " +
+              "heartbeat, and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy"
+          )
+        case _ => IO.delay(publish.topologyChanged()).as(Right(()))
+      }
     }
 
   /** Refused while an approved server is reachable and still schedulable: a live agent would
