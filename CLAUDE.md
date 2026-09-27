@@ -319,11 +319,18 @@ heartbeat handler resolves the client address from the TCP peer (`X-Forwarded-Fo
 peer is in `QOD_FLEET_TRUSTED_PROXIES`, walked from the right; unknown never matches) and
 auto-approves when it is in `QOD_FLEET_AUTO_APPROVE` (default `0.0.0.0/0,::/0`, boot WARNs while
 open; empty = none). Pending servers are re-judged every heartbeat, approved ones never; an
-accepted re-address (drained server) resets approval and is judged again; `qod fleet approve` /
+accepted re-address (drained server) resets approval and is judged again. Approval is bound to the
+source it was granted from (`approved_source`, Liquibase `0042`: the auto-approving heartbeat's, or
+the latest source on an admin approve; an unbound row, e.g. the upgrade backfill, binds to the first
+known source): a heartbeat from another source is refused `409 source_change_refused` with nothing
+written, unless that source is itself in the list (rebind) or the server is drained and unassigned
+(approval reset, judged again). The drain window is closed: no re-address while the row still holds
+an assignment (drain flips unschedulable, then releases), and the heartbeat never returns an
+assignment to an unapproved row or to a source the row is not bound to. `qod fleet approve` /
 `POST /api/fleet/server/approve` approves by hand; `remove` forgets approval and also accepts a
 live pending server. Existing rows were backfilled `approved_by = 'upgrade'`. Design:
 docs/superpowers/specs/2026-09-26-fleet-join-approval-design.md.
-A known name reporting a new address is refused unless drained (shared-token takeover guard).
+A known name reporting a new address is refused unless drained and unassigned (shared-token takeover guard).
 `QOD_FLEET_EPHEMERAL=local` runs maintenance and merge nodes on the manager host instead of a
 fleet server. Manager-to-node is plain HTTP: fleet mode needs a private network. Design:
 docs/superpowers/specs/2026-09-25-fleet-backend-design.md.

@@ -1599,6 +1599,10 @@ Behind a load balancer, list it in `QOD_FLEET_TRUSTED_PROXIES` or every server a
 from the balancer. Removing a server forgets its approval. To refuse a server,
 `qod fleet remove <name>` and stop its agent, otherwise it re-joins as pending. A drained server
 that comes back from a new address loses its approval and is judged again.
+An approval is bound to the address it was approved from, so an approved server heartbeating from
+another machine gets `source_change_refused`; to move one, `qod fleet drain <name>`, start the
+agent on the new machine and let it re-join, then `qod fleet approve <name>` (a new address inside
+`QOD_FLEET_AUTO_APPROVE` is accepted without this).
 
 systemd unit (`/etc/systemd/system/qod-agent.service`):
 
