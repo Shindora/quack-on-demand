@@ -112,7 +112,10 @@ export default function Servers() {
                 </td>
               </tr>
             ) : servers.map(s => {
-              const removeDisabled = s.liveness === 'reachable' && !s.unschedulable;
+              // Mirrors the manager's remove guard: only a live, schedulable APPROVED server is
+              // refused; a pending one holds no node and can always be removed.
+              const removeDisabled =
+                s.approval === 'approved' && s.liveness === 'reachable' && !s.unschedulable;
               return (
                 <tr
                   key={s.name}
