@@ -175,7 +175,12 @@ def status_hint(status: int, code: str | None, *, name: str, address: str) -> st
     if code == "address_change_refused":
         return (f"server '{name}' is registered with another address than {address}. Either start this "
                 f"agent with a different --name, or on the manager run `qod fleet drain {name}` (then "
-                f"`qod fleet undrain {name}` once it reconnects) or `qod fleet remove {name}`")
+                f"`qod fleet undrain {name}` once it reconnects; the move resets its approval, so outside "
+                f"QOD_FLEET_AUTO_APPROVE also run `qod fleet approve {name}`) or `qod fleet remove {name}`")
+    if code == "source_change_refused":
+        return (f"server '{name}' is approved from another address than this machine's. If this is a "
+                f"legitimate move, drain it on the manager (`qod fleet drain {name}`), let it re-join, then "
+                f"approve it; otherwise another machine is using this name.")
     if code == "fleet_unauthorized":
         return ("the join token does not match the manager's; set QOD_FLEET_JOIN_TOKEN to the value "
                 "the manager was started with")

@@ -136,6 +136,13 @@ final class FleetHandlers(
               s"server '${req.name}' is known with another address; " +
                 "drain it before re-addressing"
             )
+          case HeartbeatOutcome.SourceChangeRefused =>
+            fail(
+              StatusCode.Conflict,
+              "source_change_refused",
+              s"server '${req.name}' is approved from another address; drain it before " +
+                "moving it, or add the new address to QOD_FLEET_AUTO_APPROVE"
+            )
           case outcome =>
             IO.blocking(store.get(req.name)).map { row =>
               val approval = if row.exists(_.approved) then "approved" else "pending"
@@ -162,8 +169,15 @@ final class FleetHandlers(
                   // Only an approved server is ever handed its assignment (which carries the
                   // node token and pgPassword). A pending row should hold none, but a row can be
                   // reset to pending while it still holds one (e.g. a re-address racing a
-                  // drain); the reply must not leak it then.
-                  row.filter(_.approved).flatMap(_.assignment).map(FleetHandlers.toDto),
+                  // drain); the reply must not leak it then. Likewise only to the source the
+                  // approval is bound to: the row is read afresh here, after the store's check,
+                  // so a concurrent rebind must not hand the assignment to the old source.
+                  row
+                    .filter(r =>
+                      r.approved && r.approvedSource.forall(b => hb.sourceAddr.contains(b))
+                    )
+                    .flatMap(_.assignment)
+                    .map(FleetHandlers.toDto),
                   approval
                 )
               )
@@ -203,7 +217,8 @@ final class FleetHandlers(
       approval = if r.approved then "approved" else "pending",
       approvedBy = r.approvedBy,
       approvedAt = r.approvedAt.map(_.toString),
-      sourceAddr = r.sourceAddr
+      sourceAddr = r.sourceAddr,
+      approvedSource = r.approvedSource
     )
 
   def listServers(apiKey: Option[String])(

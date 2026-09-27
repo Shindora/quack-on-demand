@@ -448,6 +448,10 @@ def test_unrecognised_network_error_has_no_hint():
 
 @pytest.mark.parametrize("status,code,expected", [
     (409, "address_change_refused", "qod fleet drain srv-1"),
+    (409, "address_change_refused", "qod fleet approve srv-1"),
+    (409, "source_change_refused", "approved from another address than this machine's"),
+    (409, "source_change_refused", "qod fleet drain srv-1"),
+    (409, "source_change_refused", "another machine is using this name"),
     (401, "fleet_unauthorized", "QOD_FLEET_JOIN_TOKEN"),
     (401, None, "QOD_RUNTIME_TYPE=fleet"),
     (400, "fleet_disabled", "QOD_RUNTIME_TYPE=fleet"),

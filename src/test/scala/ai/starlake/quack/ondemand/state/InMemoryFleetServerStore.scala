@@ -85,7 +85,8 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             approved = hb.autoApprove,
             approvedAt = Option.when(hb.autoApprove)(now),
             approvedBy = Option.when(hb.autoApprove)("auto"),
-            sourceAddr = hb.sourceAddr
+            sourceAddr = hb.sourceAddr,
+            approvedSource = if hb.autoApprove then hb.sourceAddr else None
           )
         )
         HeartbeatOutcome.Joined
@@ -93,11 +94,20 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
           if (!r.unschedulable || r.assignedNodeId.isDefined) &&
             (r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort) =>
         HeartbeatOutcome.AddressChangeRefused
+      case Some(r)
+          if sourceMoved(
+            r,
+            hb
+          ) && !hb.autoApprove && !(r.unschedulable && r.assignedNodeId.isEmpty) =>
+        HeartbeatOutcome.SourceChangeRefused
       case Some(r) =>
         // Only a drained, unassigned server gets here with another address (the guard above
         // refuses the rest); a re-address resets approval so the new address is judged again.
+        // So does a source move outside the list (drained and unassigned too); a move inside the
+        // list keeps the approval and rebinds it to the new source.
         val readdressed   = r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort
-        val keepsApproval = r.approved && !readdressed
+        val moved         = sourceMoved(r, hb)
+        val keepsApproval = r.approved && !readdressed && !(moved && !hb.autoApprove)
         rows.put(
           hb.name,
           r.copy(
@@ -118,11 +128,20 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             approvedAt = if keepsApproval then r.approvedAt else Option.when(hb.autoApprove)(now),
             approvedBy =
               if keepsApproval then r.approvedBy else Option.when(hb.autoApprove)("auto"),
-            sourceAddr = hb.sourceAddr
+            sourceAddr = hb.sourceAddr,
+            approvedSource =
+              if keepsApproval then
+                if moved then hb.sourceAddr else r.approvedSource.orElse(hb.sourceAddr)
+              else if hb.autoApprove then hb.sourceAddr
+              else None
           )
         )
         HeartbeatOutcome.Updated
   }
+
+  /** An approved row bound to a source other than this heartbeat's (an unknown one included). */
+  private def sourceMoved(r: FleetServerRow, hb: Heartbeat): Boolean =
+    r.approved && r.approvedSource.isDefined && r.approvedSource != hb.sourceAddr
 
   def claim(
       a: FleetAssignment,
@@ -207,7 +226,12 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
       case Some(r)               =>
         rows.put(
           name,
-          r.copy(approved = true, approvedAt = Some(clock()), approvedBy = Some(by))
+          r.copy(
+            approved = true,
+            approvedAt = Some(clock()),
+            approvedBy = Some(by),
+            approvedSource = r.sourceAddr
+          )
         )
         true
   }

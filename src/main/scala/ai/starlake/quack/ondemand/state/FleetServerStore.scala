@@ -68,7 +68,11 @@ final case class FleetServerRow(
     approvedAt: Option[Instant],
     approvedBy: Option[String],
     // The resolved client address of the latest heartbeat, never the agent-reported one.
-    sourceAddr: Option[String]
+    sourceAddr: Option[String],
+    // The resolved source an approved server is bound to (Liquibase 0042): the heartbeat that
+    // auto-approved it, or the latest source when an admin approved it. None while pending, and
+    // for an approval whose source was unknown (bound by the next heartbeat with a known source).
+    approvedSource: Option[String]
 )
 
 /** Heartbeat upsert input: everything the agent reports. */
@@ -95,7 +99,9 @@ object HeartbeatOutcome:
   case object Joined  extends HeartbeatOutcome // first heartbeat, server row inserted
   case object Updated extends HeartbeatOutcome
   case object AddressChangeRefused
-      extends HeartbeatOutcome // known name, other address, not drained
+      extends HeartbeatOutcome // known name, other address, not drained or still assigned
+  case object SourceChangeRefused
+      extends HeartbeatOutcome // approved name, heartbeat from another source than it is bound to
 
 /** Why a claim found nothing. */
 enum ClaimMiss:
@@ -105,16 +111,24 @@ enum ClaimMiss:
 trait FleetServerStore:
   /** First contact inserts the server row (joined_at from the DB clock). Every call upserts the
     * heartbeat row with last_heartbeat_at = DB now(). A known name reporting a different address is
-    * refused unless the server row is `unschedulable` (drained): with a shared join token an idle
-    * name must not be claimable by another machine. A report whose `assignmentEpoch` or node id is
-    * not the server row's is stored with node_state = stale, except `none` and `stopped`, which are
-    * stored as reported (see `FleetServerStore.effectiveState`).
+    * refused unless the server row is `unschedulable` (drained) and holds no assignment: with a
+    * shared join token an idle name must not be claimable by another machine, and drain flips the
+    * flag before it releases, so a heartbeat in between must not move a server holding a node. A
+    * report whose `assignmentEpoch` or node id is not the server row's is stored with node_state =
+    * stale, except `none` and `stopped`, which are stored as reported (see
+    * `FleetServerStore.effectiveState`).
     *
     * A new server row starts unapproved; `hb.autoApprove` approves it (`approved_by = auto`), on
     * the join or on any later heartbeat while it is still pending. An approved server is never
     * re-judged at its address. An accepted re-address (a drained server reporting a different
     * advertise host or node port) resets approval (approved, approvedAt and approvedBy cleared)
     * before `hb.autoApprove` applies, so the new address is judged on that same heartbeat.
+    *
+    * An approval is bound to a source (`approvedSource`): the auto-approving heartbeat's, or the
+    * latest one on an admin [[approve]]; an unbound approved row binds to the first known source. A
+    * heartbeat for an approved row from another source (an unknown one included) is refused
+    * (`SourceChangeRefused`, nothing written) unless `hb.autoApprove` (rebind to the new source) or
+    * the row is drained and unassigned (approval reset, judged again).
     */
   def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome
 
@@ -158,8 +172,9 @@ trait FleetServerStore:
   def byNodeId(nodeId: String): Option[FleetServerRow]
   def setUnschedulable(name: String, value: Boolean): Boolean // false when unknown
 
-  /** Approve a server by name, recording `by`. Idempotent: an approved server keeps its first
-    * approver and time. False when the name is unknown.
+  /** Approve a server by name, recording `by` and binding the latest heartbeat's source (None when
+    * unknown: bound on the next known one). Idempotent: an approved server keeps its first
+    * approver, time and binding. False when the name is unknown.
     */
   def approve(name: String, by: String): Boolean
 

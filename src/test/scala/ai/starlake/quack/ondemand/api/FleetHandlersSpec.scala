@@ -267,6 +267,45 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       Right(FleetHeartbeatResponse(7, None, "pending"))
   }
 
+  it should "409 source_change_refused for a heartbeat impersonating an approved server" in {
+    val (store, h) = approvalFixture("10.0.0.0/8")
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None).unsafeRunSync()
+    store.claim(
+      FleetAssignment(
+        0,
+        "n1",
+        PoolKey("acme", "db", "bi"),
+        21900,
+        "tok",
+        "memory",
+        Map("pgPassword" -> "p"),
+        "",
+        "",
+        "",
+        ""
+      ),
+      30,
+      None
+    )
+    // Same name, advertised host and port, from a source outside the list.
+    val e = h
+      .heartbeat(req(), Some("secret"), addr("192.168.1.5"), None)
+      .unsafeRunSync()
+      .left
+      .toOption
+      .get
+    (e._1, e._2.error) shouldBe (StatusCode.Conflict, "source_change_refused")
+    e._2.message shouldBe "server 'srv-1' is approved from another address; drain it before " +
+      "moving it, or add the new address to QOD_FLEET_AUTO_APPROVE"
+    val row = store.get("srv-1").get
+    (row.approved, row.approvedSource, row.sourceAddr) shouldBe
+      (true, Some("10.1.2.3"), Some("10.1.2.3"))
+    // The genuine server keeps its assignment.
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None)
+      .unsafeRunSync()
+      .map(_.assignment.map(_.nodeId)) shouldBe Right(Some("n1"))
+  }
+
   // --- Admin surface (Task 8) ----------------------------------------------------------------
 
   private def adminFixture() =
@@ -448,13 +487,26 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     servers.find(_.name == "p").get.sourceAddr shouldBe Some("192.168.1.5")
     servers.find(_.name == "a").get.approvedBy shouldBe Some("auto")
     servers.find(_.name == "a").get.approvedAt should not be empty
+    servers.find(_.name == "p").get.approvedSource shouldBe None
+    h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync() shouldBe Right(())
+    h.listServers(Some("k"))(superuser)
+      .unsafeRunSync()
+      .toOption
+      .get
+      .servers
+      .find(_.name == "p")
+      .get
+      .approvedSource shouldBe Some("192.168.1.5")
   }
 
   /** Delegating store that records releases and can run a hook just before setUnschedulable. */
   private final class ProbeStore(inner: InMemoryFleetServerStore) extends FleetServerStore:
     var beforeSetUnschedulable: () => Unit = () => ()
-    val released                           = scala.collection.mutable.ListBuffer.empty[String]
-    def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome = inner.recordHeartbeat(hb)
+    // When set, recordHeartbeat answers this without touching the store (a race stand-in).
+    var heartbeatOutcome: Option[HeartbeatOutcome] = None
+    val released = scala.collection.mutable.ListBuffer.empty[String]
+    def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome =
+      heartbeatOutcome.getOrElse(inner.recordHeartbeat(hb))
     def claim(
         assignment: FleetAssignment,
         reachableWithinSec: Int,
@@ -493,6 +545,20 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     val pub     = new CountingPublisher
     val h       = new FleetHandlers(probe, cfg, backend = Some(backend), publish = pub)
     (inner, probe, pub, h)
+
+  "heartbeat" should "not reply with an assignment bound to another source, whatever the store said" in {
+    val (inner, probe, _, h) = probeFixture()
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None).unsafeRunSync()
+    inner.claim(assignment("n1"), 30, None).isRight shouldBe true
+    // A store answer racing a concurrent rebind: the reply is read afresh and bound elsewhere.
+    probe.heartbeatOutcome = Some(HeartbeatOutcome.Updated)
+    h.heartbeat(req(), Some("secret"), addr("10.9.9.9"), None)
+      .unsafeRunSync()
+      .map(_.assignment) shouldBe Right(None)
+    h.heartbeat(req(), Some("secret"), addr("10.1.2.3"), None)
+      .unsafeRunSync()
+      .map(_.assignment.map(_.nodeId)) shouldBe Right(Some("n1"))
+  }
 
   "drain" should "release an assignment claimed between its read and the unschedulable flip" in {
     val (inner, probe, _, h) = probeFixture()

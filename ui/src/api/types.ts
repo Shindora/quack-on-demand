@@ -122,6 +122,8 @@ export interface FleetServer {
   approvedAt?: string | null;
   /** Address the latest heartbeat came from, resolved by the manager (not agent-reported). */
   sourceAddr?: string | null;
+  /** Source address an approved server is bound to; null while pending or not yet bound. */
+  approvedSource?: string | null;
 }
 
 export interface FleetServerListResponse {

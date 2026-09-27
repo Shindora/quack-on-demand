@@ -7827,6 +7827,8 @@ components:
           type: string
         sourceAddr:
           type: string
+        approvedSource:
+          type: string
     FleetServerListResponse:
       title: FleetServerListResponse
       type: object

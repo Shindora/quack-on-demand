@@ -368,7 +368,8 @@ final case class FleetServerDto(
     approval: String,           // approved | pending
     approvedBy: Option[String], // auto | upgrade | the approving admin
     approvedAt: Option[String],
-    sourceAddr: Option[String] // resolved address of the latest heartbeat
+    sourceAddr: Option[String],    // resolved address of the latest heartbeat
+    approvedSource: Option[String] // the source an approved server is bound to
 )
 final case class FleetServerListResponse(servers: List[FleetServerDto])
 final case class FleetServerOpRequest(name: String)
