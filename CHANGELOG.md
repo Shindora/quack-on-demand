@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.9.8
+
+- **Security: a session expiring mid-request no longer gains superuser access (#130).** Handler
+  gates re-resolved the caller's token and read "no scope" as "static `QOD_API_KEY`, unrestricted",
+  which is also what a session that expired or was revoked after the API guard admitted it looked
+  like. A tenant admin could reach the superuser-only manifest export, see every tenant in the
+  tenant, history, usage and audit listings, and pass the tenant-scope gates on RBAC mutations. The
+  lookup handed to handlers (REST, MCP, federated sources and the module SPI) now answers "no scope"
+  for the configured static key only; any other token that does not resolve gets no privilege. The
+  guard now resolves the credential once, so an expiry between its admin check and its tenant check
+  can no longer admit a request as admin while skipping the tenant check. Module SPI note:
+  `ManagerContext.scopeOf` now resolves PATs and never returns `None` for anything but the static
+  key; modules that treat `None` as unrestricted become correct without changes.
+
+- **Security: `query()`, `query_table()` and `ducklake_*` table functions are denied to
+  tenant-scoped principals (#128).** These functions name their target in a string the ACL parser
+  never sees. Under the tenant `*.*.* ALL` wildcard they read a sibling tenant's catalog that the
+  same wildcard refuses when named directly (unparseable statements took the same path), and
+  `ducklake_*` calls could read or maintain any catalog by name. For a principal with row or column
+  policies they also bypassed RLS and CLS, whether or not `acl.enabled` is on. They are now refused
+  for every tenant-scoped principal, lexically, so an unparseable statement cannot slip through.
+  Superusers are unaffected. Tenant users lose `ducklake_*` calls on their own catalog too.
+
+- **Branch merge: a main write landing mid-merge is no longer silently lost (#129).** A merge
+  validated its change set against main snapshot S and then committed with nothing tying the commit
+  to S. DuckLake pins a transaction's snapshot at its first read, not at `BEGIN`, and its commit
+  check misses a concurrent insert, update, delete or `ALTER` on a table the merge drops, so a
+  racing main write was overwritten or dropped. A trigger on `ducklake_snapshot_changes` in the
+  parent catalog database (schema `qod_merge_fence`) now refuses the merge commit unless it lands
+  directly on S; the merge answers `409 concurrent_write` and can be re-proposed. Any main commit in
+  that window refuses the merge, including writes to unrelated tables.
+
+- **Fleet: joining servers must be approved (#125).** A fleet server takes nodes, and with them the
+  metastore credentials, only once approved; the join token alone is no longer enough.
+  `QOD_FLEET_AUTO_APPROVE` (CIDRs) approves servers whose heartbeat comes from inside the list; the
+  default `0.0.0.0/0,::/0` keeps existing fleets working and logs a warning at boot, and an empty
+  list approves nobody automatically. `QOD_FLEET_TRUSTED_PROXIES` names the proxies whose
+  `X-Forwarded-For` is trusted. Admins approve with `qod fleet approve <name>`,
+  `POST /api/fleet/server/approve` or the Approve button on the Servers page. An approval is bound
+  to the source address it was granted to: a heartbeat from another address is refused
+  (`409 source_change_refused`) unless that address is in the list or the server is drained with no
+  node. Migrations 0041 and 0042 run on upgrade; existing servers are backfilled as approved.
+
+- **Fleet: reconcile repairs a node row that still names the previous server.** A manager that died
+  between a fleet claim and the node-row write left the row pointing at the old server, so health
+  probes and queries went to a dead address while the real node sat idle. Reconcile now takes the
+  address and token from the server holding the assignment and rewrites the row.
+
+- **`qod` names its profile file, and `qod agent` suggests fixes.** Every command prints the profile
+  in use and the config file it read, on stderr so `--json` output stays clean. A failed agent
+  heartbeat prints a one-line likely cause and fix (https against the plain-HTTP port, DNS, refused
+  connection, timeout, untrusted certificate, wrong join token, pending approval and each approval
+  conflict), once per distinct failure.
+
 ## 0.9.7
 
 - **Fleet runtime: run nodes on bare servers, no Kubernetes (#123).** `QOD_RUNTIME_TYPE=fleet` plus
