@@ -296,13 +296,13 @@ All three Secrets must exist BEFORE pod create (kubelet rejects pods referencing
 ### Fleet backend (bare servers, no Kubernetes)
 
 `QOD_RUNTIME_TYPE=fleet` plus `QOD_FLEET_JOIN_TOKEN`. Linux/macOS servers join by running
-`qod agent` (`cli/src/qod_cli/agent.py`), which heartbeats `POST /api/fleet/heartbeat` (header
+`qod fleet join` (`cli/src/qod_cli/fleet_join.py`, a long-running process), which heartbeats `POST /api/fleet/heartbeat` (header
 `X-Fleet-Token`, public at the guard only in fleet mode; the handler checks the token) and
 runs the one node the reply assigns via the bundled spawn script, bound to `QOD_NODE_BIND`.
 Two tables: `qodstate_fleet_server` (identity, assignment; locked by claims) and
-`qodstate_fleet_heartbeat` (agent-reported state and capacity; rewritten every interval, never
+`qodstate_fleet_heartbeat` (server-reported state and capacity; rewritten every interval, never
 locked by claims). `FleetQuackBackend` (`ondemand/runtime/`) claims with one
-`UPDATE ... FOR UPDATE OF s SKIP LOCKED` plus a memory-fit predicate and waits for the agent to
+`UPDATE ... FOR UPDATE OF s SKIP LOCKED` plus a memory-fit predicate and waits for the server to
 report `running`. Liveness comes from the database clock (`silent_seconds`), never the JVM's, so
 HA replicas agree. `NoFreeServer(reason)` is the one failure the supervisor tolerates: the slot
 stays pending and reconcile fills it when a server joins (`MissingSlots`). Silent past
@@ -310,7 +310,7 @@ stays pending and reconcile fills it when a server joins (`MissingSlots`). Silen
 through `claimReplacing` (release the dead holder and claim the replacement in ONE store
 transaction, rolled back when no server qualifies).
 With no free server the dead server keeps its assignment and its node row, so if it returns
-first its agent still runs the node at the same epoch and reconcile adopts it with no restart; a
+first its join process still runs the node at the same epoch and reconcile adopts it with no restart; a
 drained or removed holder's node goes pending instead. A partial or cancelled spawn rolls back
 the nodes it started (`spawnAll`, `guaranteeCase`). The server holding an assignment is the
 truth for a live node's address and token: reconcile adopts through `QuackBackend.located` and
@@ -328,7 +328,7 @@ the latest source on an admin approve): a heartbeat from another source is refus
 `409 source_change_refused` with nothing written, unless that source is itself in the list (rebind)
 or the server is drained and unassigned (approval reset, judged again). An approved row with no
 binding (the 0042 upgrade leaves every earlier server unbound; not backfilled, since the advertised
-host is agent-reported and differs from the source behind a proxy or NAT) binds only to a known
+host is self-reported and differs from the source behind a proxy or NAT) binds only to a known
 source inside the list; from anywhere else it is refused `409 approval_unbound` with nothing
 written, unless drained and unassigned (approval reset, judged again): drain it, approve it
 once it shows as pending, then undrain it.
