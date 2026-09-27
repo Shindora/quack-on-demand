@@ -17,4 +17,5 @@ Fixes #
 
 <!-- The `license-ack` check fails until the box above is ticked. Keep
      the line as is; edit the PR description to tick it. Maintainers
-     (repository owner, org members, collaborators) are exempt. -->
+     (listed in the LICENSE_ACK_EXEMPT repository variable, or the
+     repository owner, public org members, collaborators) are exempt. -->

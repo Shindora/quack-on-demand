@@ -14,10 +14,17 @@ name: license-ack
 # plain `pull_request` trigger (never `pull_request_target`, which would
 # hand fork code a write token).
 #
-# Maintainers are exempt: a PR whose author is the repository OWNER, an org
-# MEMBER or a COLLABORATOR passes without the box, since maintainers already
-# contribute under the project's license. `author_association` comes from
-# GitHub in the event payload, so a PR cannot claim it.
+# Maintainers are exempt, since they already contribute under the project's
+# license. A PR passes without the box when its author is:
+#   - listed in the repository variable LICENSE_ACK_EXEMPT (comma-separated
+#     GitHub logins; Settings > Secrets and variables > Actions > Variables).
+#     This works whatever the maintainer's org-membership visibility;
+#   - or the repository OWNER, an org MEMBER or a COLLABORATOR according to
+#     GitHub. A private org membership is reported as CONTRIBUTOR, which is
+#     why the variable exists.
+# Both the author login and its association come from GitHub in the event
+# payload, and a PR cannot change repository variables, so neither can be
+# claimed by the PR itself.
 #
 # Triggers: PR opened, reopened, new commits pushed, or description edited
 # (ticking the box is an edit, which re-runs the check).
@@ -36,7 +43,13 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          EXEMPT: ${{ vars.LICENSE_ACK_EXEMPT }}
         run: |
+          if printf '%s' "$EXEMPT" | tr ',' '\n' | tr -d ' ' | grep -qixF -- "$AUTHOR_LOGIN"; then
+            echo "Maintainer PR ($AUTHOR_LOGIN is in LICENSE_ACK_EXEMPT): licensing acknowledgement not required."
+            exit 0
+          fi
           case "$AUTHOR_ASSOCIATION" in
             OWNER|MEMBER|COLLABORATOR)
               echo "Maintainer PR ($AUTHOR_ASSOCIATION): licensing acknowledgement not required."
