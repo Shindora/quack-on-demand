@@ -1578,12 +1578,14 @@ final class PostgresControlPlaneStore(
 
   override def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome = withConn { c =>
     // One transaction, so a concurrent `delete(name)` cannot interleave between the statements
-    // below and leave a heartbeat pointing at a vanished server. Still no lock on an existing
-    // server row: INSERT ... ON CONFLICT DO NOTHING and a plain SELECT take none, so a concurrent
-    // claim's FOR UPDATE OF s SKIP LOCKED never skips it. A row deleted and committed between
-    // our statements (READ COMMITTED: each statement takes a fresh snapshot) shows up as an empty
-    // SELECT or an FK violation on the heartbeat insert; either rolls back and retries once, and
-    // the retry's INSERT re-creates the row (a re-join).
+    // below and leave a heartbeat pointing at a vanished server. INSERT ... ON CONFLICT DO
+    // NOTHING and a plain SELECT take no lock on an existing server row; step 2b's approval
+    // UPDATE does lock the row, but only while it is still pending (AND NOT approved), and a
+    // concurrent claim's FOR UPDATE OF s SKIP LOCKED already ignores pending rows, so it never
+    // skips over one for that reason. A row deleted and committed between our statements (READ
+    // COMMITTED: each statement takes a fresh snapshot) shows up as an empty SELECT or an FK
+    // violation on the heartbeat insert; either rolls back and retries once, and the retry's
+    // INSERT re-creates the row (a re-join).
     c.setAutoCommit(false)
     try
       def attempt(retriesLeft: Int): HeartbeatOutcome =
@@ -1618,8 +1620,8 @@ final class PostgresControlPlaneStore(
   private def heartbeatOnce(c: Connection, hb: Heartbeat): Option[HeartbeatOutcome] =
     // 1. First contact: insert the server row; a no-op for a known name.
     val ins = c.prepareStatement(
-      """INSERT INTO qodstate_fleet_server (name, advertise_host, node_port)
-        |VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING""".stripMargin
+      """INSERT INTO qodstate_fleet_server (name, advertise_host, node_port, approved)
+        |VALUES (?, ?, ?, false) ON CONFLICT (name) DO NOTHING""".stripMargin
     )
     val joined =
       try
@@ -1630,7 +1632,8 @@ final class PostgresControlPlaneStore(
       finally ins.close()
     // 2. Address guard and stale-rule inputs, read from the server row (plain read, no lock).
     val sel = c.prepareStatement(
-      """SELECT advertise_host, node_port, unschedulable, assignment_epoch, assigned_node_id
+      """SELECT advertise_host, node_port, unschedulable, assignment_epoch, assigned_node_id,
+        |  approved, approved_source
         |FROM qodstate_fleet_server WHERE name = ?""".stripMargin
     )
     val current =
@@ -1645,37 +1648,75 @@ final class PostgresControlPlaneStore(
                 rs.getInt(2),
                 rs.getBoolean(3),
                 rs.getLong(4),
-                Option(rs.getString(5))
+                Option(rs.getString(5)),
+                rs.getBoolean(6),
+                Option(rs.getString(7))
               )
             )
           else None
         finally rs.close()
       finally sel.close()
-    current.map { case (host, port, drained, rowEpoch, assignedNodeId) =>
-      if !joined && !drained && (host != hb.advertiseHost || port != hb.nodePort) then
-        HeartbeatOutcome.AddressChangeRefused
+    current.map { case (host, port, drained, rowEpoch, assignedNodeId, approved, approvedSource) =>
+      val readdress = !joined && (host != hb.advertiseHost || port != hb.nodePort)
+      // Source binding (Liquibase 0042): an approved row bound to another source than this
+      // heartbeat's (an unknown one included). Accepted only when the new source is itself in
+      // QOD_FLEET_AUTO_APPROVE (rebind) or the server is drained and unassigned (approval reset,
+      // judged again); refused otherwise, with nothing written.
+      val sourceMoved = approved && approvedSource.isDefined && approvedSource != hb.sourceAddr
+      val idleDrained = drained && assignedNodeId.isEmpty
+      // An approved row bound to no source (the 0042 upgrade backfill) binds only to a known
+      // source inside QOD_FLEET_AUTO_APPROVE: whoever heartbeats first with the name must not
+      // inherit the approval. From anywhere else it is refused, unless drained and unassigned
+      // (approval reset, judged again).
+      val unbound = approved && approvedSource.isEmpty
+      // The isDefined half is defense in depth; Heartbeat already refuses autoApprove without a
+      // source.
+      val trustedBind = hb.sourceAddr.isDefined && hb.autoApprove
+      // A re-address needs a drained server that holds no assignment. Drain flips unschedulable
+      // THEN releases; a heartbeat landing in between must not move (and un-approve) a server
+      // that still holds a node. The legitimate re-home retries on the next heartbeat.
+      if readdress && !idleDrained then HeartbeatOutcome.AddressChangeRefused
+      else if sourceMoved && !hb.autoApprove && !idleDrained then
+        HeartbeatOutcome.SourceChangeRefused
+      else if !readdress && unbound && !trustedBind && !idleDrained then
+        HeartbeatOutcome.ApprovalUnbound
+      // 2a. Accepted re-address (drained, unassigned server, new host or port): the approval was
+      // granted to the old address, so it is reset here and the new address is judged by step 2b
+      // on this same heartbeat. Otherwise a token holder outside QOD_FLEET_AUTO_APPROVE could
+      // take over a drained name and inherit its approval. The WHERE re-checks the guard: the
+      // SELECT above took no lock, so an undrain landing in between is refused, not overwritten.
+      else if readdress && !readdressDrained(c, hb) then HeartbeatOutcome.AddressChangeRefused
+      // 2c. Source binding of an approved row that keeps its address (see sourceMoved above).
+      // Each UPDATE re-checks what the unlocked SELECT saw; a row that changed in between is
+      // refused (the agent retries on its next heartbeat) rather than bound on a stale read.
+      else if !readdress && approved && !bindSource(c, hb, approvedSource, sourceMoved) then
+        if unbound then HeartbeatOutcome.ApprovalUnbound else HeartbeatOutcome.SourceChangeRefused
       else
-        if drained && (host != hb.advertiseHost || port != hb.nodePort) then
-          val addr = c.prepareStatement(
-            "UPDATE qodstate_fleet_server SET advertise_host = ?, node_port = ? WHERE name = ?"
+        // 2b. Approval: a server not approved yet is approved when the caller judged this
+        // heartbeat's source to be in QOD_FLEET_AUTO_APPROVE; an approved one is never re-judged
+        // (a re-address reset by step 2a counts as not approved yet).
+        if hb.autoApprove then
+          val ap = c.prepareStatement(
+            """UPDATE qodstate_fleet_server SET approved = true, approved_at = now(),
+              |  approved_by = 'auto', approved_source = ? WHERE name = ? AND NOT approved""".stripMargin
           )
           try
-            addr.setString(1, hb.advertiseHost)
-            addr.setInt(2, hb.nodePort)
-            addr.setString(3, hb.name)
-            addr.executeUpdate()
-          finally addr.close()
+            setNullable(ap, 1, hb.sourceAddr)
+            ap.setString(2, hb.name)
+            ap.executeUpdate()
+            ()
+          finally ap.close()
         // 3. Heartbeat row: the only row this handler rewrites every interval.
         val up = c.prepareStatement(
           """INSERT INTO qodstate_fleet_heartbeat
             |  (name, last_heartbeat_at, agent_version, os, duckdb_version, cpus, memory_bytes,
-            |   node_state, node_error, node_pid, node_started_at)
-            |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            |   node_state, node_error, node_pid, node_started_at, source_addr)
+            |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             |ON CONFLICT (name) DO UPDATE SET
             |  last_heartbeat_at = now(), agent_version = EXCLUDED.agent_version, os = EXCLUDED.os,
             |  duckdb_version = EXCLUDED.duckdb_version, cpus = EXCLUDED.cpus, memory_bytes = EXCLUDED.memory_bytes,
             |  node_state = EXCLUDED.node_state, node_error = EXCLUDED.node_error, node_pid = EXCLUDED.node_pid,
-            |  node_started_at = EXCLUDED.node_started_at""".stripMargin
+            |  node_started_at = EXCLUDED.node_started_at, source_addr = EXCLUDED.source_addr""".stripMargin
         )
         try
           up.setString(1, hb.name)
@@ -1686,10 +1727,73 @@ final class PostgresControlPlaneStore(
           up.setString(7, FleetServerStore.effectiveState(hb.node, rowEpoch, assignedNodeId))
           setNullable(up, 8, hb.node.error); setNullableLong(up, 9, hb.node.pid);
           setNullableInstant(up, 10, hb.node.startedAt)
+          setNullable(up, 11, hb.sourceAddr)
           up.executeUpdate()
         finally up.close()
         if joined then HeartbeatOutcome.Joined else HeartbeatOutcome.Updated
     }
+
+  /** Step 2c of [[heartbeatOnce]], for an approved row that keeps its address. `bound` and `moved`
+    * are what the unlocked SELECT saw. A source move inside QOD_FLEET_AUTO_APPROVE rebinds; any
+    * other move (the caller only lets a drained, unassigned row through) resets approval, so step
+    * 2b judges the new source. An unbound row binds to a known source inside the list; from
+    * anywhere else (the caller only lets a drained, unassigned row through) its approval is reset
+    * the same way. No UPDATE runs (and no row lock is taken) on a plain heartbeat from the bound
+    * source. False when the row no longer matches the read (e.g. a concurrent bind won).
+    */
+  private def bindSource(
+      c: Connection,
+      hb: Heartbeat,
+      bound: Option[String],
+      moved: Boolean
+  ): Boolean =
+    def run(sql: String)(bind: PreparedStatement => Unit): Boolean =
+      val ps = c.prepareStatement(sql)
+      try { bind(ps); ps.executeUpdate() == 1 }
+      finally ps.close()
+    if moved && hb.autoApprove then
+      run(
+        """UPDATE qodstate_fleet_server SET approved_source = ?
+          |WHERE name = ? AND approved AND approved_source = ?""".stripMargin
+      ) { ps =>
+        setNullable(ps, 1, hb.sourceAddr); ps.setString(2, hb.name); ps.setString(3, bound.get)
+      }
+    else if moved then
+      run(
+        """UPDATE qodstate_fleet_server SET
+          |  approved = false, approved_at = NULL, approved_by = NULL, approved_source = NULL
+          |WHERE name = ? AND approved AND approved_source = ? AND unschedulable
+          |  AND assigned_node_id IS NULL""".stripMargin
+      ) { ps => ps.setString(1, hb.name); ps.setString(2, bound.get) }
+    else if bound.isEmpty && hb.sourceAddr.isDefined && hb.autoApprove then
+      run(
+        """UPDATE qodstate_fleet_server SET approved_source = ?
+          |WHERE name = ? AND approved AND approved_source IS NULL""".stripMargin
+      ) { ps => ps.setString(1, hb.sourceAddr.get); ps.setString(2, hb.name) }
+    else if bound.isEmpty then
+      run(
+        """UPDATE qodstate_fleet_server SET
+          |  approved = false, approved_at = NULL, approved_by = NULL, approved_source = NULL
+          |WHERE name = ? AND approved AND approved_source IS NULL AND unschedulable
+          |  AND assigned_node_id IS NULL""".stripMargin
+      )(ps => ps.setString(1, hb.name))
+    else true
+
+  /** Step 2a of [[heartbeatOnce]]: move a drained, unassigned server to the heartbeat's address and
+    * reset its approval. False when the row no longer qualifies.
+    */
+  private def readdressDrained(c: Connection, hb: Heartbeat): Boolean =
+    val addr = c.prepareStatement(
+      """UPDATE qodstate_fleet_server SET advertise_host = ?, node_port = ?,
+        |  approved = false, approved_at = NULL, approved_by = NULL, approved_source = NULL
+        |WHERE name = ? AND unschedulable AND assigned_node_id IS NULL""".stripMargin
+    )
+    try
+      addr.setString(1, hb.advertiseHost)
+      addr.setInt(2, hb.nodePort)
+      addr.setString(3, hb.name)
+      addr.executeUpdate() == 1
+    finally addr.close()
 
   override def claim(
       a: FleetAssignment,
@@ -1743,7 +1847,7 @@ final class PostgresControlPlaneStore(
     val pick = c.prepareStatement(
       """SELECT s.name, s.assignment_epoch, s.node_port FROM qodstate_fleet_server s
         |JOIN qodstate_fleet_heartbeat h USING (name)
-        |WHERE s.assigned_node_id IS NULL AND NOT s.unschedulable
+        |WHERE s.approved AND s.assigned_node_id IS NULL AND NOT s.unschedulable
         |  AND h.last_heartbeat_at > now() - make_interval(secs => ?)
         |  AND (? IS NULL OR h.memory_bytes IS NULL OR h.memory_bytes >= ?)
         |ORDER BY s.joined_at LIMIT 1 FOR UPDATE OF s SKIP LOCKED""".stripMargin
@@ -1779,7 +1883,7 @@ final class PostgresControlPlaneStore(
             |  count(*) FILTER (WHERE ? IS NULL OR h.memory_bytes IS NULL OR h.memory_bytes >= ?)
             |    AS fitting
             |FROM qodstate_fleet_server s JOIN qodstate_fleet_heartbeat h USING (name)
-            |WHERE s.assigned_node_id IS NULL AND NOT s.unschedulable
+            |WHERE s.approved AND s.assigned_node_id IS NULL AND NOT s.unschedulable
             |  AND h.last_heartbeat_at > now() - make_interval(secs => ?)""".stripMargin
         )
         requiredMemoryBytes match
@@ -1840,6 +1944,41 @@ final class PostgresControlPlaneStore(
     finally ps.close()
   }
 
+  override def approve(name: String, by: String): ApproveResult = inFleetTx { c =>
+    // The server row is locked for the whole decision, so `approved` cannot change under it.
+    val sel = c.prepareStatement(
+      "SELECT approved FROM qodstate_fleet_server WHERE name = ? FOR UPDATE"
+    )
+    val approved =
+      try
+        sel.setString(1, name)
+        val rs = sel.executeQuery()
+        try Option.when(rs.next())(rs.getBoolean(1))
+        finally rs.close()
+      finally sel.close()
+    val result = approved match
+      case None => ApproveResult.NotFound
+      // An approved server keeps its first approver, time and source binding.
+      case Some(true)  => ApproveResult.AlreadyApproved
+      case Some(false) =>
+        // Binds the latest heartbeat's source, read by this same statement (no gap between the
+        // read and the write). An unknown source is refused: an unbound approval would bind to
+        // whoever heartbeats first.
+        val up = c.prepareStatement(
+          """UPDATE qodstate_fleet_server s SET approved = true, approved_at = now(),
+            |  approved_by = ?, approved_source = h.source_addr
+            |FROM qodstate_fleet_heartbeat h
+            |WHERE s.name = ? AND h.name = s.name AND NOT s.approved
+            |  AND h.source_addr IS NOT NULL""".stripMargin
+        )
+        try
+          up.setString(1, by); up.setString(2, name)
+          if up.executeUpdate() == 1 then ApproveResult.Approved else ApproveResult.SourceUnknown
+        finally up.close()
+    c.commit()
+    result
+  }
+
   override def delete(name: String): Boolean = withConn { c =>
     val ps = c.prepareStatement("DELETE FROM qodstate_fleet_server WHERE name = ?")
     try { ps.setString(1, name); ps.executeUpdate() == 1 }
@@ -1849,6 +1988,7 @@ final class PostgresControlPlaneStore(
   private val FleetSelect =
     """SELECT s.name, s.advertise_host, s.node_port, s.joined_at, s.unschedulable, s.assigned_node_id,
       |  s.assignment::text AS assignment, s.assignment_epoch, s.claimed_at,
+      |  s.approved, s.approved_at, s.approved_by, s.approved_source, h.source_addr,
       |  EXTRACT(EPOCH FROM now() - s.claimed_at)::bigint AS claim_age_seconds,
       |  h.last_heartbeat_at, EXTRACT(EPOCH FROM now() - h.last_heartbeat_at)::bigint AS silent_seconds,
       |  h.agent_version, h.os, h.duckdb_version, h.cpus, h.memory_bytes,
@@ -1891,7 +2031,12 @@ final class PostgresControlPlaneStore(
       nodeState = rs.getString("node_state"),
       nodeError = Option(rs.getString("node_error")),
       nodePid = Option(rs.getObject("node_pid")).map(_.asInstanceOf[Number].longValue),
-      nodeStartedAt = Option(rs.getTimestamp("node_started_at")).map(_.toInstant)
+      nodeStartedAt = Option(rs.getTimestamp("node_started_at")).map(_.toInstant),
+      approved = rs.getBoolean("approved"),
+      approvedAt = Option(rs.getTimestamp("approved_at")).map(_.toInstant),
+      approvedBy = Option(rs.getString("approved_by")),
+      sourceAddr = Option(rs.getString("source_addr")),
+      approvedSource = Option(rs.getString("approved_source"))
     )
 
   // ---------------- helpers ----------------

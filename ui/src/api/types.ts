@@ -116,6 +116,14 @@ export interface FleetServer {
   memoryBytes?: number | null;
   joinedAt: string;
   lastHeartbeatAt: string;
+  /** A pending server takes no node until `qod fleet approve` (or QOD_FLEET_AUTO_APPROVE). */
+  approval: 'approved' | 'pending';
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  /** Address the latest heartbeat came from, resolved by the manager (not agent-reported). */
+  sourceAddr?: string | null;
+  /** Source address an approved server is bound to; null while pending or not yet bound. */
+  approvedSource?: string | null;
 }
 
 export interface FleetServerListResponse {

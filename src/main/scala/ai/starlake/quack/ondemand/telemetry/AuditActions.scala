@@ -81,6 +81,8 @@ object AuditActions:
   val FleetDrain   = "fleet.server.drain"
   val FleetUndrain = "fleet.server.undrain"
   val FleetRemove  = "fleet.server.remove"
+  val FleetApprove = "fleet.server.approve"
+  val FleetJoin    = "fleet.server.join"
   // federation
   val FederationSourceUpsert = "federation.source.upsert"
   val FederationSourceDelete = "federation.source.delete"
@@ -189,6 +191,8 @@ object AuditActions:
     FleetDrain,
     FleetUndrain,
     FleetRemove,
+    FleetApprove,
+    FleetJoin,
     FederationSourceUpsert,
     FederationSourceDelete,
     FederationSecretUpsert,

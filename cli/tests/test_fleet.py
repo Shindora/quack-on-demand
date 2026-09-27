@@ -14,12 +14,25 @@ def test_fleet_servers_and_ops(monkeypatch):
     assert runner.invoke(app, ["fleet", "drain", "srv-1"]).exit_code == 0
     assert runner.invoke(app, ["fleet", "undrain", "srv-1"]).exit_code == 0
     assert runner.invoke(app, ["fleet", "remove", "srv-1"]).exit_code == 0
+    assert runner.invoke(app, ["fleet", "approve", "srv-1"]).exit_code == 0
     assert calls == [
         ("GET", "/api/fleet/servers", None),
         ("POST", "/api/fleet/server/drain", {"name": "srv-1"}),
         ("POST", "/api/fleet/server/undrain", {"name": "srv-1"}),
         ("POST", "/api/fleet/server/remove", {"name": "srv-1"}),
+        ("POST", "/api/fleet/server/approve", {"name": "srv-1"}),
     ]
+
+
+def test_fleet_approve_prints_source_unknown_and_fails(monkeypatch):
+    message = ("server 'srv-1' has no known source address yet; approve it after its next heartbeat, "
+               "and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy")
+    def fake_request(self, method, path, params=None, body=None, text=False):
+        raise rest.ApiError(409, "source_unknown", message)
+    monkeypatch.setattr(rest.RestClient, "request", fake_request)
+    out = runner.invoke(app, ["fleet", "approve", "srv-1"])
+    assert out.exit_code == 1
+    assert "409 source_unknown" in out.output and "QOD_FLEET_TRUSTED_PROXIES" in out.output
 
 
 def _pools_with_nodes():
@@ -44,7 +57,7 @@ def test_node_list_flattens_pools_with_a_server_column(monkeypatch):
     monkeypatch.setattr(rest.RestClient, "request", fake_request)
     out = runner.invoke(app, ["--json", "node", "list"])
     assert out.exit_code == 0, out.output
-    rows = json.loads(out.output)
+    rows = json.loads(out.stdout)
     assert calls == [("GET", "/api/pool/list")]
     assert [(r["node"], r["server"], r["serverState"]) for r in rows] == [
         ("quack-acme-acme-tpch-bi-1", "s1", "reachable"),

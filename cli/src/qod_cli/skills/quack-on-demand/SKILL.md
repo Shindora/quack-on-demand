@@ -1586,6 +1586,33 @@ on suspicion (every heartbeat carries the token, so after a rotation restart eac
 did not install. Managers and servers must share a private network: the manager-to-node hop is
 plain HTTP.
 
+**Approving servers.** `QOD_FLEET_AUTO_APPROVE` on the manager lists the networks (CIDRs,
+comma-separated) whose servers are approved as they join; the default `0.0.0.0/0,::/0` approves
+everyone, and an empty value approves no one automatically. A server outside the list joins with
+`approval: pending` (the UI shows "pending approval"), heartbeats, and takes no node; its agent
+logs "waiting for approval". Check where it came from and approve it:
+
+    qod fleet servers            # approval and sourceAddr fields
+    qod fleet approve <name>
+
+Behind a load balancer, list it in `QOD_FLEET_TRUSTED_PROXIES` or every server appears to come
+from the balancer. Removing a server forgets its approval. To refuse a server,
+`qod fleet remove <name>` and stop its agent, otherwise it re-joins as pending. A drained server
+that comes back from a new address loses its approval and is judged again.
+An approval is bound to the address it was approved from, so an approved server heartbeating from
+another machine gets `source_change_refused`; to move one, `qod fleet drain <name>`, start the
+agent on the new machine and let it re-join, `qod fleet approve <name>` once it shows as pending,
+then `qod fleet undrain <name>` (a new address inside `QOD_FLEET_AUTO_APPROVE` is accepted without
+this).
+After an upgrade, servers approved before the manager recorded source addresses bind to the first
+heartbeat from inside `QOD_FLEET_AUTO_APPROVE`; if you narrow the list, those outside it get
+`approval_unbound` (their heartbeats are refused) until you run `qod fleet drain <name>`,
+`qod fleet approve <name>` once it shows as pending, then `qod fleet undrain <name>`. `qod fleet
+approve` answers `source_unknown` while the server has no known source address yet: wait for its
+next heartbeat. Behind a trusted proxy that does not send `X-Forwarded-For`, a server's source
+stays unknown, so it stays pending and `qod fleet approve` answers `source_unknown`; fix the proxy
+or `QOD_FLEET_TRUSTED_PROXIES`.
+
 systemd unit (`/etc/systemd/system/qod-agent.service`):
 
 ```

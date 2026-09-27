@@ -1036,7 +1036,24 @@ final class PoolSupervisor(
           keep
             .foldLeft(IO.pure((List.empty[RunningNode], false, Set.empty[String]))) { (acc, n) =>
               acc.flatMap { case (kept, noFree, stranded) =>
-                if podAlive(n) then backend.adopt(n).as((kept :+ n, noFree, stranded))
+                if podAlive(n) then
+                  backend.located(n).flatMap { at =>
+                    // Live elsewhere than its row says (a fleet claim whose row write was lost):
+                    // rewrite the row, and route to where the node actually runs.
+                    val rewrite =
+                      if at eq n then IO.unit
+                      else
+                        IO.delay(
+                          logger.warn(
+                            s"reconcile: $key/${n.nodeId} runs at ${at.host}:${at.port} on " +
+                              s"${at.serverName.getOrElse("?")}, not its recorded " +
+                              s"${n.host}:${n.port}; rewriting its row"
+                          )
+                        ) *> poolIdByKey
+                          .get(key)
+                          .fold(IO.unit)(pid => IO.blocking(store.upsertNode(at, pid)))
+                    rewrite *> backend.adopt(at).as((kept :+ at, noFree, stranded))
+                  }
                 else
                   val msg =
                     s"reconcile: $key/${n.nodeId} (pid=${n.pid.getOrElse("?")} port=${n.port}) " +

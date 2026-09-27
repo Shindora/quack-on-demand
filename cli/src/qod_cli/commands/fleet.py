@@ -3,7 +3,7 @@ import typer
 from ..registry import covers
 from ._run import call
 
-app = typer.Typer(help="Fleet servers (runtimeType=fleet): list, drain, undrain, remove.")
+app = typer.Typer(help="Fleet servers (runtimeType=fleet): list, approve, drain, undrain, remove.")
 
 
 @app.command()
@@ -30,5 +30,12 @@ def undrain(ctx: typer.Context, name: str = typer.Argument(...)):
 @app.command()
 @covers("POST", "/api/fleet/server/remove", {"name": "NAME"})
 def remove(ctx: typer.Context, name: str = typer.Argument(...)):
-    """Forget a drained or unreachable server (stop its agent first)."""
+    """Forget a server: a pending one at any time, an approved one once drained or unreachable (stop its agent, or it re-joins)."""
     call(ctx, "POST", "/api/fleet/server/remove", body={"name": name})
+
+
+@app.command()
+@covers("POST", "/api/fleet/server/approve", {"name": "NAME"})
+def approve(ctx: typer.Context, name: str = typer.Argument(..., help="Server name.")):
+    """Let a server that joined from outside QOD_FLEET_AUTO_APPROVE take nodes."""
+    call(ctx, "POST", "/api/fleet/server/approve", body={"name": name})

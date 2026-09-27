@@ -10,7 +10,7 @@ from ..agent import Agent, default_advertise_host
 
 
 def agent(
-    manager: str = typer.Option(..., "--manager", envvar="QOD_MANAGER_URL", help="Manager base URL, https://host:20900."),
+    manager: str = typer.Option(..., "--manager", envvar="QOD_MANAGER_URL", help="Manager REST base URL: https:// through a TLS proxy, or http://host:20900 with --insecure (the REST port itself has no TLS)."),
     join_token: str = typer.Option(..., "--join-token", envvar="QOD_FLEET_JOIN_TOKEN", help="Fleet join token; prefer QOD_FLEET_JOIN_TOKEN, a flag value is visible in ps."),
     name: str = typer.Option(socket.gethostname(), "--name", help="Server identity; must be unique in the fleet."),
     advertise_host: str = typer.Option(None, "--advertise-host", help="Address the manager dials; default: first non-loopback IPv4. Set it explicitly on multi-NIC hosts."),
@@ -18,7 +18,7 @@ def agent(
     node_port: int = typer.Option(21900, "--node-port"),
     duckdb_bin: Path = typer.Option(None, "--duckdb-bin", help="duckdb executable; default: provisioned into the qod cache."),
     state_dir: Path = typer.Option(None, "--state-dir", help="Where the node pidfile lives; default: the qod cache."),
-    insecure: bool = typer.Option(False, "--insecure", help="Allow a plain http:// manager URL."),
+    insecure: bool = typer.Option(False, "--insecure", help="Allow a plain http:// manager URL (it does not relax TLS checks on https://)."),
 ):
     """Join this server to a quack-on-demand fleet and run the node the manager assigns (Linux, macOS)."""
     if sys.platform == "win32":

@@ -36,7 +36,8 @@ import scala.util.Try
   *   1. boot the manager on 20950 (REST) / 31350 (FlightSQL, plain gRPC), native front door off,
   *      against a throwaway control-plane database;
   *   2. create tenant acme, a memory database, pool bi of size 1: the pool is pending (no server);
-  *   3. start the agent (server s1, node port 23100);
+  *   3. start the agent (server s1, node port 23100), joins pending approval (autoApprove is
+  *      empty), is approved over REST,
   *   4. the pending slot fills: one node, served by s1, s1 reachable and running;
   *   5. `SELECT 42` through the FlightSQL edge;
   *   6. drain s1: the slot goes pending, s1 keeps no assignment;
@@ -302,6 +303,7 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
          |    startupTimeoutSec = 60
          |    stopTimeoutSec = 60
          |    ephemeral = "fleet"
+         |    autoApprove = ""
          |  }
          |}
          |quack-flightsql {
@@ -442,6 +444,12 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     "3-4 agent joins, slot fills"
   ) {
     startAgent()
+    // autoApprove is empty here: the server joins pending and takes no node until approved.
+    await("s1 joined, pending approval") {
+      server().filter(s => str(s, "approval").contains("pending"))
+    }
+    pool().pending shouldBe 1
+    post("/api/fleet/server/approve", s"""{"name":"$Server"}""")
     val node = await("one node and no pending slot") {
       val p = pool()
       Option.when(p.nodes.size == 1 && p.pending == 0)(p.nodes.head)

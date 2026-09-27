@@ -35,6 +35,30 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
       .foreach(r => rows.put(name, r.copy(claimedAt = r.claimedAt.map(_.minusSeconds(seconds)))))
   }
 
+  /** Test hook: write an assignment onto a server whatever its state (the claim guards bypassed),
+    * to pin what the heartbeat reply does with a row that should never hold one.
+    */
+  def forceAssignment(name: String, a: FleetAssignment): Unit = synchronized {
+    rows
+      .get(name)
+      .foreach(r =>
+        rows.put(
+          name,
+          r.copy(
+            assignedNodeId = Some(a.nodeId),
+            assignment = Some(a),
+            assignmentEpoch = a.epoch,
+            claimedAt = Some(clock())
+          )
+        )
+      )
+  }
+
+  /** Test hook: clear a server's source binding (the 0042 upgrade leaves approved rows unbound). */
+  def unbind(name: String): Unit = synchronized {
+    rows.get(name).foreach(r => rows.put(name, r.copy(approvedSource = None)))
+  }
+
   def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome = synchronized {
     val now = clock()
     rows.get(hb.name) match
@@ -62,14 +86,41 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             FleetServerStore.effectiveState(hb.node, 0L, None),
             hb.node.error,
             hb.node.pid,
-            hb.node.startedAt
+            hb.node.startedAt,
+            approved = hb.autoApprove,
+            approvedAt = Option.when(hb.autoApprove)(now),
+            approvedBy = Option.when(hb.autoApprove)("auto"),
+            sourceAddr = hb.sourceAddr,
+            approvedSource = if hb.autoApprove then hb.sourceAddr else None
           )
         )
         HeartbeatOutcome.Joined
       case Some(r)
-          if !r.unschedulable && (r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort) =>
+          if (!r.unschedulable || r.assignedNodeId.isDefined) &&
+            (r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort) =>
         HeartbeatOutcome.AddressChangeRefused
+      case Some(r)
+          if sourceMoved(
+            r,
+            hb
+          ) && !hb.autoApprove && !(r.unschedulable && r.assignedNodeId.isEmpty) =>
+        HeartbeatOutcome.SourceChangeRefused
+      case Some(r)
+          if unbound(r) && !trustedBind(hb) && !(r.unschedulable && r.assignedNodeId.isEmpty) =>
+        // The address guard above let only an unchanged address through (or a drained,
+        // unassigned re-address, which the last guard excludes too).
+        HeartbeatOutcome.ApprovalUnbound
       case Some(r) =>
+        // Only a drained, unassigned server gets here with another address (the guard above
+        // refuses the rest); a re-address resets approval so the new address is judged again.
+        // So does a source move outside the list (drained and unassigned too); a move inside the
+        // list keeps the approval and rebinds it to the new source. An unbound approval keeps
+        // its approval (and binds) only from a known source inside the list; a drained,
+        // unassigned one heartbeating from elsewhere is reset.
+        val readdressed   = r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort
+        val moved         = sourceMoved(r, hb)
+        val keepsApproval = r.approved && !readdressed && !(moved && !hb.autoApprove) &&
+          !(unbound(r) && !trustedBind(hb))
         rows.put(
           hb.name,
           r.copy(
@@ -85,11 +136,33 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
               FleetServerStore.effectiveState(hb.node, r.assignmentEpoch, r.assignedNodeId),
             nodeError = hb.node.error,
             nodePid = hb.node.pid,
-            nodeStartedAt = hb.node.startedAt
+            nodeStartedAt = hb.node.startedAt,
+            approved = keepsApproval || hb.autoApprove,
+            approvedAt = if keepsApproval then r.approvedAt else Option.when(hb.autoApprove)(now),
+            approvedBy =
+              if keepsApproval then r.approvedBy else Option.when(hb.autoApprove)("auto"),
+            sourceAddr = hb.sourceAddr,
+            approvedSource =
+              if keepsApproval then
+                if moved then hb.sourceAddr else r.approvedSource.orElse(hb.sourceAddr)
+              else if hb.autoApprove then hb.sourceAddr
+              else None
           )
         )
         HeartbeatOutcome.Updated
   }
+
+  /** An approved row bound to no source (the 0042 upgrade backfill). */
+  private def unbound(r: FleetServerRow): Boolean = r.approved && r.approvedSource.isEmpty
+
+  /** A heartbeat allowed to bind an unbound approval: a known source inside the list. The isDefined
+    * half is defense in depth; Heartbeat already refuses autoApprove without a source.
+    */
+  private def trustedBind(hb: Heartbeat): Boolean = hb.sourceAddr.isDefined && hb.autoApprove
+
+  /** An approved row bound to a source other than this heartbeat's (an unknown one included). */
+  private def sourceMoved(r: FleetServerRow, hb: Heartbeat): Boolean =
+    r.approved && r.approvedSource.isDefined && r.approvedSource != hb.sourceAddr
 
   def claim(
       a: FleetAssignment,
@@ -100,7 +173,7 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
       val now  = clock()
       val free = rows.values
         .filter(r =>
-          r.assignedNodeId.isEmpty && !r.unschedulable &&
+          r.approved && r.assignedNodeId.isEmpty && !r.unschedulable &&
             Duration.between(r.lastHeartbeatAt, now).getSeconds < reachableWithinSec
         )
         .toList
@@ -166,5 +239,22 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
     synchronized(rows.values.find(_.assignedNodeId.contains(nodeId)).map(withSilent))
   def setUnschedulable(name: String, value: Boolean): Boolean = synchronized {
     rows.get(name).map(r => rows.put(name, r.copy(unschedulable = value))).isDefined
+  }
+  def approve(name: String, by: String): ApproveResult = synchronized {
+    rows.get(name) match
+      case None                            => ApproveResult.NotFound
+      case Some(r) if r.approved           => ApproveResult.AlreadyApproved
+      case Some(r) if r.sourceAddr.isEmpty => ApproveResult.SourceUnknown
+      case Some(r)                         =>
+        rows.put(
+          name,
+          r.copy(
+            approved = true,
+            approvedAt = Some(clock()),
+            approvedBy = Some(by),
+            approvedSource = r.sourceAddr
+          )
+        )
+        ApproveResult.Approved
   }
   def delete(name: String): Boolean = synchronized(rows.remove(name).isDefined)

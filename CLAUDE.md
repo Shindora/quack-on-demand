@@ -305,12 +305,38 @@ HA replicas agree. `NoFreeServer(reason)` is the one failure the supervisor tole
 stays pending and reconcile fills it when a server joins (`MissingSlots`). Silent past
 `heartbeatTimeoutSec` = unroutable but kept; past `reassignAfterSec` = dead, respawned elsewhere
 through `claimReplacing` (release the dead holder and claim the replacement in ONE store
-transaction, rolled back when no server qualifies). With no free server the dead server keeps
-its assignment and its node row, so if it returns first its agent still runs the node at the
-same epoch and reconcile adopts it with no restart; a drained or removed holder's node goes
-pending instead. A partial or cancelled spawn rolls back the nodes it started (`spawnAll`,
-`guaranteeCase`).
-A known name reporting a new address is refused unless drained (shared-token takeover guard).
+transaction, rolled back when no server qualifies).
+With no free server the dead server keeps its assignment and its node row, so if it returns
+first its agent still runs the node at the same epoch and reconcile adopts it with no restart; a
+drained or removed holder's node goes pending instead. A partial or cancelled spawn rolls back
+the nodes it started (`spawnAll`, `guaranteeCase`). The server holding an assignment is the
+truth for a live node's address and token: reconcile adopts through `QuackBackend.located` and
+rewrites a node row that still names the previous server (a manager that died between the claim
+and the node row write).
+Join approval (Liquibase `0041`): a new server row starts unapproved and the claim query skips
+it (`AND s.approved`), so a pending server never receives an assignment or its credentials. The
+heartbeat handler resolves the client address from the TCP peer (`X-Forwarded-For` only when the
+peer is in `QOD_FLEET_TRUSTED_PROXIES`, walked from the right; unknown never matches) and
+auto-approves when it is in `QOD_FLEET_AUTO_APPROVE` (default `0.0.0.0/0,::/0`, boot WARNs while
+open; empty = none). Pending servers are re-judged every heartbeat, approved ones never; an
+accepted re-address (drained server) resets approval and is judged again. Approval is bound to the
+source it was granted from (`approved_source`, Liquibase `0042`: the auto-approving heartbeat's, or
+the latest source on an admin approve): a heartbeat from another source is refused
+`409 source_change_refused` with nothing written, unless that source is itself in the list (rebind)
+or the server is drained and unassigned (approval reset, judged again). An approved row with no
+binding (the 0042 upgrade leaves every earlier server unbound; not backfilled, since the advertised
+host is agent-reported and differs from the source behind a proxy or NAT) binds only to a known
+source inside the list; from anywhere else it is refused `409 approval_unbound` with nothing
+written, unless drained and unassigned (approval reset, judged again): drain it, approve it
+once it shows as pending, then undrain it.
+Admin approve refuses `409 source_unknown` while the server's latest heartbeat has no known source
+(`ApproveResult.SourceUnknown`), so an approval never starts unbound. The drain window is closed: no re-address while the row still holds
+an assignment (drain flips unschedulable, then releases), and the heartbeat never returns an
+assignment to an unapproved row or to a source the row is not bound to. `qod fleet approve` /
+`POST /api/fleet/server/approve` approves by hand; `remove` forgets approval and also accepts a
+live pending server. Existing rows were backfilled `approved_by = 'upgrade'`. Design:
+docs/superpowers/specs/2026-09-26-fleet-join-approval-design.md.
+A known name reporting a new address is refused unless drained and unassigned (shared-token takeover guard).
 `QOD_FLEET_EPHEMERAL=local` runs maintenance and merge nodes on the manager host instead of a
 fleet server. Manager-to-node is plain HTTP: fleet mode needs a private network. Design:
 docs/superpowers/specs/2026-09-25-fleet-backend-design.md.

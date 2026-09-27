@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import typer
 
 from . import __version__
-from .config import Settings, default_profile, load_settings
+from .config import Settings, config_path, default_profile, load_settings
 from .registry import covers
 
 app = typer.Typer(
@@ -42,6 +42,11 @@ def _root(
     ),
 ) -> None:
     active = profile or default_profile()
+    if not ctx.resilient_parsing:
+        # stderr, so --json output and pipes stay clean.
+        path = config_path()
+        missing = "" if path.exists() else " (not found)"
+        typer.echo(f"qod: profile '{active}' from {path}{missing}", err=True)
     ctx.obj = AppCtx(settings=load_settings(active), json_output=json_output, profile=active)
 
 

@@ -2,10 +2,11 @@ package ai.starlake.quack.ondemand.api
 
 import ai.starlake.quack.FleetConfig
 import ai.starlake.quack.ondemand.auth.SessionScope
-import ai.starlake.quack.ondemand.fleet.ServerLiveness
+import ai.starlake.quack.ondemand.fleet.{Cidr, ClientAddress, ServerLiveness}
 import ai.starlake.quack.ondemand.ha.StateChangePublisher
 import ai.starlake.quack.ondemand.runtime.FleetQuackBackend
 import ai.starlake.quack.ondemand.state.{
+  ApproveResult,
   FleetAssignment,
   FleetServerRow,
   FleetServerStore,
@@ -18,6 +19,7 @@ import cats.effect.IO
 import com.typesafe.scalalogging.LazyLogging
 import sttp.model.StatusCode
 
+import java.net.InetAddress
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
@@ -27,8 +29,8 @@ import scala.util.Try
   * (constant-time compare against the join token), never a session or API key. No clock here: every
   * timestamp is the store's.
   *
-  * The admin server endpoints (list / drain / undrain / remove) are superuser or static key only
-  * and answer `400 fleet_disabled` when `backend` is None (runtimeType is not fleet).
+  * The admin server endpoints (list / drain / undrain / remove / approve) are superuser or static
+  * key only and answer `400 fleet_disabled` when `backend` is None (runtimeType is not fleet).
   */
 final class FleetHandlers(
     store: FleetServerStore,
@@ -40,6 +42,10 @@ final class FleetHandlers(
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 
   private val ValidStates = Set("none", "starting", "running", "failed", "stopped")
+
+  // Parsed once; FleetConfig validated both at boot.
+  private val autoApproveList = cfg.autoApproveCidrs
+  private val trustedProxies  = cfg.trustedProxyCidrs
 
   private def tokenOk(provided: Option[String]): Boolean =
     cfg.joinToken.nonEmpty && provided.exists(p =>
@@ -70,7 +76,15 @@ final class FleetHandlers(
         Left((StatusCode.BadGateway, ErrorResponse("backend_error", FleetHandlers.StoreError)))
     }
 
-  def heartbeat(req: FleetHeartbeatRequest, token: Option[String]): Out[FleetHeartbeatResponse] =
+  /** `peer` is the TCP peer; `forwardedFor` is believed only when the peer is a trusted proxy. The
+    * resolved address decides auto-approval (QOD_FLEET_AUTO_APPROVE); an unknown one never does.
+    */
+  def heartbeat(
+      req: FleetHeartbeatRequest,
+      token: Option[String],
+      peer: Option[InetAddress],
+      forwardedFor: Option[String]
+  ): Out[FleetHeartbeatResponse] =
     val startedAt = req.node.startedAt.map(s => Try(Instant.parse(s)).toOption)
     // Not a fleet manager: no server rows may be written, whoever the caller (on a local or K8s
     // manager the route sits behind the API-key guard, so a static-key caller reaches it).
@@ -99,7 +113,9 @@ final class FleetHandlers(
         req.node.error,
         startedAt.flatten
       )
-      val hb = Heartbeat(
+      val source = ClientAddress.resolve(peer, forwardedFor, trustedProxies)
+      val autoOk = source.exists(a => Cidr.anyContains(autoApproveList, a))
+      val hb     = Heartbeat(
         req.name,
         req.advertiseHost,
         req.nodePort,
@@ -108,7 +124,9 @@ final class FleetHandlers(
         req.duckdbVersion,
         req.cpus,
         req.memoryBytes,
-        report
+        report,
+        sourceAddr = source.map(_.getHostAddress),
+        autoApprove = autoOk
       )
       val record: Out[FleetHeartbeatResponse] =
         IO.blocking(store.recordHeartbeat(hb)).flatMap {
@@ -119,16 +137,60 @@ final class FleetHandlers(
               s"server '${req.name}' is known with another address; " +
                 "drain it before re-addressing"
             )
+          case HeartbeatOutcome.SourceChangeRefused =>
+            fail(
+              StatusCode.Conflict,
+              "source_change_refused",
+              s"server '${req.name}' is approved from another address; to move it, drain it, " +
+                "approve it from the new address once it shows as pending, then undrain it, " +
+                "or add the new address to QOD_FLEET_AUTO_APPROVE"
+            )
+          case HeartbeatOutcome.ApprovalUnbound =>
+            fail(
+              StatusCode.Conflict,
+              "approval_unbound",
+              s"server '${req.name}' was approved before its source address was recorded and " +
+                "this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it, approve it " +
+                "once it shows as pending, then undrain it " +
+                s"(`qod fleet drain ${req.name}`, `qod fleet approve ${req.name}`, " +
+                s"`qod fleet undrain ${req.name}`)"
+            )
           case outcome =>
-            if outcome == HeartbeatOutcome.Joined then
-              logger.info(
-                s"fleet: server '${req.name}' joined from ${req.advertiseHost}:${req.nodePort}"
-              )
             IO.blocking(store.get(req.name)).map { row =>
+              val approval = if row.exists(_.approved) then "approved" else "pending"
+              if outcome == HeartbeatOutcome.Joined then
+                val from = hb.sourceAddr.getOrElse("an unknown address")
+                logger.info(
+                  s"fleet: server '${req.name}' joined from $from " +
+                    s"(advertises ${req.advertiseHost}:${req.nodePort}): " +
+                    (if approval == "approved" then "auto-approved"
+                     else "pending approval (source not in QOD_FLEET_AUTO_APPROVE)")
+                )
+                audit.restAs(
+                  req.name,
+                  "fleet",
+                  "control-plane",
+                  AuditActions.FleetJoin,
+                  "ok",
+                  target = Some(req.name),
+                  detail = Map("source" -> from, "approval" -> approval)
+                )
               Right(
                 FleetHeartbeatResponse(
                   cfg.heartbeatSec,
-                  row.flatMap(_.assignment).map(FleetHandlers.toDto)
+                  // Only an approved server is ever handed its assignment (which carries the
+                  // node token and pgPassword). A pending row should hold none, but a row can be
+                  // reset to pending while it still holds one (e.g. a re-address racing a
+                  // drain); the reply must not leak it then. Likewise only to the source the
+                  // approval is bound to: the row is read afresh here, after the store's check,
+                  // so a concurrent rebind must not hand the assignment to the old source.
+                  row
+                    .filter(r =>
+                      r.approved && r.approvedSource.forall(b => hb.sourceAddr.contains(b))
+                    )
+                    .flatMap(_.assignment)
+                    .map(FleetHandlers.toDto),
+                  approval
                 )
               )
             }
@@ -163,7 +225,12 @@ final class FleetHandlers(
       cpus = r.cpus,
       memoryBytes = r.memoryBytes,
       joinedAt = r.joinedAt.toString,
-      lastHeartbeatAt = r.lastHeartbeatAt.toString
+      lastHeartbeatAt = r.lastHeartbeatAt.toString,
+      approval = if r.approved then "approved" else "pending",
+      approvedBy = r.approvedBy,
+      approvedAt = r.approvedAt.map(_.toString),
+      sourceAddr = r.sourceAddr,
+      approvedSource = r.approvedSource
     )
 
   def listServers(apiKey: Option[String])(
@@ -179,7 +246,7 @@ final class FleetHandlers(
           }
         }
 
-  /** Common shape of the three mutations: superuser gate (denied audit row), fleet gate, 404 on an
+  /** Common shape of the server mutations: superuser gate (denied audit row), fleet gate, 404 on an
     * unknown name, then `f` with an ok / error audit row. A raised error maps to 502 with an error
     * audit row.
     */
@@ -230,14 +297,40 @@ final class FleetHandlers(
         IO.delay(publish.topologyChanged()).as(Right(()))
     }
 
-  /** Refused while the server is reachable and still schedulable: a live agent would re-register on
-    * its next heartbeat and could be holding a node.
+  /** Let a pending server take nodes. Idempotent; the first approver and time are kept. The next
+    * reconcile pass fills pending slots onto it. Refused (409 source_unknown) while the server's
+    * latest heartbeat has no known source address: the approval is bound to that source.
+    */
+  def approve(req: FleetServerOpRequest, apiKey: Option[String])(
+      scopeOf: String => Option[SessionScope]
+  ): Out[Unit] =
+    serverOp(req, apiKey, AuditActions.FleetApprove)(scopeOf) { (_, row) =>
+      IO.blocking(store.approve(row.name, audit.actorOf(apiKey)._1)).flatMap {
+        case ApproveResult.NotFound =>
+          fail(StatusCode.NotFound, "not_found", s"no such server '${row.name}'")
+        // An approval with no known source would bind to whoever heartbeats first.
+        case ApproveResult.SourceUnknown =>
+          fail(
+            StatusCode.Conflict,
+            "source_unknown",
+            s"server '${row.name}' has no known source address yet; approve it after its next " +
+              "heartbeat, and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy"
+          )
+        case _ => IO.delay(publish.topologyChanged()).as(Right(()))
+      }
+    }
+
+  /** Refused while an approved server is reachable and still schedulable: a live agent would
+    * re-register on its next heartbeat and could be holding a node. A pending server holds no node
+    * by construction, so it can be removed at any time (its agent re-joins as pending unless it is
+    * stopped).
     */
   def remove(req: FleetServerOpRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[Unit] =
     serverOp(req, apiKey, AuditActions.FleetRemove)(scopeOf) { (b, row) =>
-      if b.livenessOf(row) == ServerLiveness.Reachable && !row.unschedulable then
+      if row.approved && b.livenessOf(row) == ServerLiveness.Reachable && !row.unschedulable
+      then
         fail(
           StatusCode.Conflict,
           "server_active",

@@ -53,8 +53,22 @@ object BootFactories extends LazyLogging:
           runAsUser = mgrCfg.k8s.runAsUser,
           stopTimeoutSec = mgrCfg.k8s.stopTimeoutSec
         )
-      case "fleet" => new FleetQuackBackend(fleetStore, mgrCfg.fleet)
-      case other   => sys.error(s"unknown runtime: $other")
+      case "fleet" =>
+        val proxies =
+          val p = mgrCfg.fleet.trustedProxyCidrs
+          if p.isEmpty then "none" else p.mkString(",")
+        mgrCfg.fleet.openAutoApproveWarning match
+          case Some(w) => logger.warn(s"$w Trusted proxies: $proxies.")
+          case None    =>
+            val list = mgrCfg.fleet.autoApproveCidrs
+            logger.info(
+              "fleet: auto-approve " +
+                (if list.isEmpty then "none (every new server needs `qod fleet approve`)"
+                 else list.mkString(",")) +
+                s"; trusted proxies: $proxies"
+            )
+        new FleetQuackBackend(fleetStore, mgrCfg.fleet)
+      case other => sys.error(s"unknown runtime: $other")
 
   /** Backend for maintenance and branch-merge nodes. Same as `main` unless fleet mode asks for them
     * to run on the manager host (QOD_FLEET_EPHEMERAL=local).

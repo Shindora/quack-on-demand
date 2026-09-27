@@ -1,6 +1,7 @@
 package ai.starlake.quack
 
 import ai.starlake.quack.config.ConfigField
+import ai.starlake.quack.ondemand.fleet.Cidr
 
 import scala.annotation.meta.field
 
@@ -767,7 +768,22 @@ final case class FleetConfig(
         "Where maintenance and branch-merge nodes run: 'fleet' claims a server like any node, " +
           "'local' runs them on the manager host through the local backend."
     )
-    ephemeral: String = "fleet"
+    ephemeral: String = "fleet",
+    @field @ConfigField(
+      envVar = "QOD_FLEET_AUTO_APPROVE",
+      description =
+        "Comma-separated CIDRs: a server whose heartbeat comes from one of them is approved on " +
+          "join; any other waits for `qod fleet approve`. Empty = approve none automatically. " +
+          "The default admits every address."
+    )
+    autoApprove: String = "0.0.0.0/0,::/0",
+    @field @ConfigField(
+      envVar = "QOD_FLEET_TRUSTED_PROXIES",
+      description =
+        "Comma-separated CIDRs of proxies / load balancers whose X-Forwarded-For is believed " +
+          "when resolving a heartbeat's client address. Empty = believe none."
+    )
+    trustedProxies: String = ""
 ):
   require(heartbeatSec >= 1, "fleet: heartbeatSec must be >= 1")
   require(Set("fleet", "local").contains(ephemeral), "fleet: ephemeral must be 'fleet' or 'local'")
@@ -778,6 +794,32 @@ final case class FleetConfig(
   )
   require(startupTimeoutSec >= 1, "fleet: startupTimeoutSec must be >= 1")
   require(stopTimeoutSec >= 1, "fleet: stopTimeoutSec must be >= 1")
+
+  // Validated here so a bad value refuses boot. `def`s, not vals: ConfigRegistry pairs declared
+  // fields with constructor parameters by position.
+  FleetConfig
+    .parseCidrs("QOD_FLEET_AUTO_APPROVE", autoApprove)
+    .left
+    .foreach(e => throw new IllegalArgumentException(e))
+  FleetConfig
+    .parseCidrs("QOD_FLEET_TRUSTED_PROXIES", trustedProxies)
+    .left
+    .foreach(e => throw new IllegalArgumentException(e))
+
+  def autoApproveCidrs: List[Cidr] =
+    FleetConfig.parseCidrs("QOD_FLEET_AUTO_APPROVE", autoApprove).fold(e => sys.error(e), identity)
+
+  def trustedProxyCidrs: List[Cidr] =
+    FleetConfig
+      .parseCidrs("QOD_FLEET_TRUSTED_PROXIES", trustedProxies)
+      .fold(e => sys.error(e), identity)
+
+  /** The boot WARN when auto-approval admits a whole address family; None otherwise. */
+  def openAutoApproveWarning: Option[String] =
+    Option.when(autoApproveCidrs.exists(_.isEverything))(
+      "fleet auto-approve is open to every address: any holder of the join token is approved " +
+        "on join. Set QOD_FLEET_AUTO_APPROVE to restrict."
+    )
 
   def ephemeralLocal: Boolean = ephemeral == "local"
 
@@ -794,6 +836,9 @@ final case class FleetConfig(
 object FleetConfig:
   def isFleet(runtimeType: String): Boolean =
     runtimeType.toLowerCase(java.util.Locale.ROOT) == "fleet"
+
+  def parseCidrs(env: String, raw: String): Either[String, List[Cidr]] =
+    Cidr.parseList(raw).left.map(e => s"$env: $e")
 
 /** Writable branches of DuckLake tenant-dbs (Epic 1): a branch is a cloned catalog served by its
   * own one-node pool; agents write there, a human reviews the change set and fast-forward merges.
