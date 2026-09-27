@@ -24,6 +24,17 @@ def test_fleet_servers_and_ops(monkeypatch):
     ]
 
 
+def test_fleet_approve_prints_source_unknown_and_fails(monkeypatch):
+    message = ("server 'srv-1' has no known source address yet; approve it after its next heartbeat, "
+               "and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy")
+    def fake_request(self, method, path, params=None, body=None, text=False):
+        raise rest.ApiError(409, "source_unknown", message)
+    monkeypatch.setattr(rest.RestClient, "request", fake_request)
+    out = runner.invoke(app, ["fleet", "approve", "srv-1"])
+    assert out.exit_code == 1
+    assert "409 source_unknown" in out.output and "QOD_FLEET_TRUSTED_PROXIES" in out.output
+
+
 def _pools_with_nodes():
     node = lambda nid, server, state: {
         "nodeId": nid, "role": "Dual", "host": "127.0.0.1", "port": 23101, "healthy": True,
