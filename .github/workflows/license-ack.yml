@@ -14,6 +14,11 @@ name: license-ack
 # plain `pull_request` trigger (never `pull_request_target`, which would
 # hand fork code a write token).
 #
+# Maintainers are exempt: a PR whose author is the repository OWNER, an org
+# MEMBER or a COLLABORATOR passes without the box, since maintainers already
+# contribute under the project's license. `author_association` comes from
+# GitHub in the event payload, so a PR cannot claim it.
+#
 # Triggers: PR opened, reopened, new commits pushed, or description edited
 # (ticking the box is an edit, which re-runs the check).
 
@@ -30,7 +35,14 @@ jobs:
       - name: Check the licensing box is ticked
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Maintainer PR ($AUTHOR_ASSOCIATION): licensing acknowledgement not required."
+              exit 0
+              ;;
+          esac
           if printf '%s' "$PR_BODY" | tr -d '\r' | grep -qiE '^\s*-\s*\[x\]\s+I license this contribution under the Apache License 2\.0'; then
             echo "Licensing acknowledgement found."
           else

@@ -16,4 +16,5 @@ Fixes #
 - [ ] I license this contribution under the Apache License 2.0, the same license as the project.
 
 <!-- The `license-ack` check fails until the box above is ticked. Keep
-     the line as is; edit the PR description to tick it. -->
+     the line as is; edit the PR description to tick it. Maintainers
+     (repository owner, org members, collaborators) are exempt. -->
