@@ -572,7 +572,12 @@ object Main extends IOApp with LazyLogging:
       rawConfig = com.typesafe.config.ConfigFactory.load(),
       audit = auditRecorder,
       singleton = singletonTasks,
-      scopeOf = sessionTokens.scopeOf,
+      // Fail-closed like the REST handlers' lookup, and PAT-aware like it: a module gate
+      // reading None as "static key" must never see None for an expired or unknown token.
+      scopeOf = ai.starlake.quack.ondemand.auth.SessionScope.failClosed(
+        mgrCfg.apiKey,
+        t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
+      ),
       sessionOf = sessionTokens.get
     )
     val moduleStart: IO[Unit] =
@@ -1364,7 +1369,10 @@ object Main extends IOApp with LazyLogging:
             resolver,
             tenantIdResolver,
             audit = auditRecorder,
-            scopeOf = t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t)),
+            scopeOf = ai.starlake.quack.ondemand.auth.SessionScope.failClosed(
+              mgrCfg.apiKey,
+              t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
+            ),
             catalogAliasOf = catalogAliasOf,
             attachStatusOf = attachStatusOf
           )
@@ -1650,7 +1658,10 @@ object Main extends IOApp with LazyLogging:
         if !mgrCfg.mcp.enabled then None
         else
           val mcpScopeOf: String => Option[ai.starlake.quack.ondemand.auth.SessionScope] =
-            t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
+            ai.starlake.quack.ondemand.auth.SessionScope.failClosed(
+              mgrCfg.apiKey,
+              t => sessionTokens.scopeOf(t).orElse(patAuthenticator.scopeOf(t))
+            )
           for
             cat      <- catalogHandlers
             hist     <- catalogHistoryHandlers
