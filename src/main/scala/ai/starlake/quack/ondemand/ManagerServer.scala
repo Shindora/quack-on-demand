@@ -103,10 +103,16 @@ final class ManagerServer(
   // cheap in-memory operation, and PatAuthenticator self-rejects any token
   // without the qod_pat_ prefix before touching the store, so the composition
   // costs a session caller nothing and a PAT caller one prefix check.
+  //
+  // `scopeOfToken` is what every handler gate receives. It is fail-closed: `None` only for the
+  // static key, never for a token that stopped resolving between the guard and the handler (see
+  // SessionScope.failClosed). The guard itself does not use it; it resolves once through
+  // `sessionOfToken`.
   private val scopeOfToken: String => Option[ai.starlake.quack.ondemand.auth.SessionScope] =
-    t => sessions.scopeOf(t).orElse(patAuth.flatMap(_.scopeOf(t)))
-  private val isAdminToken: String => Boolean =
-    t => sessions.isAdmin(t) || patAuth.exists(_.isAdmin(t))
+    ai.starlake.quack.ondemand.auth.SessionScope.failClosed(
+      cfg.apiKey,
+      t => sessions.scopeOf(t).orElse(patAuth.flatMap(_.scopeOf(t)))
+    )
   private val sessionOfToken: String => Option[SessionTokenStore.Session] =
     t => sessions.get(t).orElse(patAuth.flatMap(_.sessionOf(t)))
 
@@ -242,11 +248,15 @@ final class ManagerServer(
         val staticMatch = (staticConfigured, headerToken) match
           case (Some(expected), Some(actual)) => constantTimeEq(actual, expected)
           case _                              => false
-        val sessionAdmin = provided.exists(isAdminToken)
-        // Resolved once: it decides both the non-admin demotion below and the
-        // per-request tenant scope check further down.
-        val tokenScope      = provided.flatMap(scopeOfToken)
-        val nonAdminSession = tokenScope.isDefined && !sessionAdmin
+        // Resolved ONCE: the admin decision, the non-admin demotion below and the
+        // per-request tenant scope check further down all read this one lookup. Separate
+        // lookups race a session expiring between them: admitted as admin by the first,
+        // then an absent scope skipped the tenant check. A PAT's synthetic session carries
+        // role "admin" exactly when PatAuthenticator.isAdmin holds.
+        val resolved        = provided.flatMap(sessionOfToken)
+        val sessionAdmin    = resolved.exists(_.profile.role.equalsIgnoreCase("admin"))
+        val tokenScope      = resolved.map(_.scope)
+        val nonAdminSession = resolved.isDefined && !sessionAdmin
 
         val admitted =
           staticMatch || sessionAdmin || (nonAdminSession && isProfileApi(path))
@@ -265,7 +275,7 @@ final class ManagerServer(
             // Audited under the caller's REAL identity (recoverable from the
             // session), so a low-privilege insider sweeping admin endpoints
             // leaves a trail.
-            val caller   = provided.flatMap(sessionOfToken).map(_.profile)
+            val caller   = resolved.map(_.profile)
             val username = caller.map(_.username).getOrElse("unknown")
             // Rate-limited per principal, not per host: the recorder writes
             // synchronously on the request path, so one authenticated session
