@@ -443,7 +443,7 @@ class Agent:
             sys.stderr.write(f"qod agent: server '{self.name}' is waiting for approval on the manager\n")
             sys.stderr.write(f"qod agent:   hint: an admin approves it with `qod fleet approve {self.name}`, "
                              "or adds this server's address to QOD_FLEET_AUTO_APPROVE on the manager\n")
-        elif self.approval == "pending":
+        elif approval == "approved" and self.approval == "pending":
             sys.stderr.write(f"qod agent: server '{self.name}' approved\n")
         self.approval = approval
 

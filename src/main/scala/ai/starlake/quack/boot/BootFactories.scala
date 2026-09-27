@@ -54,15 +54,18 @@ object BootFactories extends LazyLogging:
           stopTimeoutSec = mgrCfg.k8s.stopTimeoutSec
         )
       case "fleet" =>
+        val proxies =
+          val p = mgrCfg.fleet.trustedProxyCidrs
+          if p.isEmpty then "none" else p.mkString(",")
         mgrCfg.fleet.openAutoApproveWarning match
-          case Some(w) => logger.warn(w)
+          case Some(w) => logger.warn(s"$w Trusted proxies: $proxies.")
           case None    =>
             val list = mgrCfg.fleet.autoApproveCidrs
             logger.info(
               "fleet: auto-approve " +
                 (if list.isEmpty then "none (every new server needs `qod fleet approve`)"
                  else list.mkString(",")) +
-                s"; trusted proxies: ${mgrCfg.fleet.trustedProxyCidrs.mkString(",")}"
+                s"; trusted proxies: $proxies"
             )
         new FleetQuackBackend(fleetStore, mgrCfg.fleet)
       case other => sys.error(s"unknown runtime: $other")

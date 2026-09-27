@@ -306,22 +306,23 @@ stays pending and reconcile fills it when a server joins (`MissingSlots`). Silen
 `heartbeatTimeoutSec` = unroutable but kept; past `reassignAfterSec` = dead, respawned elsewhere
 through `claimReplacing` (release the dead holder and claim the replacement in ONE store
 transaction, rolled back when no server qualifies).
-Join approval (Liquibase `0041`): a new server row starts unapproved and the claim query skips it
-(`AND s.approved`), so a pending server never receives an assignment or its credentials. The
+With no free server the dead server keeps its assignment and its node row, so if it returns
+first its agent still runs the node at the same epoch and reconcile adopts it with no restart; a
+drained or removed holder's node goes pending instead. A partial or cancelled spawn rolls back
+the nodes it started (`spawnAll`, `guaranteeCase`). The server holding an assignment is the
+truth for a live node's address and token: reconcile adopts through `QuackBackend.located` and
+rewrites a node row that still names the previous server (a manager that died between the claim
+and the node row write).
+Join approval (Liquibase `0041`): a new server row starts unapproved and the claim query skips
+it (`AND s.approved`), so a pending server never receives an assignment or its credentials. The
 heartbeat handler resolves the client address from the TCP peer (`X-Forwarded-For` only when the
 peer is in `QOD_FLEET_TRUSTED_PROXIES`, walked from the right; unknown never matches) and
 auto-approves when it is in `QOD_FLEET_AUTO_APPROVE` (default `0.0.0.0/0,::/0`, boot WARNs while
-open; empty = none). Pending servers are re-judged every heartbeat, approved ones never; `qod fleet
-approve` / `POST /api/fleet/server/approve` approves by hand; `remove` forgets approval. Existing
-rows were backfilled `approved_by = 'upgrade'`. Design:
+open; empty = none). Pending servers are re-judged every heartbeat, approved ones never; an
+accepted re-address (drained server) resets approval and is judged again; `qod fleet approve` /
+`POST /api/fleet/server/approve` approves by hand; `remove` forgets approval and also accepts a
+live pending server. Existing rows were backfilled `approved_by = 'upgrade'`. Design:
 docs/superpowers/specs/2026-09-26-fleet-join-approval-design.md.
-With no free server the dead server keeps
-its assignment and its node row, so if it returns first its agent still runs the node at the
-same epoch and reconcile adopts it with no restart; a drained or removed holder's node goes
-pending instead. A partial or cancelled spawn rolls back the nodes it started (`spawnAll`,
-`guaranteeCase`). The server holding an assignment is the truth for a live node's address and
-token: reconcile adopts through `QuackBackend.located` and rewrites a node row that still names
-the previous server (a manager that died between the claim and the node row write).
 A known name reporting a new address is refused unless drained (shared-token takeover guard).
 `QOD_FLEET_EPHEMERAL=local` runs maintenance and merge nodes on the manager host instead of a
 fleet server. Manager-to-node is plain HTTP: fleet mode needs a private network. Design:
