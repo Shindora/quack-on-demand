@@ -321,10 +321,15 @@ auto-approves when it is in `QOD_FLEET_AUTO_APPROVE` (default `0.0.0.0/0,::/0`, 
 open; empty = none). Pending servers are re-judged every heartbeat, approved ones never; an
 accepted re-address (drained server) resets approval and is judged again. Approval is bound to the
 source it was granted from (`approved_source`, Liquibase `0042`: the auto-approving heartbeat's, or
-the latest source on an admin approve; an unbound row, e.g. the upgrade backfill, binds to the first
-known source): a heartbeat from another source is refused `409 source_change_refused` with nothing
-written, unless that source is itself in the list (rebind) or the server is drained and unassigned
-(approval reset, judged again). The drain window is closed: no re-address while the row still holds
+the latest source on an admin approve): a heartbeat from another source is refused
+`409 source_change_refused` with nothing written, unless that source is itself in the list (rebind)
+or the server is drained and unassigned (approval reset, judged again). An approved row with no
+binding (the 0042 upgrade leaves every earlier server unbound; not backfilled, since the advertised
+host is agent-reported and differs from the source behind a proxy or NAT) binds only to a known
+source inside the list; from anywhere else it is refused `409 approval_unbound` with nothing
+written, unless drained and unassigned (approval reset, judged again): drain, then approve.
+Admin approve refuses `409 source_unknown` while the server's latest heartbeat has no known source
+(`ApproveResult.SourceUnknown`), so an approval never starts unbound. The drain window is closed: no re-address while the row still holds
 an assignment (drain flips unschedulable, then releases), and the heartbeat never returns an
 assignment to an unapproved row or to a source the row is not bound to. `qod fleet approve` /
 `POST /api/fleet/server/approve` approves by hand; `remove` forgets approval and also accepts a
