@@ -159,7 +159,11 @@ final class FleetHandlers(
               Right(
                 FleetHeartbeatResponse(
                   cfg.heartbeatSec,
-                  row.flatMap(_.assignment).map(FleetHandlers.toDto),
+                  // Only an approved server is ever handed its assignment (which carries the
+                  // node token and pgPassword). A pending row should hold none, but a row can be
+                  // reset to pending while it still holds one (e.g. a re-address racing a
+                  // drain); the reply must not leak it then.
+                  row.filter(_.approved).flatMap(_.assignment).map(FleetHandlers.toDto),
                   approval
                 )
               )

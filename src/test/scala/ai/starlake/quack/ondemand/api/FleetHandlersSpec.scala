@@ -244,6 +244,29 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .map(_.approval) shouldBe Right("approved")
   }
 
+  it should "never hand an assignment to a pending server, even one that holds it" in {
+    val (store, h) = approvalFixture("10.0.0.0/8")
+    h.heartbeat(req(), Some("secret"), addr("192.168.1.5"), None).unsafeRunSync()
+    store.forceAssignment(
+      "srv-1",
+      FleetAssignment(
+        1,
+        "n1",
+        PoolKey("acme", "db", "bi"),
+        21900,
+        "tok",
+        "memory",
+        Map("pgPassword" -> "p"),
+        "",
+        "",
+        "",
+        ""
+      )
+    )
+    h.heartbeat(req(), Some("secret"), addr("192.168.1.5"), None).unsafeRunSync() shouldBe
+      Right(FleetHeartbeatResponse(7, None, "pending"))
+  }
+
   // --- Admin surface (Task 8) ----------------------------------------------------------------
 
   private def adminFixture() =

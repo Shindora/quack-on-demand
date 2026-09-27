@@ -383,6 +383,30 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
         row.approvedBy shouldBe Some("alice")
     }
 
+    it should "refuse a re-address of a drained server that still holds an assignment" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("a", host = "10.0.0.1"))
+        s.claim(assignment("n1"), 30, None).isRight shouldBe true
+        // drain = setUnschedulable then release: a heartbeat landing in between must not move the
+        // server (which would reset its approval while it still holds the node).
+        s.setUnschedulable("a", true)
+        s.recordHeartbeat(hb("a", host = "10.0.0.9", autoApprove = false)) shouldBe
+          HeartbeatOutcome.AddressChangeRefused
+        s.recordHeartbeat(hb("a", port = 21901, autoApprove = false)) shouldBe
+          HeartbeatOutcome.AddressChangeRefused
+        val kept = s.get("a").get
+        (kept.advertiseHost, kept.nodePort) shouldBe ("10.0.0.1", 21900)
+        (kept.approved, kept.approvedBy) shouldBe (true, Some("auto"))
+        kept.assignedNodeId shouldBe Some("n1")
+        s.release("n1") shouldBe Some("a")
+        s.recordHeartbeat(hb("a", host = "10.0.0.9", autoApprove = false)) shouldBe
+          HeartbeatOutcome.Updated
+        val moved = s.get("a").get
+        moved.advertiseHost shouldBe "10.0.0.9"
+        (moved.approved, moved.approvedBy, moved.approvedAt) shouldBe (false, None, None)
+    }
+
     it should "leave approval and sourceAddr untouched on a refused address change" in withStore {
       h =>
         val s = h.store

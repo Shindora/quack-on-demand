@@ -35,6 +35,25 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
       .foreach(r => rows.put(name, r.copy(claimedAt = r.claimedAt.map(_.minusSeconds(seconds)))))
   }
 
+  /** Test hook: write an assignment onto a server whatever its state (the claim guards bypassed),
+    * to pin what the heartbeat reply does with a row that should never hold one.
+    */
+  def forceAssignment(name: String, a: FleetAssignment): Unit = synchronized {
+    rows
+      .get(name)
+      .foreach(r =>
+        rows.put(
+          name,
+          r.copy(
+            assignedNodeId = Some(a.nodeId),
+            assignment = Some(a),
+            assignmentEpoch = a.epoch,
+            claimedAt = Some(clock())
+          )
+        )
+      )
+  }
+
   def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome = synchronized {
     val now = clock()
     rows.get(hb.name) match
@@ -71,11 +90,12 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
         )
         HeartbeatOutcome.Joined
       case Some(r)
-          if !r.unschedulable && (r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort) =>
+          if (!r.unschedulable || r.assignedNodeId.isDefined) &&
+            (r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort) =>
         HeartbeatOutcome.AddressChangeRefused
       case Some(r) =>
-        // Only a drained server gets here with another address (the guard above refuses the
-        // rest); a re-address resets approval so the new address is judged again.
+        // Only a drained, unassigned server gets here with another address (the guard above
+        // refuses the rest); a re-address resets approval so the new address is judged again.
         val readdressed   = r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort
         val keepsApproval = r.approved && !readdressed
         rows.put(

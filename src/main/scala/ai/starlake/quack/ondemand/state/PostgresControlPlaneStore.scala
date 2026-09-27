@@ -1654,25 +1654,19 @@ final class PostgresControlPlaneStore(
         finally rs.close()
       finally sel.close()
     current.map { case (host, port, drained, rowEpoch, assignedNodeId) =>
-      if !joined && !drained && (host != hb.advertiseHost || port != hb.nodePort) then
+      val readdress = !joined && (host != hb.advertiseHost || port != hb.nodePort)
+      // A re-address needs a drained server that holds no assignment. Drain flips unschedulable
+      // THEN releases; a heartbeat landing in between must not move (and un-approve) a server
+      // that still holds a node. The legitimate re-home retries on the next heartbeat.
+      if readdress && (!drained || assignedNodeId.isDefined) then
         HeartbeatOutcome.AddressChangeRefused
+      // 2a. Accepted re-address (drained, unassigned server, new host or port): the approval was
+      // granted to the old address, so it is reset here and the new address is judged by step 2b
+      // on this same heartbeat. Otherwise a token holder outside QOD_FLEET_AUTO_APPROVE could
+      // take over a drained name and inherit its approval. The WHERE re-checks the guard: the
+      // SELECT above took no lock, so an undrain landing in between is refused, not overwritten.
+      else if readdress && !readdressDrained(c, hb) then HeartbeatOutcome.AddressChangeRefused
       else
-        // 2a. Accepted re-address (drained server, new host or port): the approval was granted
-        // to the old address, so it is reset here and the new address is judged by step 2b on
-        // this same heartbeat. Otherwise a token holder outside QOD_FLEET_AUTO_APPROVE could
-        // take over a drained name and inherit its approval.
-        if drained && (host != hb.advertiseHost || port != hb.nodePort) then
-          val addr = c.prepareStatement(
-            """UPDATE qodstate_fleet_server SET advertise_host = ?, node_port = ?,
-              |  approved = false, approved_at = NULL, approved_by = NULL
-              |WHERE name = ?""".stripMargin
-          )
-          try
-            addr.setString(1, hb.advertiseHost)
-            addr.setInt(2, hb.nodePort)
-            addr.setString(3, hb.name)
-            addr.executeUpdate()
-          finally addr.close()
         // 2b. Approval: a server not approved yet is approved when the caller judged this
         // heartbeat's source to be in QOD_FLEET_AUTO_APPROVE; an approved one is never re-judged
         // (a re-address reset by step 2a counts as not approved yet).
@@ -1709,6 +1703,22 @@ final class PostgresControlPlaneStore(
         finally up.close()
         if joined then HeartbeatOutcome.Joined else HeartbeatOutcome.Updated
     }
+
+  /** Step 2a of [[heartbeatOnce]]: move a drained, unassigned server to the heartbeat's address and
+    * reset its approval. False when the row no longer qualifies.
+    */
+  private def readdressDrained(c: Connection, hb: Heartbeat): Boolean =
+    val addr = c.prepareStatement(
+      """UPDATE qodstate_fleet_server SET advertise_host = ?, node_port = ?,
+        |  approved = false, approved_at = NULL, approved_by = NULL
+        |WHERE name = ? AND unschedulable AND assigned_node_id IS NULL""".stripMargin
+    )
+    try
+      addr.setString(1, hb.advertiseHost)
+      addr.setInt(2, hb.nodePort)
+      addr.setString(3, hb.name)
+      addr.executeUpdate() == 1
+    finally addr.close()
 
   override def claim(
       a: FleetAssignment,
