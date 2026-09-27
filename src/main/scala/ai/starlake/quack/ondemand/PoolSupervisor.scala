@@ -1085,7 +1085,7 @@ final class PoolSupervisor(
                       case Left(NoFreeServer(_, _, reason, Some(_))) =>
                         // Fleet, owner policy: the node's server is dead and no other is free.
                         // KEEP the row and the assignment (claimReplacing rolled back, so the
-                        // dead server still holds it): if that server returns first, its agent
+                        // dead server still holds it): if that server returns first, its join process
                         // still runs the node under the same epoch, liveNodeIds lists it again
                         // and the next pass adopts it with no restart. If capacity appears
                         // first, the next respawn's claimReplacing moves it and the returning

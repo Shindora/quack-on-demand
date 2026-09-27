@@ -1688,7 +1688,7 @@ final class PostgresControlPlaneStore(
       else if readdress && !readdressDrained(c, hb) then HeartbeatOutcome.AddressChangeRefused
       // 2c. Source binding of an approved row that keeps its address (see sourceMoved above).
       // Each UPDATE re-checks what the unlocked SELECT saw; a row that changed in between is
-      // refused (the agent retries on its next heartbeat) rather than bound on a stale read.
+      // refused (the server retries on its next heartbeat) rather than bound on a stale read.
       else if !readdress && approved && !bindSource(c, hb, approvedSource, sourceMoved) then
         if unbound then HeartbeatOutcome.ApprovalUnbound else HeartbeatOutcome.SourceChangeRefused
       else
@@ -1868,7 +1868,7 @@ final class PostgresControlPlaneStore(
             |  assignment_epoch = ?, claimed_at = now() WHERE name = ?""".stripMargin
         )
         upd.setString(1, a.nodeId)
-        // Stamp the server's own node_port so the agent never has to remember it.
+        // Stamp the server's own node_port so the join process never has to remember it.
         upd.setString(2, a.copy(epoch = epoch, port = nodePort).asJson.noSpaces)
         upd.setLong(3, epoch); upd.setString(4, name)
         upd.executeUpdate(); upd.close()

@@ -442,7 +442,7 @@ object Main extends IOApp with LazyLogging:
 
     // With HA off the publisher stays a no-op (no NOTIFY, no extra connection), but pool mutations
     // are still serialized per pool, in-process: a scale-down's stop can take seconds (fleet: until
-    // the agent confirms; K8s: until the pod object is gone; local: the process wait), and an
+    // the server confirms; K8s: until the pod object is gone; local: the process wait), and an
     // unserialized reconcile pass in that window reads the node as dead and respawns it on the
     // pre-scale target (a scale to 0 undone, a leaked pod or process plus a stray node row). Same
     // contract as the HA advisory lock, without a database.

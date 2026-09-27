@@ -98,7 +98,7 @@ export default function Servers() {
               <th>Node</th>
               <th>Pool</th>
               <th>State</th>
-              <th>Agent</th>
+              <th>Version</th>
               <th className="actions">Actions</th>
             </tr>
           </thead>
@@ -108,7 +108,7 @@ export default function Servers() {
             ) : servers.length === 0 ? (
               <tr>
                 <td colSpan={9} className="empty">
-                  No server has joined yet. Run <code>qod agent --manager ... --join-token ...</code> on a server.
+                  No server has joined yet. Run <code>qod fleet join --manager ...</code> on a server.
                 </td>
               </tr>
             ) : servers.map(s => {
@@ -180,7 +180,7 @@ export default function Servers() {
                         className="copy-btn"
                         onClick={() => setConfirmRemove(s.name)}
                         disabled={removeDisabled}
-                        title={removeDisabled ? 'Drain first, then stop the agent' : undefined}
+                        title={removeDisabled ? 'Drain first, then stop its qod fleet join process' : undefined}
                       >
                         Remove
                       </button>

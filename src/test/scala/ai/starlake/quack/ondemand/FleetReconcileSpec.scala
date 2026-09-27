@@ -195,10 +195,10 @@ class FleetReconcileSpec extends AnyFlatSpec with Matchers:
     err.getMessage should include("boom")
   }
 
-/** PoolSupervisor over the REAL FleetQuackBackend and InMemoryFleetServerStore, with fake agents
-  * beating from a background ticker, so the supervisor/backend interactions (release-and-claim in
-  * one step, a dead holder kept when nothing is free, drain, remove) run end to end without
-  * Postgres or processes.
+/** PoolSupervisor over the REAL FleetQuackBackend and InMemoryFleetServerStore, with fake fleet
+  * join processes beating from a background ticker, so the supervisor/backend interactions
+  * (release-and-claim in one step, a dead holder kept when nothing is free, drain, remove) run end
+  * to end without Postgres or processes.
   */
 class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
   import ai.starlake.quack.FleetConfig
@@ -241,8 +241,8 @@ class FleetReconcileRealBackendSpec extends AnyFlatSpec with Matchers:
     ): Either[ClaimMiss, FleetServerRow] =
       beforeClaimReplacing(a.nodeId); u.claimReplacing(a, reachableWithinSec, requiredMemoryBytes)
 
-  /** A fake `qod agent`: reports the assignment it holds as running; once unassigned, reports
-    * `stopped` under the epoch and node id it last ran, like the real agent.
+  /** A fake `qod fleet join` process: reports the assignment it holds as running; once unassigned,
+    * reports `stopped` under the epoch and node id it last ran, like the real join process.
     */
   private final class Agent(
       store: FleetServerStore,

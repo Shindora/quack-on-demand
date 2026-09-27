@@ -95,7 +95,7 @@ export interface PoolResponse {
 // ----- Fleet backend: bare-metal / VM servers (QOD_RUNTIME_TYPE=fleet) -----
 
 /** One row of `GET /api/fleet/servers`. A server is a machine running
-  * `qod agent`; `assignedNodeId`/`tenant`/`tenantDb`/`pool` are set only
+  * `qod fleet join`; `assignedNodeId`/`tenant`/`tenantDb`/`pool` are set only
   * while a pool node is scheduled onto it. */
 export interface FleetServer {
   name: string;
@@ -120,7 +120,7 @@ export interface FleetServer {
   approval: 'approved' | 'pending';
   approvedBy?: string | null;
   approvedAt?: string | null;
-  /** Address the latest heartbeat came from, resolved by the manager (not agent-reported). */
+  /** Address the latest heartbeat came from, resolved by the manager (not self-reported). */
   sourceAddr?: string | null;
   /** Source address an approved server is bound to; null while pending or not yet bound. */
   approvedSource?: string | null;

@@ -296,7 +296,7 @@ final case class SetMaxConcurrentRequest(
 )
 final case class NodeOpRequest(tenant: String, tenantDb: String, pool: String, nodeId: String)
 
-/** Fleet agent heartbeat (POST /api/fleet/heartbeat). `state` is one of none | starting | running
+/** Fleet heartbeat from `qod fleet join` (POST /api/fleet/heartbeat). `state` is one of none | starting | running
   * | failed | stopped; `startedAt` is ISO-8601.
   */
 final case class FleetNodeReportDto(

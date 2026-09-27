@@ -38,9 +38,9 @@ final case class FleetNodeFailed(server: String, nodeId: String, error: String)
     extends RuntimeException(s"fleet server $server reports $nodeId failed: $error")
 
 /** Quack nodes on a dynamically joining fleet of servers, one node per server. Servers are rows in
-  * qodstate_fleet_server kept fresh by `qod agent` heartbeats in qodstate_fleet_heartbeat; this
-  * backend only claims and releases assignments and waits for the agent's report. Liveness always
-  * comes from the store's clock (`FleetServerRow.silentSeconds`), so HA replicas agree; the
+  * qodstate_fleet_server kept fresh by `qod fleet join` heartbeats in qodstate_fleet_heartbeat;
+  * this backend only claims and releases assignments and waits for the server's report. Liveness
+  * always comes from the store's clock (`FleetServerRow.silentSeconds`), so HA replicas agree; the
   * injected `clock` is only for this JVM's own deadlines. Design:
   * docs/superpowers/specs/2026-09-25-fleet-backend-design.md.
   */
@@ -97,8 +97,8 @@ final class FleetQuackBackend(
     //   - on NoFreeServer the holder keeps its assignment (owner policy), so a dead server that
     //     returns before capacity appears resumes its node without a restart;
     //   - a reachable, schedulable stale holder (a crash orphan) is re-claimed in place under a
-    //     new epoch and token, and its agent restarts the node on the new assignment identity;
-    //   - otherwise the holder's agent sees no assignment on its next heartbeat and stops its node.
+    //     new epoch and token, and its join process restarts the node on the new assignment identity;
+    //   - otherwise the holder's join process sees no assignment on its next heartbeat and stops its node.
     // Releasing first also keeps the unique assigned_node_id from refusing the claim.
     // Claim and arm the release atomically: a cancellation between the claim and the guarantee
     // would otherwise leak a claimed server. Every non-success outcome after the claim (error,
@@ -242,7 +242,7 @@ final class FleetQuackBackend(
     *   - a `running` crash orphan is owned by the reconcile's missing-slot fill: the supervisor
     *     starts the slot's node id again and `start` (through `claimReplacing`) releases the holder
     *     and claims in one transaction: a reachable orphan is re-claimed in place under a new epoch
-    *     (its agent restarts the node), otherwise the orphan's agent stops its node.
+    *     (its join process restarts the node), otherwise the orphan's join process stops its node.
     */
   def discoverExisting(): IO[List[RunningNode]] = IO.blocking {
     store.list().foreach { r =>

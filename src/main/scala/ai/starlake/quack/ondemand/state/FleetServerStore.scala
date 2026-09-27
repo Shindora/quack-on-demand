@@ -5,7 +5,9 @@ import io.circe.Codec
 import io.circe.generic.semiauto.deriveCodec
 import java.time.Instant
 
-/** What an agent must run. Serialised as JSONB in qodstate_fleet_server.assignment. */
+/** What a server's `qod fleet join` process must run. Serialised as JSONB in
+  * qodstate_fleet_server.assignment.
+  */
 final case class FleetAssignment(
     epoch: Long,
     nodeId: String,
@@ -67,7 +69,7 @@ final case class FleetServerRow(
     approved: Boolean,
     approvedAt: Option[Instant],
     approvedBy: Option[String],
-    // The resolved client address of the latest heartbeat, never the agent-reported one.
+    // The resolved client address of the latest heartbeat, never the self-reported one.
     sourceAddr: Option[String],
     // The resolved source an approved server is bound to (Liquibase 0042): the heartbeat that
     // auto-approved it, or the latest source when an admin approved it. None while pending, and
@@ -75,7 +77,7 @@ final case class FleetServerRow(
     approvedSource: Option[String]
 )
 
-/** Heartbeat upsert input: everything the agent reports. */
+/** Heartbeat upsert input: everything the join process reports. */
 final case class Heartbeat(
     name: String,
     advertiseHost: String,
@@ -204,14 +206,15 @@ trait FleetServerStore:
 object FleetServerStore:
   /** The stale rule both implementations share: a `none` or `stopped` report is stored as is; any
     * other report is stored as `stale` unless both its epoch and its node id match the server
-    * row's. The node id matters because epochs restart at 0 after `delete` + re-join, so an agent
+    * row's. The node id matters because epochs restart at 0 after `delete` + re-join, so a server
     * still running a pre-delete node could otherwise match a fresh assignment's epoch.
     *
-    * `stopped` is exempt because the agent confirms a stop under the epoch and node id of the node
-    * it stopped, while `release` has already bumped the row's epoch and cleared its node id: judged
-    * stale, a stop confirmation could never be seen and every manager-driven stop would run out
-    * `stopTimeoutSec`. It is safe: nothing waiting on a claim accepts `stopped` (only `running` and
-    * `failed` answer a claim), so a late stop confirmation can never satisfy a newer assignment.
+    * `stopped` is exempt because the join process confirms a stop under the epoch and node id of
+    * the node it stopped, while `release` has already bumped the row's epoch and cleared its node
+    * id: judged stale, a stop confirmation could never be seen and every manager-driven stop would
+    * run out `stopTimeoutSec`. It is safe: nothing waiting on a claim accepts `stopped` (only
+    * `running` and `failed` answer a claim), so a late stop confirmation can never satisfy a newer
+    * assignment.
     */
   def effectiveState(node: NodeReport, rowEpoch: Long, assignedNodeId: Option[String]): String =
     if node.state == "none" || node.state == "stopped" then node.state

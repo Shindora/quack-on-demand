@@ -29,30 +29,30 @@ import scala.sys.process.{Process, ProcessLogger}
 import scala.util.Try
 
 /** End-to-end smoke of the fleet backend: a real manager booted in-process with
-  * `runtimeType = fleet`, a real `qod agent` (run from the CLI checkout through `uv run`), a real
-  * DuckDB node spawned by that agent, and a real FlightSQL statement routed to it.
+  * `runtimeType = fleet`, a real `qod fleet join` (run from the CLI checkout through `uv run`), a
+  * real DuckDB node spawned by that join process, and a real FlightSQL statement routed to it.
   *
   * Steps (each one timed and printed):
   *   1. boot the manager on 20950 (REST) / 31350 (FlightSQL, plain gRPC), native front door off,
   *      against a throwaway control-plane database;
   *   2. create tenant acme, a memory database, pool bi of size 1: the pool is pending (no server);
-  *   3. start the agent (server s1, node port 23100), joins pending approval (autoApprove is
+  *   3. start the join process (server s1, node port 23100), joins pending approval (autoApprove is
   *      empty), is approved over REST,
   *   4. the pending slot fills: one node, served by s1, s1 reachable and running;
   *   5. `SELECT 42` through the FlightSQL edge;
   *   6. drain s1: the slot goes pending, s1 keeps no assignment;
   *   7. undrain s1: the node comes back on s1;
-  *   8. SIGKILL the agent (the node survives it), restart the agent: it reaps the orphan through
+  *   8. SIGKILL the join process (the node survives it), restart it: it reaps the orphan through
   *      its pidfile and the node comes back on s1, capacity reported; 8b. scale the pool to 0 and
   *      back to 1: the scale-down returns in seconds, well under `stopTimeoutSec` (60 s here),
-  *      because the agent's stop confirmation is seen; 8c. SIGSTOP the agent past the reassign
-  *      window with no other server: s1 keeps its assignment (same epoch) and the node row, the
-  *      pool reports no pending slot but `none_free`; SIGCONT: the SAME node (same epoch, same pid)
-  *      is adopted and the pool serves again without a restart;
-  *   9. SIGTERM the agent: its node stops; after the reassign window the node row and s1's
+  *      because the join process's stop confirmation is seen; 8c. SIGSTOP the join process past the
+  *      reassign window with no other server: s1 keeps its assignment (same epoch) and the node
+  *      row, the pool reports no pending slot but `none_free`; SIGCONT: the SAME node (same epoch,
+  *      same pid) is adopted and the pool serves again without a restart;
+  *   9. SIGTERM the join process: its node stops; after the reassign window the node row and s1's
   *      assignment are kept (no other server is free), `none_free` reported;
-  *   10. teardown (afterAll, also on failure, timed): agent and node processes, manager fiber,
-  *       database.
+  *   10. teardown (afterAll, also on failure, timed): join process and node processes, manager
+  *       fiber, database.
   *
   * Cancelled (not failed) when `duckdb` or `uv` is not on PATH, when the CLI checkout has no `cli/`
   * directory, or when the test Postgres (SL_TEST_PG_* envs) is unreachable. Never touches the
@@ -94,9 +94,9 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
   private var stateDir: Path                                             = null
   private var manager: FiberIO[Either[Throwable, ExitCode]]              = null
   @volatile private var bootOutcome: Option[Either[Throwable, ExitCode]] = None
-  private var agent: Option[Process]                                     = None
-  private var agentUv: Option[ProcessHandle]                             = None
-  // Every node pid the agents recorded, so teardown can kill their process groups.
+  private var joinProc: Option[Process]                                  = None
+  private var joinUv: Option[ProcessHandle]                              = None
+  // Every node pid the join processes recorded, so teardown can kill their process groups.
   private val nodePids = scala.collection.mutable.Set.empty[Long]
   // Set by the first failing step: later steps cancel instead of piling up follow-on failures.
   @volatile private var broken: Option[String] = None
@@ -197,14 +197,15 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
   private def str(j: Json, field: String): Option[String] =
     j.hcursor.get[Option[String]](field).toOption.flatten
 
-  // ---------------------------------------------------------------- agent
+  // ---------------------------------------------------------------- join
 
-  private def startAgent(): Unit =
+  private def startJoin(): Unit =
     val cmd = Seq(
       "uv",
       "run",
       "qod",
-      "agent",
+      "fleet",
+      "join",
       "--manager",
       s"http://127.0.0.1:$RestPort",
       "--name",
@@ -224,14 +225,14 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     // in `ps`.
     val before = uvChildren()
     val p      = Process(cmd, cliDir, "VIRTUAL_ENV" -> "", "QOD_FLEET_JOIN_TOKEN" -> JoinToken)
-      .run(ProcessLogger(l => println(s"[agent] $l"), l => println(s"[agent] $l")))
-    agent = Some(p)
+      .run(ProcessLogger(l => println(s"[join] $l"), l => println(s"[join] $l")))
+    joinProc = Some(p)
     // The scala Process API exposes no pid: find the new `uv` child of this JVM.
-    agentUv = Some(await("the agent's uv launcher", 10.seconds) {
+    joinUv = Some(await("the join process's uv launcher", 10.seconds) {
       (uvChildren() -- before).headOption.flatMap(pid => ProcessHandle.of(pid).toScala)
     })
-    // And its python child, the agent proper, which is what the signals must reach.
-    await("the agent process under uv", 30.seconds)(agentHandles().headOption)
+    // And its python child, the join process proper, which is what the signals must reach.
+    await("the join process under uv", 30.seconds)(joinHandles().headOption)
 
   private def pidfile: Path = stateDir.resolve("node.pid")
 
@@ -251,13 +252,14 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
       .map(_.pid())
       .toSet
 
-  /** The `uv` launcher and its descendants (the python agent, and the node while it lives). */
-  private def agentTree(): List[ProcessHandle] =
-    agentUv.toList.flatMap(h => h :: h.descendants().iterator().asScala.toList)
+  /** The `uv` launcher and its descendants (the python join process, and the node while it lives).
+    */
+  private def joinTree(): List[ProcessHandle] =
+    joinUv.toList.flatMap(h => h :: h.descendants().iterator().asScala.toList)
 
-  /** The agent process itself: the direct child of `uv`. */
-  private def agentHandles(): List[ProcessHandle] =
-    agentUv.toList.flatMap(_.children().iterator().asScala.toList)
+  /** The join process itself: the direct child of `uv`. */
+  private def joinHandles(): List[ProcessHandle] =
+    joinUv.toList.flatMap(_.children().iterator().asScala.toList)
 
   private def alive(pid: Long): Boolean = ProcessHandle.of(pid).toScala.exists(_.isAlive)
 
@@ -268,10 +270,10 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
   private def signal(sig: String, pid: Long): Unit =
     Process(Seq("kill", s"-$sig", pid.toString)).!(ProcessLogger(_ => ())) shouldBe 0
 
-  private def awaitAgentGone(): Unit =
-    await("the agent process to exit")(Option.when(agent.forall(!_.isAlive()))(()))
-    agent = None
-    agentUv = None
+  private def awaitJoinGone(): Unit =
+    await("the join process to exit")(Option.when(joinProc.forall(!_.isAlive()))(()))
+    joinProc = None
+    joinUv = None
 
   // ---------------------------------------------------------------- manager
 
@@ -399,17 +401,17 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     println(f"[fleet-smoke] ${"10 teardown"}%-40s ${(System.nanoTime() - t0) / 1_000_000}%6d ms")
 
   private def teardown(): Unit =
-    // Agents first (TERM, then KILL whatever is left of the tree), then every node group the
+    // Join processes first (TERM, then KILL whatever is left of the tree), then every node group the
     // pidfiles named, then the manager fiber, then the database. Each stage is guarded so one
-    // failure cannot skip the next. A frozen agent (step 8c failing mid-way) is thawed first.
-    Try(agentHandles().foreach(h => signal("CONT", h.pid())))
-    Try(agentHandles().foreach(_.destroy()))
+    // failure cannot skip the next. A frozen join process (step 8c failing mid-way) is thawed first.
+    Try(joinHandles().foreach(h => signal("CONT", h.pid())))
+    Try(joinHandles().foreach(_.destroy()))
     Try {
       val deadline = System.nanoTime() + 15.seconds.toNanos
-      while agent.exists(_.isAlive()) && System.nanoTime() < deadline do Thread.sleep(200)
+      while joinProc.exists(_.isAlive()) && System.nanoTime() < deadline do Thread.sleep(200)
     }
-    Try(agentTree().foreach(_.destroyForcibly()))
-    Try(agent.foreach(_.destroy()))
+    Try(joinTree().foreach(_.destroyForcibly()))
+    Try(joinProc.foreach(_.destroy()))
     Try(recordNodePid())
     nodePids.foreach(pid => Try(killGroup(pid)))
     Try(Option(manager).foreach(_.cancel.timeout(60.seconds).unsafeRunSync()))
@@ -440,10 +442,10 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     p.reason shouldBe Some("none_free")
   }
 
-  "fleet smoke 3+4" should "fill the slot once the agent joins" in step(
-    "3-4 agent joins, slot fills"
+  "fleet smoke 3+4" should "fill the slot once the server joins" in step(
+    "3-4 server joins, slot fills"
   ) {
-    startAgent()
+    startJoin()
     // autoApprove is empty here: the server joins pending and takes no node until approved.
     await("s1 joined, pending approval") {
       server().filter(s => str(s, "approval").contains("pending"))
@@ -493,16 +495,16 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     recordNodePid() should not be empty
   }
 
-  "fleet smoke 8" should "reap the orphan node when a killed agent restarts" in step(
-    "8 SIGKILL agent, restart, reap"
+  "fleet smoke 8" should "reap the orphan node when a killed join process restarts" in step(
+    "8 SIGKILL join process, restart, reap"
   ) {
     val orphan = recordNodePid().getOrElse(fail("no node pidfile before the crash"))
-    // SIGKILL the agent and its uv launcher only: the node leads its own session and survives.
-    agentHandles().foreach(_.destroyForcibly())
-    agentUv.foreach(_.destroyForcibly())
-    awaitAgentGone()
+    // SIGKILL the join process and its uv launcher only: the node leads its own session and survives.
+    joinHandles().foreach(_.destroyForcibly())
+    joinUv.foreach(_.destroyForcibly())
+    awaitJoinGone()
     alive(orphan) shouldBe true
-    startAgent()
+    startJoin()
     await("orphan node reaped")(Option.when(!alive(orphan))(()))
     val node = await("node running on s1 after the restart") {
       val p = pool()
@@ -541,7 +543,7 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
       val p = pool()
       Option.when(p.nodes.isEmpty && p.pending == 0)(())
     }
-    await("node process stopped by the agent")(Option.when(!alive(before))(()))
+    await("node process stopped by the join process")(Option.when(!alive(before))(()))
     server().flatMap(str(_, "assignedNodeId")) shouldBe None
     scale(1)
     val node = await("node back at size 1") {
@@ -555,20 +557,20 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     recordNodePid() should not be empty
   }
 
-  "fleet smoke 8c" should "keep a frozen server's node with no other server free and adopt it once the agent thaws" in step(
-    "8c SIGSTOP agent past reassign window"
+  "fleet smoke 8c" should "keep a frozen server's node with no other server free and adopt it once the join process thaws" in step(
+    "8c SIGSTOP join process past reassign window"
   ) {
-    val agentPid   = agentHandles().headOption.map(_.pid()).getOrElse(fail("no agent process"))
+    val joinPid    = joinHandles().headOption.map(_.pid()).getOrElse(fail("no join process"))
     val frozenNode = recordNodePid().getOrElse(fail("no node pidfile before the freeze"))
     val nodeId     = pool().nodes.headOption
       .flatMap(str(_, "nodeId"))
       .getOrElse(fail("no node before the freeze"))
     val epoch = serverEpoch()
-    signal("STOP", agentPid)
+    signal("STOP", joinPid)
     try
       // reassignAfterSec = 10, reconcile every 2 s: s1 goes dead, the respawn finds no free
       // server and keeps the node on s1 (owner policy), reporting none_free.
-      await("s1 dead while the agent is frozen") {
+      await("s1 dead while the join process is frozen") {
         server().filter(s => str(s, "liveness").contains("dead"))
       }
       await("none_free reported for the kept node") {
@@ -580,8 +582,8 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
       server().flatMap(str(_, "assignedNodeId")) shouldBe Some(nodeId)
       serverEpoch() shouldBe epoch
       alive(frozenNode) shouldBe true // the node itself never froze
-    finally signal("CONT", agentPid)
-    // The thawed agent still holds the same assignment: the node is adopted, not restarted.
+    finally signal("CONT", joinPid)
+    // The thawed join process still holds the same assignment: the node is adopted, not restarted.
     await("s1 reachable and running its node again") {
       server().filter(s =>
         str(s, "liveness").contains("reachable") && str(s, "nodeState").contains("running")
@@ -602,14 +604,14 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     alive(frozenNode) shouldBe true
   }
 
-  "fleet smoke 9" should "stop the node and keep its row on the dead server when the agent is stopped" in step(
-    "9 SIGTERM agent, reassign window"
+  "fleet smoke 9" should "stop the node and keep its row on the dead server when the join process is stopped" in step(
+    "9 SIGTERM join process, reassign window"
   ) {
     val nodePid = recordNodePid().getOrElse(fail("no node pidfile before the stop"))
     val nodeId  = pool().nodes.headOption.flatMap(str(_, "nodeId")).getOrElse(fail("no node"))
-    agentHandles().foreach(_.destroy()) // SIGTERM: the agent stops its node on the way out
-    awaitAgentGone()
-    await("node process stopped with the agent")(Option.when(!alive(nodePid))(()))
+    joinHandles().foreach(_.destroy()) // SIGTERM: the join process stops its node on the way out
+    awaitJoinGone()
+    await("node process stopped with the join process")(Option.when(!alive(nodePid))(()))
     await("s1 dead after the reassign window") {
       server().filter(s => str(s, "liveness").contains("dead"))
     }

@@ -25,9 +25,9 @@ import java.security.MessageDigest
 import java.time.Instant
 import scala.util.Try
 
-/** Fleet agent surface. The heartbeat is machine-to-machine: `X-Fleet-Token` is the credential
-  * (constant-time compare against the join token), never a session or API key. No clock here: every
-  * timestamp is the store's.
+/** Fleet surface. The heartbeat (from `qod fleet join`) is machine-to-machine: `X-Fleet-Token` is
+  * the credential (constant-time compare against the join token), never a session or API key. No
+  * clock here: every timestamp is the store's.
   *
   * The admin server endpoints (list / drain / undrain / remove / approve) are superuser or static
   * key only and answer `400 fleet_disabled` when `backend` is None (runtimeType is not fleet).
@@ -196,7 +196,7 @@ final class FleetHandlers(
             }
         }
       // A store error (e.g. the server deleted concurrently, after the store's retry) must not
-      // become a bodyless 500: answer 502 backend_error; the agent retries.
+      // become a bodyless 500: answer 502 backend_error; the server retries.
       storeErrorTo502(s"heartbeat of '${req.name}'")(_ => ())(record)
 
   // --- Admin surface ---------------------------------------------------------------------------
@@ -320,10 +320,10 @@ final class FleetHandlers(
       }
     }
 
-  /** Refused while an approved server is reachable and still schedulable: a live agent would
+  /** Refused while an approved server is reachable and still schedulable: a live join process would
     * re-register on its next heartbeat and could be holding a node. A pending server holds no node
-    * by construction, so it can be removed at any time (its agent re-joins as pending unless it is
-    * stopped).
+    * by construction, so it can be removed at any time (its join process re-joins as pending unless
+    * it is stopped).
     */
   def remove(req: FleetServerOpRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
@@ -334,7 +334,7 @@ final class FleetHandlers(
         fail(
           StatusCode.Conflict,
           "server_active",
-          "drain the server and stop its agent before removing it"
+          "drain the server and stop its qod fleet join process before removing it"
         )
       else IO.blocking(store.delete(row.name)).as(Right(()))
     }
