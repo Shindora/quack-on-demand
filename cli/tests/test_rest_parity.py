@@ -37,7 +37,7 @@ EXCLUSIONS = {
     "/api/scim/v2/{tenant}/ServiceProviderConfig",
     "/api/scim/v2/{tenant}/ResourceTypes",
     "/api/scim/v2/{tenant}/Schemas",
-    # machine-to-machine: qod agent
+    # machine-to-machine: qod fleet join (not a REST command, no @covers)
     "/api/fleet/heartbeat",
 }
 

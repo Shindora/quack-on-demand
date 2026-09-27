@@ -95,10 +95,6 @@ from .commands import fleet  # noqa: E402
 
 app.add_typer(fleet.app, name="fleet")
 
-from .commands import agent as agent_cmd  # noqa: E402
-
-app.command("agent")(agent_cmd.agent)
-
 from .commands import group, membership, role, user  # noqa: E402
 
 app.add_typer(user.app, name="user")

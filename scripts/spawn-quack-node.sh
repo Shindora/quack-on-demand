@@ -351,7 +351,7 @@ if [[ -n "${lockdownSql:-}" ]]; then
 fi
 
 # QOD_NODE_BIND: interface the node listens on. 0.0.0.0 keeps local and K8s nodes unchanged; the
-# fleet agent passes the server's advertised data interface so a node never listens on a
+# fleet join process passes the server's advertised data interface so a node never listens on a
 # management NIC by accident.
 NODE_BIND="${QOD_NODE_BIND:-0.0.0.0}"
 INIT_SQL+="CALL quack_serve('quack:${NODE_BIND}:$PORT', token := '$TOKEN', allow_other_hostname := true);"$'\n'

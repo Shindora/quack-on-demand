@@ -67,3 +67,13 @@ def test_node_list_flattens_pools_with_a_server_column(monkeypatch):
     assert rows[0]["tenant"] == "acme" and rows[0]["db"] == "acme_tpch" and rows[0]["pool"] == "bi"
     table = runner.invoke(app, ["node", "list", "--tenant", "acme"])
     assert table.exit_code == 0 and "s2" in table.output and "globex" not in table.output
+
+
+def test_fleet_join_is_a_fleet_subcommand_and_agent_is_gone():
+    help_out = runner.invoke(app, ["fleet", "join", "--help"])
+    assert help_out.exit_code == 0, help_out.output
+    assert "--manager" in help_out.output and "--join-token" in help_out.output
+    assert "join" in runner.invoke(app, ["fleet", "--help"]).output
+    # No alias: the pre-rename top-level command must not exist.
+    old = runner.invoke(app, ["agent", "--help"])
+    assert old.exit_code != 0
