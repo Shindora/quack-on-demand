@@ -277,14 +277,17 @@ final class FleetHandlers(
         IO.delay(publish.topologyChanged()).as(Right(()))
     }
 
-  /** Refused while the server is reachable and still schedulable: a live agent would re-register on
-    * its next heartbeat and could be holding a node.
+  /** Refused while an approved server is reachable and still schedulable: a live agent would
+    * re-register on its next heartbeat and could be holding a node. A pending server holds no node
+    * by construction, so it can be removed at any time (its agent re-joins as pending unless it is
+    * stopped).
     */
   def remove(req: FleetServerOpRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[Unit] =
     serverOp(req, apiKey, AuditActions.FleetRemove)(scopeOf) { (b, row) =>
-      if b.livenessOf(row) == ServerLiveness.Reachable && !row.unschedulable then
+      if row.approved && b.livenessOf(row) == ServerLiveness.Reachable && !row.unschedulable
+      then
         fail(
           StatusCode.Conflict,
           "server_active",

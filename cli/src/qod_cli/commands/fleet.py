@@ -30,7 +30,7 @@ def undrain(ctx: typer.Context, name: str = typer.Argument(...)):
 @app.command()
 @covers("POST", "/api/fleet/server/remove", {"name": "NAME"})
 def remove(ctx: typer.Context, name: str = typer.Argument(...)):
-    """Forget a drained or unreachable server (stop its agent first)."""
+    """Forget a server: a pending one at any time, an approved one once drained or unreachable (stop its agent, or it re-joins)."""
     call(ctx, "POST", "/api/fleet/server/remove", body={"name": name})
 
 

@@ -334,6 +334,28 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     store.get("a") shouldBe None
   }
 
+  it should "remove a reachable, schedulable server that is still pending" in {
+    val (store, h) = adminFixture()
+    store.recordHeartbeat(
+      Heartbeat(
+        "p",
+        "10.0.0.1",
+        21900,
+        None,
+        None,
+        None,
+        None,
+        None,
+        NodeReport(0, None, "none", None, None, None),
+        sourceAddr = Some("10.0.0.1"),
+        autoApprove = false
+      )
+    )
+    store.get("p").get.unschedulable shouldBe false
+    h.remove(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync() shouldBe Right(())
+    store.get("p") shouldBe None
+  }
+
   it should "400 fleet_disabled when the backend is not the fleet one" in {
     val h = new FleetHandlers(
       new InMemoryFleetServerStore(),
@@ -371,7 +393,7 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync() shouldBe Right(())
     val row = store.get("p").get
     row.approved shouldBe true
-    row.approvedBy should not be empty
+    row.approvedBy shouldBe Some("static-key")
     h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync() shouldBe Right(())
     h.approve(FleetServerOpRequest("ghost"), Some("k"))(superuser)
       .unsafeRunSync()
