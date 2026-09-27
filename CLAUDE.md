@@ -132,7 +132,10 @@ helper every alias-derivation site goes through; the spawn scripts honour
 merge (fast-forward only, approver != proposer, one `BEGIN ... COMMIT` batch on an
 ephemeral `__merge` node with the branch attached as `qod_branch`, located
 afterwards by its unique commit message, tagged `merge-<branch>-<id8>`, then torn
-down) / discard / TTL expiry (`BranchWiring` sweep, leader-gated). Change sets
+down; `MergeFence` holds that commit to the validated main snapshot through a
+trigger on `ducklake_snapshot_changes` in the parent catalog DB, schema
+`qod_merge_fence`, because DuckLake's own conflict check misses main writes that
+land before the merge's first read or into a table the merge drops) / discard / TTL expiry (`BranchWiring` sweep, leader-gated). Change sets
 come from `BranchChanges` (pure, over `ducklake_snapshot_changes` verbs; flush
 artifacts are not touches). `PinnedSetResolver` pins every live branch's fork
 snapshot; the maintenance scheduler skips branch rows; `deleteTenantDb` refuses a
