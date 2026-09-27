@@ -112,7 +112,9 @@ trait FleetServerStore:
     *
     * A new server row starts unapproved; `hb.autoApprove` approves it (`approved_by = auto`), on
     * the join or on any later heartbeat while it is still pending. An approved server is never
-    * re-judged.
+    * re-judged at its address. An accepted re-address (a drained server reporting a different
+    * advertise host or node port) resets approval (approved, approvedAt and approvedBy cleared)
+    * before `hb.autoApprove` applies, so the new address is judged on that same heartbeat.
     */
   def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome
 

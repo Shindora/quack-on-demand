@@ -1657,9 +1657,15 @@ final class PostgresControlPlaneStore(
       if !joined && !drained && (host != hb.advertiseHost || port != hb.nodePort) then
         HeartbeatOutcome.AddressChangeRefused
       else
+        // 2a. Accepted re-address (drained server, new host or port): the approval was granted
+        // to the old address, so it is reset here and the new address is judged by step 2b on
+        // this same heartbeat. Otherwise a token holder outside QOD_FLEET_AUTO_APPROVE could
+        // take over a drained name and inherit its approval.
         if drained && (host != hb.advertiseHost || port != hb.nodePort) then
           val addr = c.prepareStatement(
-            "UPDATE qodstate_fleet_server SET advertise_host = ?, node_port = ? WHERE name = ?"
+            """UPDATE qodstate_fleet_server SET advertise_host = ?, node_port = ?,
+              |  approved = false, approved_at = NULL, approved_by = NULL
+              |WHERE name = ?""".stripMargin
           )
           try
             addr.setString(1, hb.advertiseHost)
@@ -1668,7 +1674,8 @@ final class PostgresControlPlaneStore(
             addr.executeUpdate()
           finally addr.close()
         // 2b. Approval: a server not approved yet is approved when the caller judged this
-        // heartbeat's source to be in QOD_FLEET_AUTO_APPROVE; an approved one is never re-judged.
+        // heartbeat's source to be in QOD_FLEET_AUTO_APPROVE; an approved one is never re-judged
+        // (a re-address reset by step 2a counts as not approved yet).
         if hb.autoApprove then
           val ap = c.prepareStatement(
             """UPDATE qodstate_fleet_server SET approved = true, approved_at = now(),

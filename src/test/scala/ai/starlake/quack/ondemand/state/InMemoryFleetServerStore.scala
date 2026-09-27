@@ -74,6 +74,10 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
           if !r.unschedulable && (r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort) =>
         HeartbeatOutcome.AddressChangeRefused
       case Some(r) =>
+        // Only a drained server gets here with another address (the guard above refuses the
+        // rest); a re-address resets approval so the new address is judged again.
+        val readdressed   = r.advertiseHost != hb.advertiseHost || r.nodePort != hb.nodePort
+        val keepsApproval = r.approved && !readdressed
         rows.put(
           hb.name,
           r.copy(
@@ -90,9 +94,10 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             nodeError = hb.node.error,
             nodePid = hb.node.pid,
             nodeStartedAt = hb.node.startedAt,
-            approved = r.approved || hb.autoApprove,
-            approvedAt = if r.approved then r.approvedAt else Option.when(hb.autoApprove)(now),
-            approvedBy = if r.approved then r.approvedBy else Option.when(hb.autoApprove)("auto"),
+            approved = keepsApproval || hb.autoApprove,
+            approvedAt = if keepsApproval then r.approvedAt else Option.when(hb.autoApprove)(now),
+            approvedBy =
+              if keepsApproval then r.approvedBy else Option.when(hb.autoApprove)("auto"),
             sourceAddr = hb.sourceAddr
           )
         )

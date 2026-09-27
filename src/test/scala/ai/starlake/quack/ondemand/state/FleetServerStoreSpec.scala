@@ -338,6 +338,62 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       s.recordHeartbeat(hb("a", autoApprove = false)) shouldBe HeartbeatOutcome.Joined
       s.get("a").get.approved shouldBe false
     }
+
+    it should "judge again a drained server that re-addresses" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("a", host = "10.0.0.1")) shouldBe HeartbeatOutcome.Joined
+      s.get("a").get.approved shouldBe true
+      s.setUnschedulable("a", true) shouldBe true
+      s.recordHeartbeat(hb("a", host = "10.0.0.9", autoApprove = false)) shouldBe
+        HeartbeatOutcome.Updated
+      val moved = s.get("a").get
+      moved.advertiseHost shouldBe "10.0.0.9"
+      moved.approved shouldBe false
+      moved.approvedBy shouldBe None
+      moved.approvedAt shouldBe None
+      s.recordHeartbeat(hb("a", host = "10.0.0.9", autoApprove = true)) shouldBe
+        HeartbeatOutcome.Updated
+      val again = s.get("a").get
+      again.approved shouldBe true
+      again.approvedBy shouldBe Some("auto")
+    }
+
+    it should "judge again a drained server that changes only its node port" in withStore { h =>
+      val s = h.store
+      s.recordHeartbeat(hb("a"))
+      s.setUnschedulable("a", true)
+      s.recordHeartbeat(hb("a", port = 21901, autoApprove = false)) shouldBe
+        HeartbeatOutcome.Updated
+      val moved = s.get("a").get
+      moved.nodePort shouldBe 21901
+      moved.approved shouldBe false
+      moved.approvedBy shouldBe None
+      moved.approvedAt shouldBe None
+    }
+
+    it should "keep the approval (and admin approver) of a drained server at its unchanged address" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("a", autoApprove = false))
+        s.approve("a", "alice") shouldBe true
+        s.setUnschedulable("a", true)
+        s.recordHeartbeat(hb("a", autoApprove = false)) shouldBe HeartbeatOutcome.Updated
+        val row = s.get("a").get
+        row.approved shouldBe true
+        row.approvedBy shouldBe Some("alice")
+    }
+
+    it should "leave approval and sourceAddr untouched on a refused address change" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("a", source = Some("10.0.0.1")))
+        s.recordHeartbeat(
+          hb("a", host = "10.0.0.9", autoApprove = false, source = Some("10.0.0.9"))
+        ) shouldBe HeartbeatOutcome.AddressChangeRefused
+        val row = s.get("a").get
+        row.approved shouldBe true
+        row.sourceAddr shouldBe Some("10.0.0.1")
+    }
 }
 
 class InMemoryFleetServerStoreSpec extends AnyFlatSpec with Matchers with FleetServerStoreBehaviour:
