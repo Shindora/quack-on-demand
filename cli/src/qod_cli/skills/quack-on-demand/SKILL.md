@@ -1601,14 +1601,17 @@ from the balancer. Removing a server forgets its approval. To refuse a server,
 that comes back from a new address loses its approval and is judged again.
 An approval is bound to the address it was approved from, so an approved server heartbeating from
 another machine gets `source_change_refused`; to move one, `qod fleet drain <name>`, start the
-agent on the new machine and let it re-join, then `qod fleet approve <name>` (a new address inside
-`QOD_FLEET_AUTO_APPROVE` is accepted without this).
+agent on the new machine and let it re-join, `qod fleet approve <name>` once it shows as pending,
+then `qod fleet undrain <name>` (a new address inside `QOD_FLEET_AUTO_APPROVE` is accepted without
+this).
 After an upgrade, servers approved before the manager recorded source addresses bind to the first
 heartbeat from inside `QOD_FLEET_AUTO_APPROVE`; if you narrow the list, those outside it get
-`approval_unbound` (their heartbeats are refused) until you run `qod fleet drain <name>`, then
-`qod fleet approve <name>` once (it shows as pending). `qod fleet approve` answers
-`source_unknown` while the server has no known source address yet: wait for its next heartbeat,
-and check `QOD_FLEET_TRUSTED_PROXIES` if the manager sits behind a proxy.
+`approval_unbound` (their heartbeats are refused) until you run `qod fleet drain <name>`,
+`qod fleet approve <name>` once it shows as pending, then `qod fleet undrain <name>`. `qod fleet
+approve` answers `source_unknown` while the server has no known source address yet: wait for its
+next heartbeat. Behind a trusted proxy that does not send `X-Forwarded-For`, a server's source
+stays unknown, so it stays pending and `qod fleet approve` answers `source_unknown`; fix the proxy
+or `QOD_FLEET_TRUSTED_PROXIES`.
 
 systemd unit (`/etc/systemd/system/qod-agent.service`):
 

@@ -141,16 +141,19 @@ final class FleetHandlers(
             fail(
               StatusCode.Conflict,
               "source_change_refused",
-              s"server '${req.name}' is approved from another address; drain it before " +
-                "moving it, or add the new address to QOD_FLEET_AUTO_APPROVE"
+              s"server '${req.name}' is approved from another address; to move it, drain it, " +
+                "approve it from the new address once it shows as pending, then undrain it, " +
+                "or add the new address to QOD_FLEET_AUTO_APPROVE"
             )
           case HeartbeatOutcome.ApprovalUnbound =>
             fail(
               StatusCode.Conflict,
               "approval_unbound",
               s"server '${req.name}' was approved before its source address was recorded and " +
-                "this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it and approve " +
-                s"it again (`qod fleet drain ${req.name}`, then `qod fleet approve ${req.name}`)"
+                "this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it, approve it " +
+                "once it shows as pending, then undrain it " +
+                s"(`qod fleet drain ${req.name}`, `qod fleet approve ${req.name}`, " +
+                s"`qod fleet undrain ${req.name}`)"
             )
           case outcome =>
             IO.blocking(store.get(req.name)).map { row =>

@@ -1668,7 +1668,9 @@ final class PostgresControlPlaneStore(
       // source inside QOD_FLEET_AUTO_APPROVE: whoever heartbeats first with the name must not
       // inherit the approval. From anywhere else it is refused, unless drained and unassigned
       // (approval reset, judged again).
-      val unbound     = approved && approvedSource.isEmpty
+      val unbound = approved && approvedSource.isEmpty
+      // The isDefined half is defense in depth; Heartbeat already refuses autoApprove without a
+      // source.
       val trustedBind = hb.sourceAddr.isDefined && hb.autoApprove
       // A re-address needs a drained server that holds no assignment. Drain flips unschedulable
       // THEN releases; a heartbeat landing in between must not move (and un-approve) a server

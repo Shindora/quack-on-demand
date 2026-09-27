@@ -179,13 +179,14 @@ def status_hint(status: int, code: str | None, *, name: str, address: str) -> st
                 f"QOD_FLEET_AUTO_APPROVE also run `qod fleet approve {name}`) or `qod fleet remove {name}`")
     if code == "source_change_refused":
         return (f"server '{name}' is approved from another address than this machine's. If this is a "
-                f"legitimate move, drain it on the manager (`qod fleet drain {name}`), let it re-join, then "
-                f"approve it; otherwise another machine is using this name.")
+                f"legitimate move, on the manager: `qod fleet drain {name}`, let it re-join, "
+                f"`qod fleet approve {name}` once it shows as pending, then `qod fleet undrain {name}`; "
+                f"otherwise another machine is using this name.")
     if code == "approval_unbound":
         return ("this server was approved before its address was recorded, and its heartbeats come from "
                 f"outside QOD_FLEET_AUTO_APPROVE. On the manager: `qod fleet drain {name}`, then "
-                f"`qod fleet approve {name}` once it shows as pending (or add this server's network to "
-                "QOD_FLEET_AUTO_APPROVE)")
+                f"`qod fleet approve {name}` once it shows as pending, then `qod fleet undrain {name}` "
+                "(or add this server's network to QOD_FLEET_AUTO_APPROVE)")
     if code == "fleet_unauthorized":
         return ("the join token does not match the manager's; set QOD_FLEET_JOIN_TOKEN to the value "
                 "the manager was started with")

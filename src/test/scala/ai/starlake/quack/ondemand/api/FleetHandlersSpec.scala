@@ -296,8 +296,10 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .toOption
       .get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "source_change_refused")
-    e._2.message shouldBe "server 'srv-1' is approved from another address; drain it before " +
-      "moving it, or add the new address to QOD_FLEET_AUTO_APPROVE"
+    e._2.message shouldBe "server 'srv-1' is approved from another address; to move it, drain " +
+      "it, approve it from the new address once it shows as pending, then undrain it, or add " +
+      "the new address to QOD_FLEET_AUTO_APPROVE"
+    e._2.message should include("undrain it")
     val row = store.get("srv-1").get
     (row.approved, row.approvedSource, row.sourceAddr) shouldBe
       (true, Some("10.1.2.3"), Some("10.1.2.3"))
@@ -338,8 +340,10 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "approval_unbound")
     e._2.message shouldBe "server 'srv-1' was approved before its source address was recorded " +
-      "and this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it and approve it " +
-      "again (`qod fleet drain srv-1`, then `qod fleet approve srv-1`)"
+      "and this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it, approve it once " +
+      "it shows as pending, then undrain it (`qod fleet drain srv-1`, " +
+      "`qod fleet approve srv-1`, `qod fleet undrain srv-1`)"
+    e._2.message should include("qod fleet undrain")
     e._2.message should not include "\u2014"
     val row = store.get("srv-1").get
     (row.approved, row.approvedSource, row.sourceAddr) shouldBe (true, None, Some("10.1.2.3"))

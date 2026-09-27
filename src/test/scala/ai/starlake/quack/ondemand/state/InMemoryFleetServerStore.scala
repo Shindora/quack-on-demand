@@ -155,7 +155,9 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
   /** An approved row bound to no source (the 0042 upgrade backfill). */
   private def unbound(r: FleetServerRow): Boolean = r.approved && r.approvedSource.isEmpty
 
-  /** A heartbeat allowed to bind an unbound approval: a known source inside the list. */
+  /** A heartbeat allowed to bind an unbound approval: a known source inside the list. The isDefined
+    * half is defense in depth; Heartbeat already refuses autoApprove without a source.
+    */
   private def trustedBind(hb: Heartbeat): Boolean = hb.sourceAddr.isDefined && hb.autoApprove
 
   /** An approved row bound to a source other than this heartbeat's (an unknown one included). */

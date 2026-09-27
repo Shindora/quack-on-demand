@@ -327,7 +327,8 @@ or the server is drained and unassigned (approval reset, judged again). An appro
 binding (the 0042 upgrade leaves every earlier server unbound; not backfilled, since the advertised
 host is agent-reported and differs from the source behind a proxy or NAT) binds only to a known
 source inside the list; from anywhere else it is refused `409 approval_unbound` with nothing
-written, unless drained and unassigned (approval reset, judged again): drain, then approve.
+written, unless drained and unassigned (approval reset, judged again): drain it, approve it
+once it shows as pending, then undrain it.
 Admin approve refuses `409 source_unknown` while the server's latest heartbeat has no known source
 (`ApproveResult.SourceUnknown`), so an approval never starts unbound. The drain window is closed: no re-address while the row still holds
 an assignment (drain flips unschedulable, then releases), and the heartbeat never returns an
