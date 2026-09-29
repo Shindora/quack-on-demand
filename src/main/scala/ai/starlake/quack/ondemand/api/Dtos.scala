@@ -296,7 +296,7 @@ final case class SetMaxConcurrentRequest(
 )
 final case class NodeOpRequest(tenant: String, tenantDb: String, pool: String, nodeId: String)
 
-/** Fleet agent heartbeat (POST /api/fleet/heartbeat). `state` is one of none | starting | running
+/** Fleet heartbeat from `qod fleet join` (POST /api/fleet/heartbeat). `state` is one of none | starting | running
   * | failed | stopped; `startedAt` is ISO-8601.
   */
 final case class FleetNodeReportDto(
@@ -311,7 +311,7 @@ final case class FleetHeartbeatRequest(
     name: String,
     advertiseHost: String,
     nodePort: Int,
-    agentVersion: Option[String],
+    qodVersion: Option[String],
     os: Option[String],
     duckdbVersion: Option[String],
     cpus: Option[Int],
@@ -359,7 +359,7 @@ final case class FleetServerDto(
     pool: Option[String],
     nodeState: String,
     nodeError: Option[String],
-    agentVersion: Option[String],
+    qodVersion: Option[String],
     duckdbVersion: Option[String],
     cpus: Option[Int],
     memoryBytes: Option[Long],

@@ -1,4 +1,4 @@
-"""qod agent: one quack node per server, assigned by the manager.
+"""qod fleet join: one quack node per server, assigned by the manager.
 
 Loop: heartbeat, diff the reply's assignment with the running node, act, sleep.
 Restarting a crashed node is this process's job; the manager only ever sees
@@ -32,8 +32,8 @@ STDERR_TAIL = 20
 PIDFILE = "node.pid"
 DRAIN_JOIN_S = 0.5
 
-# The node's environment is built from this allowlist, never from the agent's whole environment:
-# the agent holds QOD_FLEET_JOIN_TOKEN (the fleet-wide credential), and tenant SQL on a node
+# The node's environment is built from this allowlist, never from this process's whole environment:
+# the join process holds QOD_FLEET_JOIN_TOKEN (the fleet-wide credential), and tenant SQL on a node
 # without lockdown can read /proc/self/environ.
 _ENV_PASSTHROUGH = (
     "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "SHELL",
@@ -50,7 +50,7 @@ _SQL_KEYS = ("dbInitSql", "objectStoreSql", "extraSetupSql", "lockdownSql")
 
 
 def _no_advertise_host(reason: str) -> SystemExit:
-    sys.stderr.write(f"qod agent: cannot pick an advertise host ({reason}); pass --advertise-host "
+    sys.stderr.write(f"qod fleet join: cannot pick an advertise host ({reason}); pass --advertise-host "
                      f"with the address the manager should dial\n")
     return SystemExit(2)
 
@@ -116,7 +116,7 @@ def _identity(assignment: dict) -> tuple:
 
 def _error_of(r) -> str:
     """The manager's JSON error code and message (`address_change_refused: ...`), so a
-    mis-addressed or mis-tokened agent is diagnosable from its log; the raw body otherwise."""
+    mis-addressed or mis-tokened join process is diagnosable from its log; the raw body otherwise."""
     try:
         body = r.json()
     except (ValueError, TypeError, AttributeError):
@@ -173,8 +173,8 @@ def network_hint(exc: BaseException, manager_url: str) -> str | None:
 def status_hint(status: int, code: str | None, *, name: str, address: str) -> str | None:
     """A likely fix for a heartbeat the manager rejected, or None when unrecognised."""
     if code == "address_change_refused":
-        return (f"server '{name}' is registered with another address than {address}. Either start this "
-                f"agent with a different --name, or on the manager run `qod fleet drain {name}` (then "
+        return (f"server '{name}' is registered with another address than {address}. Either run "
+                f"`qod fleet join` with a different --name, or on the manager run `qod fleet drain {name}` (then "
                 f"`qod fleet undrain {name}` once it reconnects; the move resets its approval, so outside "
                 f"QOD_FLEET_AUTO_APPROVE also run `qod fleet approve {name}`) or `qod fleet remove {name}`")
     if code == "source_change_refused":
@@ -229,7 +229,7 @@ class _Node:
         return f"exited with {self.proc.poll()}: {self.tail()}"
 
 
-class Agent:
+class FleetMember:
     def __init__(self, manager_url: str, join_token: str, *, name: str, advertise_host: str, bind_host: str,
                  node_port: int, spawn_script: Path, duckdb_bin: Path | None, state_dir: Path, insecure: bool,
                  http=httpx, popen=subprocess.Popen, sleep: Callable[[float], None] = time.sleep,
@@ -237,7 +237,7 @@ class Agent:
                  capacity: Callable[[], tuple[int | None, int | None]] = host_capacity,
                  duckdb_version: str | None = None):
         if manager_url.lower().startswith("http://") and not insecure:
-            sys.stderr.write("qod agent: refusing a plain http:// manager URL (the assignment carries credentials); pass --insecure to override\n")
+            sys.stderr.write("qod fleet join: refusing a plain http:// manager URL (the assignment carries credentials); pass --insecure to override\n")
             raise SystemExit(2)
         self.manager_url, self.join_token = manager_url.rstrip("/"), join_token
         self.name, self.advertise_host, self.bind_host, self.node_port = name, advertise_host, bind_host, node_port
@@ -266,7 +266,7 @@ class Agent:
         return self.state_dir / PIDFILE
 
     def reap_orphan(self) -> int | None:
-        """Kill a node left behind by a previous agent, identified by the pidfile and a command
+        """Kill a node left behind by a previous join process, identified by the pidfile and a command
         line that still names the spawn script (a recycled pid is left alone). Always removes
         the file. Returns the pid it killed."""
         if not self.pidfile.exists():
@@ -279,7 +279,7 @@ class Agent:
         # pid > 1 guards the -pid group kill below: -1 would signal every process we may signal.
         if pid is None or pid <= 1 or "spawn-quack-node" not in _cmdline(pid):
             return None
-        sys.stderr.write(f"qod agent: reaping orphan node pid {pid} from a previous agent\n")
+        sys.stderr.write(f"qod fleet join: reaping orphan node pid {pid} from a previous join process\n")
         # TERM the script so its trap stops duckdb and removes the FIFO; if it lingers, KILL its
         # whole process group (it leads its own session), which takes the duckdb grandchild too.
         for target, sig in ((pid, signal.SIGTERM), (-pid, signal.SIGKILL)):
@@ -321,7 +321,7 @@ class Agent:
         env.update({str(k): str(v) for k, v in assignment["env"].items()})
         env["kind"] = str(assignment["kind"])
         env["QOD_NODE_BIND"] = self.bind_host
-        # Always from the assignment, empty when absent: a stray value in the agent's environment
+        # Always from the assignment, empty when absent: a stray value in this process's environment
         # (a lockdownSql=... exported by hand) must never reach a node.
         for key in _SQL_KEYS:
             env[key] = str(assignment.get(key) or "")
@@ -333,19 +333,19 @@ class Agent:
 
     def _start(self, assignment: dict, spec: tuple[list[str], dict[str, str]] | None = None) -> None:
         cmd, env = spec or self._launch_spec(assignment)
-        # Own session: a manager-side stop reaches the node through this agent, never through a
-        # terminal signal. The pidfile is what lets the NEXT agent find it if this one dies.
+        # Own session: a manager-side stop reaches the node through this process, never through a
+        # terminal signal. The pidfile is what lets the NEXT join process find it if this one dies.
         proc = self.popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                           start_new_session=True)
         # Track the child before any fallible bookkeeping: an untracked child would be spawned
-        # again on the next heartbeat. A missing pidfile only degrades orphan reaping after an
-        # agent crash, so a write failure is a warning, not a failed start.
+        # again on the next heartbeat. A missing pidfile only degrades orphan reaping after a
+        # join-process crash, so a write failure is a warning, not a failed start.
         self.node = _Node(assignment, proc, self.clock())
         try:
             self.pidfile.write_text(f"{proc.pid}\n")
         except OSError as exc:
-            sys.stderr.write(f"qod agent: WARN could not write pidfile {self.pidfile}: {exc}; "
-                             f"a crash of this agent would leave node pid {proc.pid} unreaped\n")
+            sys.stderr.write(f"qod fleet join: WARN could not write pidfile {self.pidfile}: {exc}; "
+                             f"a crash of this process would leave node pid {proc.pid} unreaped\n")
 
     def _stop(self) -> None:
         n = self.node
@@ -391,7 +391,7 @@ class Agent:
                 self.failures += 1
                 delay = min(BACKOFF_MIN_S * (2 ** (self.failures - 1)), BACKOFF_MAX_S)
                 self.next_restart_at = self.clock() + delay
-                sys.stderr.write(f"qod agent: node failed ({n.error}); restarting in {delay}s\n")
+                sys.stderr.write(f"qod fleet join: node failed ({n.error}); restarting in {delay}s\n")
             elif self.clock() >= self.next_restart_at:
                 spec = self._launch_spec(assignment)
                 self._stop()
@@ -403,7 +403,7 @@ class Agent:
     def run_once(self) -> float:
         cpus, mem = self.capacity()
         body = {"name": self.name, "advertiseHost": self.advertise_host, "nodePort": self.node_port,
-                "agentVersion": __version__, "os": f"{sys.platform}-{platform.machine()}",
+                "qodVersion": __version__, "os": f"{sys.platform}-{platform.machine()}",
                 "duckdbVersion": self.duckdb_version, "cpus": cpus, "memoryBytes": mem, "node": self._report()}
         try:
             r = self.http.post(f"{self.manager_url}/api/fleet/heartbeat", json=body,
@@ -420,24 +420,24 @@ class Agent:
         self.last_failure = None
         if not self.connected:
             verb = "connected" if self.connected is None else "reconnected"
-            sys.stderr.write(f"qod agent: {verb} to manager {self.manager_url} as server '{self.name}'\n")
+            sys.stderr.write(f"qod fleet join: {verb} to manager {self.manager_url} as server '{self.name}'\n")
             self.connected = True
         # One bad reply (not JSON, a malformed assignment) or a failed spawn/pidfile write must not
-        # kill the agent: log it, keep whatever node runs, and heartbeat again after the backoff.
+        # kill the process: log it, keep whatever node runs, and heartbeat again after the backoff.
         try:
             reply = r.json()
             self._note_approval(reply.get("approval"))
             self._reconcile(reply.get("assignment"))
             return float(reply.get("heartbeatSec", 5))
         except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
-            sys.stderr.write(f"qod agent: could not act on the manager's reply: {exc!r}\n")
+            sys.stderr.write(f"qod fleet join: could not act on the manager's reply: {exc!r}\n")
             return BACKOFF_MIN_S
 
     def _report_failure(self, message: str, hint: str | None) -> None:
         """Log every failed heartbeat; the hint only when the failure changes, not every 5 s."""
-        sys.stderr.write(f"qod agent: {message}\n")
+        sys.stderr.write(f"qod fleet join: {message}\n")
         if hint and message != self.last_failure:
-            sys.stderr.write(f"qod agent:   hint: {hint}\n")
+            sys.stderr.write(f"qod fleet join:   hint: {hint}\n")
         self.last_failure = message
         self._mark_disconnected()
 
@@ -451,16 +451,16 @@ class Agent:
         if approval is None or approval == self.approval:
             return
         if approval == "pending":
-            sys.stderr.write(f"qod agent: server '{self.name}' is waiting for approval on the manager\n")
-            sys.stderr.write(f"qod agent:   hint: an admin approves it with `qod fleet approve {self.name}`, "
+            sys.stderr.write(f"qod fleet join: server '{self.name}' is waiting for approval on the manager\n")
+            sys.stderr.write(f"qod fleet join:   hint: an admin approves it with `qod fleet approve {self.name}`, "
                              "or adds this server's address to QOD_FLEET_AUTO_APPROVE on the manager\n")
         elif approval == "approved" and self.approval == "pending":
-            sys.stderr.write(f"qod agent: server '{self.name}' approved\n")
+            sys.stderr.write(f"qod fleet join: server '{self.name}' approved\n")
         self.approval = approval
 
     def run_forever(self) -> None:
         self.reap_orphan()
-        sys.stderr.write(f"qod agent: server '{self.name}', advertise host {self.advertise_host}, node binds "
+        sys.stderr.write(f"qod fleet join: server '{self.name}', advertise host {self.advertise_host}, node binds "
                          f"{self.bind_host}:{self.node_port} (override with --advertise-host / --bind-host if "
                          f"this is not the data interface)\n")
         try:

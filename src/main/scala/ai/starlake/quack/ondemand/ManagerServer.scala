@@ -75,7 +75,7 @@ final class ManagerServer(
     pat: Option[PatHandlers] = None,
     // Branches (Epic 1). None (tests / branching disabled) leaves the routes unmounted.
     branches: Option[BranchHandlers] = None,
-    // Fleet agent heartbeat + server admin. None leaves the routes unmounted; Main always wires
+    // Fleet heartbeat (qod fleet join) + server admin. None leaves the routes unmounted; Main always wires
     // it (outside fleet mode the handler answers 400 fleet_disabled).
     fleet: Option[FleetHandlers] = None,
     // PAT admission on /api: a PAT presented as the bearer credential (X-API-Key
@@ -146,7 +146,7 @@ final class ManagerServer(
       // audit row) that an unrecognized path got before this feature existed, not silently
       // become "public" ahead of the route ever being wired.
       (cfg.auth.management.slIntegrationOn && path == "/api/auth/sso/redeem") ||
-      // Fleet agent heartbeat: the handler validates X-Fleet-Token itself. Gated on the
+      // Fleet heartbeat (qod fleet join): the handler validates X-Fleet-Token itself. Gated on the
       // runtime so the path stays 401 at the guard everywhere else.
       (FleetConfig.isFleet(cfg.runtimeType) && path == "/api/fleet/heartbeat") ||
       modulePublicPrefixes.exists(p => path == p || path.startsWith(p + "/"))
@@ -461,7 +461,7 @@ final class ManagerServer(
       }
     }
 
-    // Fleet agent heartbeat: public at the guard (fleet runtime only), X-Fleet-Token checked
+    // Fleet heartbeat (qod fleet join): public at the guard (fleet runtime only), X-Fleet-Token checked
     // inside the handler. The server admin endpoints go through the normal guard and are
     // superuser-gated per request inside the handler.
     val fleetEndpoints: List[ServerEndpoint[Any, IO]] = fleet.toList.flatMap { h =>

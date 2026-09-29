@@ -479,7 +479,7 @@ final case class ManagerConfig(
       envVar = "QOD_RUNTIME_TYPE",
       description =
         "Quack node runtime backend: 'local' (child processes), 'kubernetes' (pods) or 'fleet' " +
-          "(one node per server joined through qod agent)."
+          "(one node per server joined through qod fleet join)."
     )
     runtimeType: String,
     @field @ConfigField(
@@ -726,18 +726,19 @@ final case class HibernationConfig(
     )
 
 /** Fleet runtime (`runtimeType = fleet`): quack nodes on bare servers that join through
-  * `qod agent`. See docs/superpowers/specs/2026-09-25-fleet-backend-design.md.
+  * `qod fleet join`. See docs/superpowers/specs/2026-09-25-fleet-backend-design.md.
   */
 final case class FleetConfig(
     @field @ConfigField(
       envVar = "QOD_FLEET_JOIN_TOKEN",
-      description = "Shared secret every agent heartbeat carries. Required when runtimeType=fleet.",
+      description = "Shared secret every fleet heartbeat carries. Required when runtimeType=fleet.",
       sensitive = true
     )
     joinToken: String = "",
     @field @ConfigField(
       envVar = "QOD_FLEET_HEARTBEAT_SEC",
-      description = "Agent heartbeat interval in seconds; returned to agents in every reply."
+      description =
+        "Heartbeat interval in seconds; returned to every qod fleet join process in each reply."
     )
     heartbeatSec: Int = 5,
     @field @ConfigField(
@@ -754,12 +755,12 @@ final case class FleetConfig(
     reassignAfterSec: Int = 600,
     @field @ConfigField(
       envVar = "QOD_FLEET_STARTUP_TIMEOUT_SEC",
-      description = "How long a claim waits for the agent to report the node running."
+      description = "How long a claim waits for the server to report the node running."
     )
     startupTimeoutSec: Int = 120,
     @field @ConfigField(
       envVar = "QOD_FLEET_STOP_TIMEOUT_SEC",
-      description = "How long a release waits for the agent to report the node stopped."
+      description = "How long a release waits for the server to report the node stopped."
     )
     stopTimeoutSec: Int = 60,
     @field @ConfigField(

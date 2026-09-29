@@ -7,8 +7,8 @@ import sttp.tapir._
 import sttp.tapir.generic.auto._
 import sttp.tapir.json.circe._
 
-/** Fleet runtime surface: the agent heartbeat (machine-to-machine, X-Fleet-Token) and the admin
-  * server endpoints (Task 8). Registered in [[EndpointModules.all]].
+/** Fleet runtime surface: the `qod fleet join` heartbeat (machine-to-machine, X-Fleet-Token) and
+  * the admin server endpoints (Task 8). Registered in [[EndpointModules.all]].
   */
 object FleetEndpoints:
 

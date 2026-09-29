@@ -128,7 +128,7 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       Left((StatusCode.BadRequest, "invalid_started_at"))
   }
 
-  it should "map a raised store error to 502 backend_error (the agent retries next beat)" in {
+  it should "map a raised store error to 502 backend_error (the server retries next beat)" in {
     val failing = new FleetServerStore:
       def recordHeartbeat(hb: Heartbeat): HeartbeatOutcome =
         throw new IllegalStateException("server row vanished")

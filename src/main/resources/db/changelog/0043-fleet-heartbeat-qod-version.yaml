@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0043-fleet-heartbeat-qod-version
+      author: qod
+      changes:
+        # `qod agent` became `qod fleet join`; the reported version is the qod version.
+        - renameColumn:
+            tableName: qodstate_fleet_heartbeat
+            oldColumnName: agent_version
+            newColumnName: qod_version
+            columnDataType: text

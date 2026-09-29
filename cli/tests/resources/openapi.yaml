@@ -7701,7 +7701,7 @@ components:
         nodePort:
           type: integer
           format: int32
-        agentVersion:
+        qodVersion:
           type: string
         os:
           type: string
@@ -7805,7 +7805,7 @@ components:
           type: string
         nodeError:
           type: string
-        agentVersion:
+        qodVersion:
           type: string
         duckdbVersion:
           type: string

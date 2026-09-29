@@ -247,7 +247,7 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
       s.claim(assignment("n1"), 30, None)
       s.recordHeartbeat(hb("a", node = NodeReport(1, Some("n1"), "running", Some(4L), None, None)))
       s.release("n1") shouldBe Some("a") // epoch 2, no node id
-      // The agent confirms the stop of the node it last ran, under that node's epoch.
+      // The join process confirms the stop of the node it last ran, under that node's epoch.
       s.recordHeartbeat(hb("a", node = NodeReport(1, Some("n1"), "stopped", None, None, None)))
       s.get("a").get.nodeState shouldBe "stopped"
     }
