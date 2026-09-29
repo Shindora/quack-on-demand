@@ -369,3 +369,141 @@ class IcebergRestConfigSpec extends AnyFlatSpec with Matchers:
       )
     cfg.toJson should include(""""endpointType":"s3_tables"""")
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // AWS credentials (sigv4 / glue / s3_tables)
+  // ---------------------------------------------------------------------------------------------
+
+  private def glueWithKeys = IcebergRestConfig(
+    warehouse = "123456789012",
+    endpointType = Some(IcebergEndpointType.Glue),
+    awsCredentials = Some(AwsCredentials.Config),
+    awsRegion = Some("eu-west-1"),
+    awsKeyId = Some("{{secret.AWS_KEY_ID}}"),
+    awsSecretAccessKey = Some("{{secret.AWS_SECRET}}"),
+    awsScope = List("s3://lake-data/")
+  )
+
+  "validate with AWS credentials" should "accept a glue config with keys, region and scope" in {
+    glueWithKeys.validate("glue_lake", Set.empty) shouldBe empty
+  }
+
+  it should "accept a credential_chain config with no keys" in {
+    val cfg = glueWithKeys.copy(
+      awsCredentials = Some(AwsCredentials.CredentialChain),
+      awsKeyId = None,
+      awsSecretAccessKey = None
+    )
+    cfg.validate("glue_lake", Set.empty) shouldBe empty
+  }
+
+  it should "accept a legacy glue row with no AWS field at all" in {
+    val cfg =
+      IcebergRestConfig(warehouse = "123456789012", endpointType = Some(IcebergEndpointType.Glue))
+    cfg.validate("glue_lake", Set.empty) shouldBe empty
+  }
+
+  it should "accept AWS credentials on sigv4" in {
+    val cfg = glueWithKeys.copy(
+      endpointType = None,
+      authType = Some(IcebergAuthType.SigV4),
+      uri = "https://catalog.example.com/iceberg"
+    )
+    cfg.validate("lake", Set.empty) shouldBe empty
+  }
+
+  it should "refuse AWS fields on oauth2, token and none" in
+    List(IcebergAuthType.OAuth2, IcebergAuthType.Token, IcebergAuthType.NoAuth).foreach { t =>
+      val cfg = glueWithKeys.copy(endpointType = None, authType = Some(t), uri = "https://c")
+      withClue(t.wire) {
+        cfg.validate("lake", Set.empty).exists(_.contains("AWS")) shouldBe true
+      }
+    }
+
+  it should "require awsCredentials once any other AWS field is set" in {
+    val errs = glueWithKeys.copy(awsCredentials = None).validate("glue_lake", Set.empty)
+    errs.exists(_.contains("awsCredentials")) shouldBe true
+  }
+
+  it should "require a scope, because an unscoped secret outranks QoD's storage secret" in {
+    val errs = glueWithKeys.copy(awsScope = Nil).validate("glue_lake", Set.empty)
+    errs.exists(_.contains("awsScope")) shouldBe true
+  }
+
+  it should "refuse a scope entry that names no bucket" in
+    List("s3://", "s3:///x", "https://lake/", "lake-data", "  ").foreach { bad =>
+      withClue(bad) {
+        glueWithKeys
+          .copy(awsScope = List("s3://ok/", bad))
+          .validate("glue_lake", Set.empty)
+          .exists(_.contains("awsScope")) shouldBe true
+      }
+    }
+
+  it should "require a region for glue and sigv4" in {
+    glueWithKeys
+      .copy(awsRegion = None)
+      .validate("glue_lake", Set.empty)
+      .exists(_.contains("awsRegion")) shouldBe true
+  }
+
+  it should "derive the s3_tables region from the table bucket ARN" in {
+    val cfg = glueWithKeys.copy(
+      endpointType = Some(IcebergEndpointType.S3Tables),
+      warehouse = "arn:aws:s3tables:us-east-2:123456789012:bucket/b",
+      awsRegion = None
+    )
+    cfg.validate("st", Set.empty) shouldBe empty
+    cfg.effectiveAwsRegion shouldBe Some("us-east-2")
+  }
+
+  it should "require a region for s3_tables when the warehouse is not an ARN" in {
+    val cfg = glueWithKeys.copy(
+      endpointType = Some(IcebergEndpointType.S3Tables),
+      warehouse = "not-an-arn",
+      awsRegion = None
+    )
+    cfg.validate("st", Set.empty).exists(_.contains("awsRegion")) shouldBe true
+  }
+
+  it should "require both keys for awsCredentials config" in {
+    val errs =
+      glueWithKeys.copy(awsKeyId = None, awsSecretAccessKey = None).validate("g", Set.empty)
+    errs.exists(_.contains("awsKeyId")) shouldBe true
+    errs.exists(_.contains("awsSecretAccessKey")) shouldBe true
+  }
+
+  it should "refuse keys with credential_chain" in {
+    val errs = glueWithKeys
+      .copy(awsCredentials = Some(AwsCredentials.CredentialChain))
+      .validate("g", Set.empty)
+    errs.exists(_.contains("credential_chain")) shouldBe true
+  }
+
+  it should "reject a literal secret access key or session token" in {
+    val errs = glueWithKeys
+      .copy(awsSecretAccessKey = Some("wJalrXUtnFEMI"), awsSessionToken = Some("tok"))
+      .validate("g", Set.empty)
+    errs.exists(_.contains("awsSecretAccessKey")) shouldBe true
+    errs.exists(_.contains("awsSessionToken")) shouldBe true
+  }
+
+  it should "reject a stray '{{' in the key id, region or scope" in {
+    val errs = glueWithKeys
+      .copy(
+        awsKeyId = Some("{{secret.X"),
+        awsRegion = Some("{{oops}}"),
+        awsScope = List("s3://b/{{x")
+      )
+      .validate("g", Set.empty)
+    List("awsKeyId", "awsRegion", "awsScope").foreach(f => errs.exists(_.contains(f)) shouldBe true)
+  }
+
+  it should "round-trip the AWS fields through JSON and default them when absent" in {
+    IcebergRestConfig.fromJson(glueWithKeys.toJson) shouldBe Right(glueWithKeys)
+    glueWithKeys.toJson should include(""""awsCredentials":"config"""")
+    IcebergRestConfig
+      .fromJson("""{"warehouse":"w","endpointType":"glue"}""")
+      .map(_.awsScope) shouldBe
+      Right(Nil)
+  }

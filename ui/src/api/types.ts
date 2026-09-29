@@ -1062,10 +1062,14 @@ export type IcebergAuthType = 'none' | 'oauth2' | 'token' | 'sigv4';
   * why they carry no `authType`. */
 export type IcebergEndpointType = 'glue' | 's3_tables';
 
+/** Where an AWS-signed catalog (`sigv4`, `glue`, `s3_tables`) takes its
+  * credentials from. Unset = the node's default s3 secret (legacy behaviour). */
+export type AwsCredentials = 'config' | 'credential_chain';
+
 /** Typed declaration of one external Iceberg REST catalog. Mirrors the
-  * manager's `IcebergRestConfig`; `clientSecret` and `token` carry
-  * `{{secret.NAME}}` placeholders rather than values, which is why the manager
-  * echoes this back unredacted. */
+  * manager's `IcebergRestConfig`; `clientSecret`, `token`, `awsSecretAccessKey`
+  * and `awsSessionToken` carry `{{secret.NAME}}` placeholders rather than
+  * values, which is why the manager echoes this back unredacted. */
 export interface IcebergRestConfig {
   uri?: string;
   warehouse?: string;
@@ -1077,6 +1081,13 @@ export interface IcebergRestConfig {
   oauth2Scope?: string;
   oauth2GrantType?: string;
   token?: string;
+  awsCredentials?: AwsCredentials;
+  awsRegion?: string;
+  awsKeyId?: string;
+  awsSecretAccessKey?: string;
+  awsSessionToken?: string;
+  /** s3:// prefixes holding the catalog's table data; required with awsCredentials. */
+  awsScope?: string[];
 }
 
 export interface FederatedSourceCreateRequest {

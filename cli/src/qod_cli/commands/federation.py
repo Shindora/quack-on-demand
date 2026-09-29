@@ -53,6 +53,12 @@ def _iceberg_config(
     oauth2_scope: str | None,
     oauth2_grant_type: str | None,
     token: str | None,
+    aws_credentials: str | None = None,
+    aws_region: str | None = None,
+    aws_key_id: str | None = None,
+    aws_secret_access_key: str | None = None,
+    aws_session_token: str | None = None,
+    aws_scope: list[str] | None = None,
 ) -> dict:
     """Assemble the typed config. --config wins whole; otherwise build it from the flags.
 
@@ -85,9 +91,16 @@ def _iceberg_config(
         ("oauth2Scope", oauth2_scope),
         ("oauth2GrantType", oauth2_grant_type),
         ("token", token),
+        ("awsCredentials", aws_credentials),
+        ("awsRegion", aws_region),
+        ("awsKeyId", aws_key_id),
+        ("awsSecretAccessKey", aws_secret_access_key),
+        ("awsSessionToken", aws_session_token),
     ):
         if value is not None:
             cfg[key] = value
+    if aws_scope:
+        cfg["awsScope"] = list(aws_scope)
     if not cfg.get("warehouse"):
         raise typer.BadParameter(
             "--warehouse is required for --type iceberg-rest (or pass the whole --config JSON)"
@@ -126,7 +139,10 @@ def create(
         help="Deny writes to this catalog. Defaults on for iceberg-rest.",
     ),
     uri: str = typer.Option(None, "--uri", help="Iceberg REST endpoint."),
-    warehouse: str = typer.Option(None, "--warehouse"),
+    warehouse: str = typer.Option(
+        None, "--warehouse",
+        help="Catalog warehouse; the AWS account id for glue, the table bucket ARN for s3_tables.",
+    ),
     auth: str = typer.Option(None, "--auth", help="none | oauth2 | token | sigv4"),
     endpoint_type: str = typer.Option(None, "--endpoint-type", help="glue | s3_tables"),
     client_id: str = typer.Option(None, "--client-id"),
@@ -135,6 +151,25 @@ def create(
     oauth2_scope: str = typer.Option(None, "--oauth2-scope"),
     oauth2_grant_type: str = typer.Option(None, "--oauth2-grant-type"),
     token: str = typer.Option(None, "--token"),
+    aws_credentials: str = typer.Option(
+        None, "--aws-credentials",
+        help="sigv4 / glue / s3_tables: config (static keys) | credential_chain.",
+    ),
+    aws_region: str = typer.Option(
+        None, "--aws-region", help="Required for glue and sigv4; s3_tables reads it off the ARN.",
+    ),
+    aws_key_id: str = typer.Option(None, "--aws-key-id"),
+    aws_secret_access_key: str = typer.Option(
+        None, "--aws-secret-access-key", help="A {{secret.NAME}} placeholder.",
+    ),
+    aws_session_token: str = typer.Option(
+        None, "--aws-session-token", help="A {{secret.NAME}} placeholder.",
+    ),
+    aws_scope: list[str] = typer.Option(
+        None, "--aws-scope",
+        help="s3:// prefix holding the catalog's table data; repeatable, required with "
+        "--aws-credentials.",
+    ),
 ):
     wire = _TYPE_WIRE.get(source_type)
     if wire is None:
@@ -153,6 +188,8 @@ def create(
         body["config"] = _iceberg_config(
             config, uri, warehouse, auth, endpoint_type, client_id, client_secret,
             oauth2_server_uri, oauth2_scope, oauth2_grant_type, token,
+            aws_credentials, aws_region, aws_key_id, aws_secret_access_key,
+            aws_session_token, aws_scope,
         )
     else:
         if setup_sql is None:

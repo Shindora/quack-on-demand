@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Iceberg sources: AWS credentials for Glue, S3 Tables and sigv4.** These catalogs sign with
+  AWS SigV4, but the typed source had nowhere to put AWS credentials: no secret was rendered, so
+  DuckDB either failed the attach (`Could not find a valid storage secret`, `... does not have a
+  region`) or signed with the node's default s3 secret, usually QoD's own storage credentials. A
+  typed `iceberg_rest` source now takes `awsCredentials` (`config` with `awsKeyId` +
+  `awsSecretAccessKey` [+ `awsSessionToken`], or `credential_chain`), `awsRegion` (required for
+  glue and sigv4, read off the ARN for s3_tables) and `awsScope`, rendered as a `TYPE s3` secret
+  named on the ATTACH. The scope is mandatory: DuckDB breaks ties between equally matching S3
+  secrets by name, so an unscoped `qod_ice_<alias>` would outrank the node's own `quack_s3` on
+  every S3 read. Available over REST, `qod federation create --aws-*`, the MCP admin tool and the
+  admin UI, which now also explains what Warehouse means for glue (account id) and s3_tables
+  (table bucket ARN). A stored source without AWS fields renders unchanged.
+
 ## 0.9.8
 
 - **Security: a session expiring mid-request no longer gains superuser access (#130).** Handler

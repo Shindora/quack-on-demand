@@ -4,6 +4,7 @@ import type {
   FederatedSourceResponse,
   FederatedSourceType,
   FederatedSecretResponse,
+  AwsCredentials,
   IcebergAuthType,
   IcebergEndpointType,
   IcebergRestConfig,
@@ -132,6 +133,36 @@ function isEndpointMode(mode: IcebergMode): mode is IcebergEndpointType {
   return (ICEBERG_ENDPOINT_MODES as IcebergMode[]).includes(mode);
 }
 
+/** The modes that sign with AWS SigV4 and so can carry an AWS credentials
+  * block. Mirrors the manager's `IcebergRestConfig.isAwsSigned`. */
+function isAwsMode(mode: IcebergMode): boolean {
+  return mode === 'sigv4' || isEndpointMode(mode);
+}
+
+/** What the Warehouse field means depends on the mode: DuckDB reads it as the
+  * AWS account id for Glue and as the table bucket ARN for S3 Tables. */
+const WAREHOUSE_HINT: Partial<Record<IcebergMode, { placeholder: string; hint: string }>> = {
+  glue: {
+    placeholder: '123456789012',
+    hint: 'For glue this is the AWS account id (12 digits), optionally followed by :catalog ' +
+      'or a nested catalog path, e.g. 123456789012:mycatalog.',
+  },
+  s3_tables: {
+    placeholder: 'arn:aws:s3tables:eu-west-1:123456789012:bucket/my-table-bucket',
+    hint: 'For s3_tables this is the table bucket ARN. The region is read from it.',
+  },
+};
+
+/** '' = no AWS block: the node's default s3 secret signs (the pre-existing
+  * behaviour, kept so a stored row renders unchanged). */
+type AwsCredentialsChoice = '' | AwsCredentials;
+
+const AWS_CREDENTIAL_MODES: { id: AwsCredentialsChoice; label: string }[] = [
+  { id: 'config',           label: 'static keys - access key id + secret access key' },
+  { id: 'credential_chain', label: 'credential chain - instance role, env or profile on the node' },
+  { id: '',                 label: "node default - whatever s3 secret the node already holds" },
+];
+
 /** Every free-text input of the Iceberg form, held as one blob so switching
   * mode does not lose what the operator already typed. What is SENT is
   * decided by `buildIcebergConfig`, not by what is still in here. */
@@ -144,12 +175,42 @@ type IcebergFields = {
   oauth2Scope:     string;
   oauth2GrantType: string;
   token:           string;
+  awsCredentials:     AwsCredentialsChoice;
+  awsRegion:          string;
+  awsKeyId:           string;
+  awsSecretAccessKey: string;
+  awsSessionToken:    string;
+  /** One s3:// prefix per line. */
+  awsScope:           string;
 };
 
 const EMPTY_ICEBERG_FIELDS: IcebergFields = {
   uri: '', warehouse: '', clientId: '', clientSecret: '',
   oauth2ServerUri: '', oauth2Scope: '', oauth2GrantType: '', token: '',
+  awsCredentials: 'config', awsRegion: '', awsKeyId: '', awsSecretAccessKey: '',
+  awsSessionToken: '', awsScope: '',
 };
+
+/** Only what the chosen AWS credentials mode shows is sent, for the same
+  * reason as the auth fields: the manager refuses keys under
+  * credential_chain, and any AWS field without awsCredentials. */
+function awsConfigOf(f: IcebergFields): Partial<IcebergRestConfig> {
+  if (f.awsCredentials === '') return {};
+  const set = (s: string) => (s.trim().length > 0 ? s.trim() : undefined);
+  const scope = f.awsScope.split(/[\n,]/).map(e => e.trim()).filter(e => e.length > 0);
+  return {
+    awsCredentials: f.awsCredentials,
+    awsRegion:      set(f.awsRegion),
+    awsScope:       scope,
+    ...(f.awsCredentials === 'config'
+      ? {
+          awsKeyId:           set(f.awsKeyId),
+          awsSecretAccessKey: set(f.awsSecretAccessKey),
+          awsSessionToken:    set(f.awsSessionToken),
+        }
+      : {}),
+  };
+}
 
 /** The manager requires `clientSecret` and `token` to hold a
   * `{{secret.NAME}}` placeholder and rejects a literal with a 400 at save
@@ -182,8 +243,9 @@ const CREDENTIAL_HINT =
 function buildIcebergConfig(mode: IcebergMode, f: IcebergFields): IcebergRestConfig {
   const set = (s: string) => (s.trim().length > 0 ? s.trim() : undefined);
   const warehouse = f.warehouse.trim();
-  if (isEndpointMode(mode)) return { warehouse, endpointType: mode };
+  if (isEndpointMode(mode)) return { warehouse, endpointType: mode, ...awsConfigOf(f) };
   const base: IcebergRestConfig = { warehouse, authType: mode, uri: f.uri.trim() };
+  if (mode === 'sigv4') return { ...base, ...awsConfigOf(f) };
   if (mode === 'oauth2')
     return {
       ...base,
@@ -215,6 +277,14 @@ function icebergFieldsOf(config: IcebergRestConfig | undefined): IcebergFields {
     oauth2Scope:     config.oauth2Scope     ?? '',
     oauth2GrantType: config.oauth2GrantType ?? '',
     token:           config.token           ?? '',
+    // A stored AWS-signed row without awsCredentials is a legacy "node default"
+    // one; prefill that rather than silently turning keys on at the next save.
+    awsCredentials:     config.awsCredentials ?? '',
+    awsRegion:          config.awsRegion          ?? '',
+    awsKeyId:           config.awsKeyId           ?? '',
+    awsSecretAccessKey: config.awsSecretAccessKey ?? '',
+    awsSessionToken:    config.awsSessionToken    ?? '',
+    awsScope:           (config.awsScope ?? []).join('\n'),
   };
 }
 
@@ -759,7 +829,9 @@ export default function FederationSection({
   const credentialsOk =
     !isIceberg ||
     !((icebergMode === 'oauth2' && credentialError(iceberg.clientSecret)) ||
-      (icebergMode === 'token'  && credentialError(iceberg.token)));
+      (icebergMode === 'token'  && credentialError(iceberg.token)) ||
+      (isAwsMode(icebergMode) && iceberg.awsCredentials === 'config' &&
+        (credentialError(iceberg.awsSecretAccessKey) || credentialError(iceberg.awsSessionToken))));
 
   const reload = () =>
     api.listFederatedSources(tenant, tenantDb)
@@ -927,14 +999,21 @@ export default function FederationSection({
             {isIceberg && (
               <>
                 <label>
-                  Warehouse <span style={{ color: 'var(--bad)' }}>*</span>
+                  {icebergMode === 'glue' ? 'AWS account id (warehouse)'
+                    : icebergMode === 's3_tables' ? 'Table bucket ARN (warehouse)'
+                    : 'Warehouse'} <span style={{ color: 'var(--bad)' }}>*</span>
                   <input
                     value={iceberg.warehouse}
                     onChange={ev => setIcebergField('warehouse', ev.target.value)}
-                    placeholder="my_warehouse"
+                    placeholder={WAREHOUSE_HINT[icebergMode]?.placeholder ?? 'my_warehouse'}
                     required
                   />
                 </label>
+                {WAREHOUSE_HINT[icebergMode] && (
+                  <div style={{ fontSize: '.75em', color: 'var(--text-mute)' }}>
+                    {WAREHOUSE_HINT[icebergMode]!.hint}
+                  </div>
+                )}
                 <label>
                   Authentication
                   <select
@@ -948,8 +1027,9 @@ export default function FederationSection({
                 </label>
                 {isEndpointMode(icebergMode) ? (
                   <div style={{ fontSize: '.75em', color: 'var(--text-mute)' }}>
-                    This endpoint type selects its own signing, so it takes no URI and no
-                    credentials: DuckDB refuses ENDPOINT_TYPE combined with AUTHORIZATION_TYPE.
+                    This endpoint type signs with AWS SigV4 and derives its own URI, so it takes
+                    no URI and no OAuth2 or token credentials: DuckDB refuses ENDPOINT_TYPE
+                    combined with AUTHORIZATION_TYPE. Set the AWS credentials below.
                   </div>
                 ) : (
                   <label>
@@ -1035,7 +1115,98 @@ export default function FederationSection({
                     )}
                   </>
                 )}
-                {(icebergMode === 'oauth2' || icebergMode === 'token') && (
+                {isAwsMode(icebergMode) && (
+                  <>
+                    <label>
+                      AWS credentials
+                      <select
+                        value={iceberg.awsCredentials}
+                        onChange={ev => setIcebergField('awsCredentials', ev.target.value)}
+                      >
+                        {AWS_CREDENTIAL_MODES.map(m => (
+                          <option key={m.id} value={m.id}>{m.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {iceberg.awsCredentials === '' ? (
+                      <div style={{ fontSize: '.75em', color: 'var(--text-mute)' }}>
+                        No secret is created for this catalog: DuckDB signs with the node's
+                        default s3 secret, which is usually QoD's own storage credentials
+                        and not the ones this catalog expects.
+                      </div>
+                    ) : (
+                      <>
+                        <label>
+                          AWS region
+                          {icebergMode !== 's3_tables' && <span style={{ color: 'var(--bad)' }}> *</span>}
+                          <input
+                            value={iceberg.awsRegion}
+                            onChange={ev => setIcebergField('awsRegion', ev.target.value)}
+                            placeholder={icebergMode === 's3_tables' ? 'read from the ARN when blank' : 'eu-west-1'}
+                            required={icebergMode !== 's3_tables'}
+                          />
+                        </label>
+                        {iceberg.awsCredentials === 'config' && (
+                          <>
+                            <label>
+                              Access key id <span style={{ color: 'var(--bad)' }}>*</span>
+                              <input
+                                value={iceberg.awsKeyId}
+                                onChange={ev => setIcebergField('awsKeyId', ev.target.value)}
+                                placeholder="{{secret.AWS_ACCESS_KEY_ID}}"
+                                required
+                              />
+                            </label>
+                            <label>
+                              Secret access key <span style={{ color: 'var(--bad)' }}>*</span>
+                              <input
+                                value={iceberg.awsSecretAccessKey}
+                                onChange={ev => setIcebergField('awsSecretAccessKey', ev.target.value)}
+                                placeholder="{{secret.AWS_SECRET_ACCESS_KEY}}"
+                                style={credentialError(iceberg.awsSecretAccessKey) ? { borderColor: 'var(--bad)' } : undefined}
+                                aria-invalid={credentialError(iceberg.awsSecretAccessKey)}
+                                required
+                              />
+                            </label>
+                            <label>
+                              Session token
+                              <input
+                                value={iceberg.awsSessionToken}
+                                onChange={ev => setIcebergField('awsSessionToken', ev.target.value)}
+                                placeholder="{{secret.AWS_SESSION_TOKEN}} (temporary credentials only)"
+                                style={credentialError(iceberg.awsSessionToken) ? { borderColor: 'var(--bad)' } : undefined}
+                                aria-invalid={credentialError(iceberg.awsSessionToken)}
+                              />
+                            </label>
+                            {(credentialError(iceberg.awsSecretAccessKey) ||
+                              credentialError(iceberg.awsSessionToken)) && (
+                              <div style={{ fontSize: '.85em', color: 'var(--bad)' }}>
+                                Secret access key and session token must be {'{{secret.NAME}}'} placeholders, not literal values.
+                              </div>
+                            )}
+                          </>
+                        )}
+                        <label>
+                          Data scope <span style={{ color: 'var(--bad)' }}>*</span>
+                          <textarea
+                            value={iceberg.awsScope}
+                            onChange={ev => setIcebergField('awsScope', ev.target.value)}
+                            rows={2}
+                            placeholder={'s3://my-lake/\ns3://other-bucket/warehouse/'}
+                            required
+                          />
+                        </label>
+                        <div style={{ fontSize: '.75em', color: 'var(--text-mute)' }}>
+                          The s3:// prefixes holding this catalog's table data, one per line. The
+                          credentials apply only under these prefixes, so they never take over
+                          reads of the database's own storage.
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+                {(icebergMode === 'oauth2' || icebergMode === 'token' ||
+                  (isAwsMode(icebergMode) && iceberg.awsCredentials === 'config')) && (
                   <div style={{ fontSize: '.75em', color: 'var(--text-mute)', marginTop: '.35rem' }}>
                     {CREDENTIAL_HINT}
                     {' '}Expand the source row after saving to add the secret value.
@@ -1195,6 +1366,14 @@ export default function FederationSection({
                               {s.config.oauth2ServerUri && <DetailItem label="OAuth2 server URI" value={s.config.oauth2ServerUri} mono />}
                               {s.config.oauth2Scope && <DetailItem label="OAuth2 scope" value={s.config.oauth2Scope} mono />}
                               {s.config.oauth2GrantType && <DetailItem label="OAuth2 grant type" value={s.config.oauth2GrantType} mono />}
+                              {s.config.awsCredentials && <DetailItem label="AWS credentials" value={s.config.awsCredentials} mono />}
+                              {s.config.awsRegion && <DetailItem label="AWS region" value={s.config.awsRegion} mono />}
+                              {s.config.awsKeyId && <DetailItem label="Access key id" value={s.config.awsKeyId} mono />}
+                              {s.config.awsSecretAccessKey && <DetailItem label="Secret access key" value={s.config.awsSecretAccessKey} mono />}
+                              {s.config.awsSessionToken && <DetailItem label="Session token" value={s.config.awsSessionToken} mono />}
+                              {s.config.awsScope && s.config.awsScope.length > 0 && (
+                                <DetailItem label="Data scope" value={s.config.awsScope.join(', ')} mono />
+                              )}
                             </div>
                           </div>
                         )}

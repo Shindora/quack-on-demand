@@ -201,3 +201,75 @@ class IcebergSetupSqlSpec extends AnyFlatSpec with Matchers:
     val sql = IcebergSetupSql.render(v(oauth2, "sales_lake"), readOnly = false)
     sql should not include "READ_ONLY"
   }
+
+  private val glueWithKeys = IcebergRestConfig(
+    warehouse = "123456789012",
+    endpointType = Some(IcebergEndpointType.Glue),
+    awsCredentials = Some(AwsCredentials.Config),
+    awsRegion = Some("eu-west-1"),
+    awsKeyId = Some("{{secret.AWS_KEY_ID}}"),
+    awsSecretAccessKey = Some("{{secret.AWS_SECRET}}"),
+    awsSessionToken = Some("{{secret.AWS_TOKEN}}"),
+    awsScope = List("s3://lake-a/", "s3://lake-b/warehouse/")
+  )
+
+  "render with AWS credentials" should "emit a scoped s3 secret and name it on the attach" in {
+    val sql = IcebergSetupSql.render(v(glueWithKeys, "glue_lake"), readOnly = true)
+    sql should include("INSTALL httpfs; LOAD httpfs;")
+    sql should include("""CREATE OR REPLACE SECRET "qod_ice_glue_lake"""")
+    sql should include("TYPE s3")
+    sql should include("""KEY_ID '{{secret.AWS_KEY_ID}}'""")
+    sql should include("""SECRET '{{secret.AWS_SECRET}}'""")
+    sql should include("""SESSION_TOKEN '{{secret.AWS_TOKEN}}'""")
+    sql should include("""REGION 'eu-west-1'""")
+    sql should include("""SCOPE ['s3://lake-a/', 's3://lake-b/warehouse/']""")
+    sql should include("""SECRET "qod_ice_glue_lake"""")
+    sql should include("""ENDPOINT_TYPE 'glue'""")
+    sql should not include "AUTHORIZATION_TYPE"
+    sql should not include "TYPE ICEBERG,\n  KEY_ID"
+    sql.indexOf("CREATE OR REPLACE SECRET") should be < sql.indexOf("ATTACH")
+  }
+
+  it should "emit PROVIDER credential_chain and load the aws extension for the chain" in {
+    val cfg = glueWithKeys.copy(
+      awsCredentials = Some(AwsCredentials.CredentialChain),
+      awsKeyId = None,
+      awsSecretAccessKey = None,
+      awsSessionToken = None
+    )
+    val sql = IcebergSetupSql.render(v(cfg, "glue_lake"), readOnly = false)
+    sql should include("INSTALL aws; LOAD aws;")
+    sql should include("PROVIDER credential_chain")
+    sql should not include "KEY_ID"
+    sql should include("""SECRET "qod_ice_glue_lake"""")
+  }
+
+  it should "fill the s3_tables region from the ARN when none is given" in {
+    val cfg = glueWithKeys.copy(
+      endpointType = Some(IcebergEndpointType.S3Tables),
+      warehouse = "arn:aws:s3tables:us-east-2:123456789012:bucket/b",
+      awsRegion = None
+    )
+    IcebergSetupSql.render(v(cfg, "st"), readOnly = false) should include("""REGION 'us-east-2'""")
+  }
+
+  it should "sign sigv4 with the named secret and keep AUTHORIZATION_TYPE" in {
+    val cfg = glueWithKeys.copy(
+      endpointType = None,
+      authType = Some(IcebergAuthType.SigV4),
+      uri = "https://catalog.example.com/iceberg"
+    )
+    val sql = IcebergSetupSql.render(v(cfg, "lake"), readOnly = false)
+    sql should include("""AUTHORIZATION_TYPE 'sigv4'""")
+    sql should include("""SECRET "qod_ice_lake"""")
+    sql should include("TYPE s3")
+  }
+
+  it should "leave a legacy glue row without AWS fields unchanged: no secret, no httpfs" in {
+    val cfg =
+      IcebergRestConfig(warehouse = "123456789012", endpointType = Some(IcebergEndpointType.Glue))
+    val sql = IcebergSetupSql.render(v(cfg, "glue_lake"), readOnly = false)
+    sql should not include "CREATE OR REPLACE SECRET"
+    sql should not include "httpfs"
+    sql should not include "SECRET \"qod_ice_glue_lake\""
+  }

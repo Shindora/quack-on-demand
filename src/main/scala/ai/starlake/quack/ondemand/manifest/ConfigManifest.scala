@@ -48,9 +48,10 @@ final case class ManifestFederatedSource(
     // text because `model` is a leaf package. Exported verbatim rather than redacted.
     //
     // What that is guaranteed to be safe for, exactly: `IcebergRestConfig.validate` runs
-    // `placeholderErrors` over `IcebergRestConfig.CredentialFields`, which is `clientSecret` and
-    // `token` and nothing else, so those two can only hold a `{{secret.NAME}}` placeholder whose
-    // value lives in the source's secrets, and those ARE redacted. Every OTHER field is checked
+    // `placeholderErrors` over `IcebergRestConfig.CredentialFields`, which is `clientSecret`,
+    // `token`, `awsSecretAccessKey` and `awsSessionToken` and nothing else, so those can only hold
+    // a `{{secret.NAME}}` placeholder whose value lives in the source's secrets, and those ARE
+    // redacted. `awsKeyId` is not one (an access key id is an identifier, like `clientId`). Every OTHER field is checked
     // for stray braces only and may hold a literal: `uri` in particular MAY legitimately carry
     // userinfo or a signed query parameter, and such a value is exported here in the clear. This
     // is the same policy the manifest already applies to `setupSql`, which can hold a full

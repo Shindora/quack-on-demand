@@ -173,3 +173,34 @@ def test_malformed_config_json_errors(runner, respx_mock):
     result = _invoke(runner, "--alias", "l", "--type", "iceberg-rest", "--config", "{not json")
     assert result.exit_code != 0
     assert "json" in result.output.lower()
+
+
+def test_aws_flags_reach_the_config(runner, respx_mock):
+    body = _create(
+        runner, respx_mock,
+        "--alias", "g", "--type", "iceberg-rest",
+        "--warehouse", "123456789012", "--endpoint-type", "glue",
+        "--aws-credentials", "config",
+        "--aws-region", "eu-west-1",
+        "--aws-key-id", "{{secret.AWS_KEY_ID}}",
+        "--aws-secret-access-key", "{{secret.AWS_SECRET}}",
+        "--aws-session-token", "{{secret.AWS_TOKEN}}",
+        "--aws-scope", "s3://lake-a/",
+        "--aws-scope", "s3://lake-b/warehouse/",
+    )
+    cfg = body["config"]
+    assert cfg["awsCredentials"] == "config"
+    assert cfg["awsRegion"] == "eu-west-1"
+    assert cfg["awsKeyId"] == "{{secret.AWS_KEY_ID}}"
+    assert cfg["awsSecretAccessKey"] == "{{secret.AWS_SECRET}}"
+    assert cfg["awsSessionToken"] == "{{secret.AWS_TOKEN}}"
+    assert cfg["awsScope"] == ["s3://lake-a/", "s3://lake-b/warehouse/"]
+
+
+def test_aws_flags_omitted_leave_the_config_without_aws_keys(runner, respx_mock):
+    body = _create(
+        runner, respx_mock,
+        "--alias", "g", "--type", "iceberg-rest",
+        "--warehouse", "123456789012", "--endpoint-type", "glue",
+    )
+    assert not any(k.startswith("aws") for k in body["config"])

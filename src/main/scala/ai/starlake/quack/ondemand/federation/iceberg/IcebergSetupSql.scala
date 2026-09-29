@@ -13,7 +13,10 @@ import ai.starlake.quack.model.SqlLiterals.{duckdbIdent as ident, duckdbLiteral 
   *   - `oauth2` and `token` both carry their credential on the ICEBERG secret and emit NO
   *     `AUTHORIZATION_TYPE`. DuckDB defaults that option to `oauth2`, which a token-bearing secret
   *     satisfies without performing an exchange.
-  *   - `none` and `sigv4` need no secret at all, only the `AUTHORIZATION_TYPE` option.
+  *   - `none` needs no secret at all, only the `AUTHORIZATION_TYPE` option.
+  *   - `sigv4`, `glue` and `s3_tables` sign with AWS SigV4. With `awsCredentials` set they get a
+  *     SCOPE'd `TYPE s3` secret, named on the ATTACH through `SECRET`; without it none is rendered
+  *     and DuckDB falls back to the node's default s3 secret (the pre-existing behaviour).
   *   - `glue` and `s3_tables` are `ENDPOINT_TYPE` values and select their own signing. DuckDB
   *     refuses `ENDPOINT_TYPE` combined with `AUTHORIZATION_TYPE`, which is why
   *     [[IcebergRestConfig.validate]] permits exactly one of the two - the config type itself does
@@ -31,8 +34,10 @@ object IcebergSetupSql:
     * [[opt]] as before.
     */
   enum CredentialOption(val optionName: String):
-    case ClientSecret extends CredentialOption("CLIENT_SECRET")
-    case Token        extends CredentialOption("TOKEN")
+    case ClientSecret    extends CredentialOption("CLIENT_SECRET")
+    case Token           extends CredentialOption("TOKEN")
+    case AwsSecret       extends CredentialOption("SECRET")
+    case AwsSessionToken extends CredentialOption("SESSION_TOKEN")
 
   /** Per-alias secret name. The alias arrives already normalized (lowercase, via
     * [[IcebergRestConfig.validated]]), so no lowercasing happens here - doing it here used to let
@@ -80,18 +85,37 @@ object IcebergSetupSql:
     val secret = secretBlock(cfg, alias)
     val opts   = attachOptions(cfg, alias, needsSecret(cfg)) ++ Option.when(readOnly)("READ_ONLY")
     "INSTALL iceberg; LOAD iceberg;\n" +
+      extensionPrelude(cfg) +
       secret +
       s"ATTACH ${lit(cfg.warehouse.trim)} AS ${ident(alias)} (\n  " +
       opts.mkString(",\n  ") +
       "\n);"
 
-  /** Whether `authType` requires a `CREATE SECRET` block: oauth2 and token both carry their
-    * credential on the ICEBERG secret (see the class scaladoc); none / sigv4 / any endpointType
-    * need none. Drives both the ATTACH's `SECRET` option and whether [[secretBlock]] emits
-    * anything, so the two can never disagree about whether a secret exists.
+  /** Whether a `CREATE SECRET` block is rendered: oauth2 and token carry their credential on the
+    * ICEBERG secret (see the class scaladoc), an AWS-signed catalog with `awsCredentials` on an s3
+    * one; everything else needs none. Drives both the ATTACH's `SECRET` option and whether
+    * [[secretBlock]] emits anything, so the two can never disagree about whether a secret exists.
     */
   private def needsSecret(cfg: IcebergRestConfig): Boolean =
-    cfg.authType.exists(t => t == IcebergAuthType.OAuth2 || t == IcebergAuthType.Token)
+    cfg.authType.exists(t => t == IcebergAuthType.OAuth2 || t == IcebergAuthType.Token) ||
+      awsSecret(cfg)
+
+  /** An AWS-signed catalog with `awsCredentials` set gets a `TYPE s3` secret instead of the ICEBERG
+    * one. Without it nothing is rendered, and DuckDB falls back to the node's default s3 secret
+    * exactly as before this field existed.
+    */
+  private def awsSecret(cfg: IcebergRestConfig): Boolean =
+    cfg.isAwsSigned && cfg.awsCredentials.isDefined
+
+  /** The s3 secret type lives in httpfs, and `PROVIDER credential_chain` in the aws extension.
+    * Loaded explicitly rather than trusting autoload: the CLI reading piped stdin carries on past a
+    * failed statement, so a missing extension would surface later as a confusing attach error.
+    */
+  private def extensionPrelude(cfg: IcebergRestConfig): String =
+    if !awsSecret(cfg) then ""
+    else if cfg.awsCredentials.contains(AwsCredentials.CredentialChain) then
+      "INSTALL httpfs; LOAD httpfs;\nINSTALL aws; LOAD aws;\n"
+    else "INSTALL httpfs; LOAD httpfs;\n"
 
   /** `NAME '<trimmed value>'`, or `None` when `value` is unset or blank after trimming. Trimming
     * here - not just at the `isSet`/`filter` check upstream - matters because
@@ -140,11 +164,32 @@ object IcebergSetupSql:
           ).flatten
         case Some(IcebergAuthType.Token) =>
           List(Some("TYPE ICEBERG"), credentialOpt(CredentialOption.Token, cfg.token)).flatten
-        case _ => Nil
+        case _ => awsParams(cfg)
 
       s"CREATE OR REPLACE SECRET ${ident(secretName(alias))} (\n  " +
         params.mkString(",\n  ") +
         "\n);\n"
+
+  /** The `TYPE s3` secret an AWS-signed catalog signs with, both for the catalog calls (the ATTACH
+    * names it through `SECRET`) and for reading table data under `awsScope`. The SCOPE is not
+    * optional: see `IcebergRestConfig.awsErrors` for why an unscoped one would hijack the node's
+    * other S3 reads. Verified against DuckDB 1.5.6: GlueAttach reads REGION off this secret, and
+    * `which_secret` resolves a path under the scope to it while other paths keep their secret.
+    */
+  private def awsParams(cfg: IcebergRestConfig): List[String] =
+    val creds = cfg.awsCredentials match
+      case Some(AwsCredentials.Config) =>
+        List(
+          opt("KEY_ID", cfg.awsKeyId),
+          credentialOpt(CredentialOption.AwsSecret, cfg.awsSecretAccessKey),
+          credentialOpt(CredentialOption.AwsSessionToken, cfg.awsSessionToken)
+        )
+      case Some(AwsCredentials.CredentialChain) => List(Some("PROVIDER credential_chain"))
+      case None                                 => Nil
+    (Some("TYPE s3") :: creds ++ List(
+      cfg.effectiveAwsRegion.map(r => s"REGION ${lit(r)}"),
+      Some("SCOPE [" + cfg.awsScope.map(e => lit(e.trim)).mkString(", ") + "]")
+    )).flatten
 
   private def attachOptions(
       cfg: IcebergRestConfig,

@@ -7954,6 +7954,20 @@ components:
           type: string
         token:
           type: string
+        awsCredentials:
+          type: string
+        awsRegion:
+          type: string
+        awsKeyId:
+          type: string
+        awsSecretAccessKey:
+          type: string
+        awsSessionToken:
+          type: string
+        awsScope:
+          type: array
+          items:
+            type: string
     KillStatementRequest:
       title: KillStatementRequest
       type: object
