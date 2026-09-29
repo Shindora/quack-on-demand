@@ -1,0 +1,94 @@
+package ai.starlake.quack.edge.adapter
+
+import org.scalatest.funspec.AnyFunSpec
+import org.scalatest.matchers.should.Matchers
+
+import java.nio.file.{Files, Path}
+
+class LibDuckDbPreloadSpec extends AnyFunSpec with Matchers:
+
+  private val lib = System.mapLibraryName("duckdb")
+
+  describe("abiVersion"):
+    it("takes the DuckDB segment of the libquackwire version stamp") {
+      LibDuckDbPreload.abiVersion("1.5.6-7e80f7ffcc98-1\n") shouldBe Some("1.5.6")
+    }
+    it("refuses a stamp that does not start with a DuckDB version") {
+      LibDuckDbPreload.abiVersion("") shouldBe None
+      LibDuckDbPreload.abiVersion("snapshot-7e80f7f") shouldBe None
+      LibDuckDbPreload.abiVersion("../../etc-x-1") shouldBe None
+    }
+
+  describe("the bundled version stamp"):
+    it("ships next to the natives and names a DuckDB version") {
+      LibDuckDbPreload.bundledAbi shouldBe defined
+    }
+
+  describe("candidates"):
+    val cwd = Path.of("/work/repo")
+    it("looks under DUCKDB_CACHE_DIR first, then the working directory's .duckdb cache") {
+      LibDuckDbPreload.candidates("1.5.6", Map("DUCKDB_CACHE_DIR" -> "/cache"), cwd) shouldBe List(
+        Path.of("/cache", "1.5.6", "lib", lib),
+        Path.of("/work/repo/.duckdb/1.5.6/lib", lib)
+      )
+    }
+    it("uses only the working directory without DUCKDB_CACHE_DIR, or with it blank") {
+      val only = List(Path.of("/work/repo/.duckdb/1.5.6/lib", lib))
+      LibDuckDbPreload.candidates("1.5.6", Map.empty, cwd) shouldBe only
+      LibDuckDbPreload.candidates("1.5.6", Map("DUCKDB_CACHE_DIR" -> "  "), cwd) shouldBe only
+    }
+
+  describe("preload"):
+    def cacheWith(abi: String): Path =
+      val root = Files.createTempDirectory("qod-duckdb-cache")
+      val dir  = Files.createDirectories(root.resolve(abi).resolve("lib"))
+      Files.writeString(dir.resolve(lib), "not a real library")
+      root
+
+    it("loads the first candidate that exists and reports it") {
+      val cache  = cacheWith("1.5.6")
+      val loaded = List.newBuilder[String]
+      val got    = LibDuckDbPreload.preload(
+        abi = Some("1.5.6"),
+        env = Map("DUCKDB_CACHE_DIR" -> cache.toString),
+        cwd = Path.of("/nonexistent"),
+        load = p => loaded += p
+      )
+      got shouldBe Some(cache.resolve("1.5.6").resolve("lib").resolve(lib))
+      loaded.result() shouldBe List(got.get.toString)
+    }
+
+    it("loads nothing when no candidate exists, leaving resolution to the loader path") {
+      var calls = 0
+      LibDuckDbPreload.preload(
+        Some("1.5.6"),
+        Map.empty,
+        Path.of("/nonexistent"),
+        _ => calls += 1
+      ) shouldBe
+        None
+      calls shouldBe 0
+    }
+
+    it("loads nothing without a bundled ABI version") {
+      val cache = cacheWith("1.5.6")
+      var calls = 0
+      LibDuckDbPreload.preload(
+        None,
+        Map("DUCKDB_CACHE_DIR" -> cache.toString),
+        cache,
+        _ => calls += 1
+      ) shouldBe
+        None
+      calls shouldBe 0
+    }
+
+    it("never lets a failing load escape: the libquackwire load still gets its turn") {
+      val cache = cacheWith("1.5.6")
+      LibDuckDbPreload.preload(
+        abi = Some("1.5.6"),
+        env = Map("DUCKDB_CACHE_DIR" -> cache.toString),
+        cwd = Path.of("/nonexistent"),
+        load = _ => throw new UnsatisfiedLinkError("wrong architecture")
+      ) shouldBe None
+    }
