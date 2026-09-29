@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **BREAKING: `qod agent` is now `qod fleet join`, with no alias.** The fleet server process moved
+  under `qod fleet`; its flags and `QOD_FLEET_JOIN_TOKEN` are unchanged, and so is its default state
+  directory, so an upgraded server still reaps a node orphaned by the previous version. **Before
+  upgrading `qod` on a fleet server, change its unit file or launcher from `qod agent ...` to
+  `qod fleet join ...`**: 0.9.7 and 0.9.8 shipped `qod agent`, which now fails with "No such
+  command". The version a server reports is now `qodVersion` everywhere: in the heartbeat body, in
+  `GET /api/fleet/servers` and the admin UI (was `agentVersion`), and in the
+  `qodstate_fleet_heartbeat.qod_version` column (renamed by Liquibase `0043`). A server still on
+  0.9.7 or 0.9.8 keeps heartbeating (its `agentVersion` is ignored, not rejected) and is simply
+  listed without a version until it is upgraded.
+
 - **DuckDB upgraded 1.5.5 -> 1.5.6** across every pinned layer: the DuckDB JDBC driver
   (`1.5.6.0`), libquackwire rebuilt against libduckdb 1.5.6 (`1.5.6-7e80f7ffcc98-1`; the
   duckdb-quack pin is unchanged, DuckDB 1.5.6 ships the same `7e80f7f` quack extension), and
