@@ -11,7 +11,7 @@ name: quackwire native build
 # Co-pinned versions (single source of truth: design doc §9.9):
 #   - duckdb-quack : 7e80f7ffcc98d0b3e81d0e1df8cc1c2da240a64b
 #                    (branch v1.5-variegata, short 7e80f7ffcc98)
-#   - libduckdb    : v1.5.5 official release zips on every platform:
+#   - libduckdb    : v1.5.6 official release zips on every platform:
 #                    libduckdb-{linux-amd64,linux-arm64,osx-universal,
 #                    windows-amd64}.zip. Homebrew is NOT used (its bottle
 #                    lags releases; it was still 1.5.4 on 2026-07-22).
@@ -90,14 +90,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # --- libduckdb v1.5.5 install ---------------------------------------
+      # --- libduckdb v1.5.6 install ---------------------------------------
       # macOS: assemble DUCKDB_HOME from the official release zip, same
       # pattern as Windows. We deliberately do NOT use Homebrew: its bottle
-      # lags DuckDB releases (still 1.5.4 the day 1.5.5 shipped) and the
+      # lags DuckDB releases (it was still 1.5.4 the day 1.5.5 shipped) and the
       # macOS leg must link the exact pinned ABI. CMakeLists probes
       # $ENV{DUCKDB_HOME}{,/include,/lib} FIRST, so this wins over any
       # /opt/homebrew leftovers on the runner.
-      - name: Install libduckdb v1.5.5 (macOS)
+      - name: Install libduckdb v1.5.6 (macOS)
         if: matrix.os == 'macos'
         env:
           DUCKDB_ZIP: ${{ matrix.duckdb_zip }}
@@ -107,14 +107,14 @@ jobs:
           mkdir -p "$home/include" "$home/lib"
           tmp=$(mktemp -d)
           curl -fsSL -o "$tmp/$DUCKDB_ZIP" \
-            "https://github.com/duckdb/duckdb/releases/download/v1.5.5/$DUCKDB_ZIP"
+            "https://github.com/duckdb/duckdb/releases/download/v1.5.6/$DUCKDB_ZIP"
           unzip -o "$tmp/$DUCKDB_ZIP" -d "$tmp/extracted"
           cp "$tmp/extracted/duckdb.h"   "$home/include/duckdb.h"
           cp "$tmp/extracted/duckdb.hpp" "$home/include/duckdb.hpp"
           cp "$tmp/extracted/libduckdb.dylib" "$home/lib/libduckdb.dylib"
           # Nested INTERNAL headers (duckdb/common/serializer/*.hpp etc.),
           # same reason as the Linux step below.
-          git clone --depth 1 --branch v1.5.5 https://github.com/duckdb/duckdb "$tmp/duckdb-src"
+          git clone --depth 1 --branch v1.5.6 https://github.com/duckdb/duckdb "$tmp/duckdb-src"
           cp -r "$tmp/duckdb-src/src/include/duckdb" "$home/include/"
           echo "DUCKDB_HOME=$home" >> "$GITHUB_ENV"
           ls -l "$home/lib/libduckdb.dylib" "$home/include/duckdb.hpp"
@@ -123,11 +123,11 @@ jobs:
       # Linux: download the official libduckdb release zip and stage into
       # /usr/local. The CMake `find_path / find_library` hints in
       # native/quackwire/CMakeLists.txt cover /usr/local/{include,lib}.
-      # Verified asset names on the v1.5.5 release page:
+      # Verified asset names on the v1.5.6 release page:
       #   libduckdb-linux-amd64.zip   (x86_64)
       #   libduckdb-linux-arm64.zip   (aarch64)
-      # (gh api repos/duckdb/duckdb/releases/tags/v1.5.5 .assets[].name)
-      - name: Install libduckdb v1.5.5 (Linux)
+      # (gh api repos/duckdb/duckdb/releases/tags/v1.5.6 .assets[].name)
+      - name: Install libduckdb v1.5.6 (Linux)
         if: matrix.os == 'linux'
         env:
           DUCKDB_ZIP: ${{ matrix.duckdb_zip }}
@@ -138,7 +138,7 @@ jobs:
           tmp=$(mktemp -d)
           # 1. Binary + amalgamated public headers from the official release.
           curl -fsSL -o "$tmp/$DUCKDB_ZIP" \
-            "https://github.com/duckdb/duckdb/releases/download/v1.5.5/$DUCKDB_ZIP"
+            "https://github.com/duckdb/duckdb/releases/download/v1.5.6/$DUCKDB_ZIP"
           unzip -o "$tmp/$DUCKDB_ZIP" -d "$tmp/extracted"
           sudo install -m 0644 "$tmp/extracted/duckdb.h"   /usr/local/include/duckdb.h
           sudo install -m 0644 "$tmp/extracted/duckdb.hpp" /usr/local/include/duckdb.hpp
@@ -148,7 +148,7 @@ jobs:
           # duckdb-quack message layer pulls `duckdb/common/serializer/
           # binary_serializer.hpp` directly; we grab them from a shallow
           # clone at the same tag.
-          git clone --depth 1 --branch v1.5.5 https://github.com/duckdb/duckdb "$tmp/duckdb-src"
+          git clone --depth 1 --branch v1.5.6 https://github.com/duckdb/duckdb "$tmp/duckdb-src"
           sudo cp -r "$tmp/duckdb-src/src/include/duckdb" /usr/local/include/
           sudo ldconfig
           ls -l /usr/local/lib/libduckdb.so /usr/local/include/duckdb.hpp
@@ -212,9 +212,9 @@ jobs:
       # FULL duckdb/ include tree. The release zip ships only the amalgamated
       # duckdb.{h,hpp}; the duckdb-quack message layer also pulls internal
       # headers (duckdb/common/serializer/binary_serializer.hpp), grabbed from a
-      # shallow clone at the same v1.5.5 tag. Runs in git-bash for parity with
+      # shallow clone at the same v1.5.6 tag. Runs in git-bash for parity with
       # the Linux step.
-      - name: Install libduckdb v1.5.5 (Windows)
+      - name: Install libduckdb v1.5.6 (Windows)
         shell: bash
         run: |
           set -euo pipefail
@@ -222,13 +222,13 @@ jobs:
           mkdir -p "$home/include" "$home/lib"
           tmp="$(mktemp -d)"
           curl -fsSL -o "$tmp/libduckdb.zip" \
-            "https://github.com/duckdb/duckdb/releases/download/v1.5.5/libduckdb-windows-amd64.zip"
+            "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-windows-amd64.zip"
           unzip -o "$tmp/libduckdb.zip" -d "$tmp/dl"
           cp "$tmp/dl/duckdb.h"   "$home/include/duckdb.h"
           cp "$tmp/dl/duckdb.hpp" "$home/include/duckdb.hpp"
           cp "$tmp/dl/duckdb.lib" "$home/lib/duckdb.lib"
           cp "$tmp/dl/duckdb.dll" "$home/lib/duckdb.dll"
-          git clone --depth 1 --branch v1.5.5 https://github.com/duckdb/duckdb "$tmp/duckdb-src"
+          git clone --depth 1 --branch v1.5.6 https://github.com/duckdb/duckdb "$tmp/duckdb-src"
           cp -r "$tmp/duckdb-src/src/include/duckdb" "$home/include/"
           ls "$home/lib/duckdb.lib" "$home/include/duckdb.hpp"
           ls "$home/include/duckdb/common/serializer/binary_serializer.hpp"

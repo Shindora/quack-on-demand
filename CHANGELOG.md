@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **DuckDB upgraded 1.5.5 -> 1.5.6** across every pinned layer: the DuckDB JDBC driver
+  (`1.5.6.0`), libquackwire rebuilt against libduckdb 1.5.6 (`1.5.6-7e80f7ffcc98-1`; the
+  duckdb-quack pin is unchanged, DuckDB 1.5.6 ships the same `7e80f7f` quack extension), and
+  the runtime DuckDB CLI fallbacks (`run-jar.sh`, `run-jar.ps1`, `qod start --demo`, the K8s
+  node image). The node wire protocol is unchanged. DuckLake picks up the 1.5-line backports
+  (inline flush with hive partitioning, stale-schema invalidation, a Postgres metadata query
+  fix).
+
 - **Iceberg sources: AWS credentials for Glue, S3 Tables and sigv4.** These catalogs sign with
   AWS SigV4, but the typed source had nowhere to put AWS credentials: no secret was rendered, so
   DuckDB either failed the attach (`Could not find a valid storage secret`, `... does not have a
