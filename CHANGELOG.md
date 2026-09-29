@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **DuckDB upgraded 1.5.5 -> 1.5.6** across every pinned layer: the DuckDB JDBC driver
+  (`1.5.6.0`), libquackwire rebuilt against libduckdb 1.5.6 (`1.5.6-7e80f7ffcc98-1`; the
+  duckdb-quack pin is unchanged, DuckDB 1.5.6 ships the same `7e80f7f` quack extension), and
+  the runtime DuckDB CLI fallbacks (`run-jar.sh`, `run-jar.ps1`, `qod start --demo`, the K8s
+  node image). The node wire protocol is unchanged. DuckLake picks up the 1.5-line backports
+  (inline flush with hive partitioning, stale-schema invalidation, a Postgres metadata query
+  fix).
+
 ## 0.9.8
 
 - **Security: a session expiring mid-request no longer gains superuser access (#130).** Handler

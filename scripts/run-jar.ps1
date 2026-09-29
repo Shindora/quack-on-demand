@@ -102,7 +102,7 @@ function Resolve-DuckDbVersion {
     $line = Select-String -Path $buildSbt -Pattern '^val libquackwireVersion' | Select-Object -First 1
     if ($line -and $line.Line -match '"([0-9]+\.[0-9]+\.[0-9]+)') { return $Matches[1] }
   }
-  return '1.5.5'
+  return '1.5.6'
 }
 
 function Install-DuckDb {

@@ -42,11 +42,11 @@ review and commit the diff.
 
 `<duckdb-abi-version>-<duckdb-quack-short-sha>-<rev>`
 
-For example, `1.5.5-7e80f7ffcc98-1` says:
+For example, `1.5.6-7e80f7ffcc98-1` says:
 
-- Built against DuckDB v1.5.5's C++ ABI (link-compatible with
+- Built against DuckDB v1.5.6's C++ ABI (link-compatible with
   `libduckdb.so` / `libduckdb.dylib` from
-  https://github.com/duckdb/duckdb/releases/tag/v1.5.5).
+  https://github.com/duckdb/duckdb/releases/tag/v1.5.6).
 - Pinned at `duckdb/duckdb-quack` commit `7e80f7ffcc98`.
 - `rev` is a monotonic patch number that bumps each time the binaries
   are re-released for the same (abi, sha) pair, without touching the
