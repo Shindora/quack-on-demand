@@ -1144,9 +1144,15 @@ Flags:
   `--endpoint-type` (`glue` | `s3_tables`) - DuckDB refuses both at once. `--uri`
   is required whenever `--auth` is set.
 - `oauth2` needs `--client-id` + `--client-secret`; `token` needs `--token` and
-  takes nothing else; `none` / `sigv4` / either `--endpoint-type` take no
-  credential flags at all. Optional oauth2 knobs: `--oauth2-server-uri`,
-  `--oauth2-scope`, `--oauth2-grant-type`.
+  takes nothing else; `none` takes no credential flags at all. Optional oauth2
+  knobs: `--oauth2-server-uri`, `--oauth2-scope`, `--oauth2-grant-type`.
+- `--warehouse` changes meaning with the endpoint type: for `glue` it is the AWS
+  account id (`123456789012`, optionally `:catalog`), for `s3_tables` the table
+  bucket ARN (`arn:aws:s3tables:<region>:<account>:bucket/<name>`).
+- `sigv4` and both endpoint types sign with AWS credentials, set with the
+  `--aws-*` flags (see "AWS-signed catalogs" below). Without them no secret is
+  rendered and DuckDB signs with whatever default s3 secret the node already
+  holds, usually QoD's own storage credentials.
 - `--config '<json>'` passes the whole config object instead of the flags, and
   wins over them when both are given.
 - `--read-only` / `--no-read-only`. **Defaults ON for `iceberg-rest`** (an
@@ -1171,6 +1177,31 @@ Rules worth knowing before the first create:
   `iceberg-rest` is refused: delete it first.
 - **The alias rules are not Iceberg-specific.** See "Register a federated
   source" above: they apply to every source type.
+
+#### AWS-signed catalogs (Glue, S3 Tables, sigv4)
+
+```bash
+qod federation create acme acme_fed --alias glue_lake --type iceberg-rest \
+  --endpoint-type glue --warehouse 123456789012 \
+  --aws-credentials config --aws-region eu-west-1 \
+  --aws-key-id '{{secret.AWS_KEY_ID}}' \
+  --aws-secret-access-key '{{secret.AWS_SECRET}}' \
+  --aws-scope s3://my-lake/
+qod federation secret set acme acme_fed glue_lake --name AWS_KEY_ID --value "$AWS_ACCESS_KEY_ID"
+qod federation secret set acme acme_fed glue_lake --name AWS_SECRET --value "$AWS_SECRET_ACCESS_KEY"
+```
+
+- `--aws-credentials config` takes `--aws-key-id` + `--aws-secret-access-key`
+  (plus `--aws-session-token` for temporary credentials); `credential_chain`
+  takes no keys and uses the node's instance role, env or profile.
+- `--aws-region` is required for `glue` and `sigv4`; `s3_tables` reads it off
+  the ARN when omitted.
+- `--aws-scope` (repeatable) is **required**: the s3:// prefixes holding the
+  catalog's table data. The credentials apply only there. An unscoped secret
+  would outrank the node's own storage secret on every S3 read, the database's
+  own data included, so QoD refuses to render one.
+- `--aws-secret-access-key` / `--aws-session-token` must be `{{secret.NAME}}`
+  placeholders, like `--client-secret`.
 
 ### Check whether an Iceberg catalog actually attached
 
@@ -1251,6 +1282,8 @@ Import semantics: replace-by-alias inside the tenant-db. Sources absent from the
 | `secret '<name>' for source '<alias>' has no existing value to reuse` on YAML import | Imported `***REDACTED***` for a new source that didn't exist before | Provide the actual `value` or `externalRef` for that secret in the YAML |
 | YAML import HTTP 400 `duplicate alias '<X>' in payload` | Two sources in the imported YAML have the same alias | Dedupe in the YAML before re-importing |
 | HTTP 400 `clientSecret must be a secret placeholder of the form {{secret.NAME}}, not a literal value` | Credential passed inline to `qod federation create --type iceberg-rest` | Pass `'{{secret.NAME}}'` and store the value with `qod federation secret set` |
+| HTTP 400 `awsScope is required` | `--aws-credentials` given without `--aws-scope` | Add `--aws-scope s3://<bucket>/` for each prefix holding the catalog's table data |
+| `Assumed catalog secret ... does not have a region` / `Could not find a valid storage secret (s3 or aws)` in `catalogAttachFailures` | A `glue` / `s3_tables` / `sigv4` source created without `--aws-credentials` | Recreate it with the `--aws-*` flags |
 | HTTP 400 `set exactly one of authType / endpointType` | Both `--auth` and `--endpoint-type` given (or neither) | Pick one: `--auth` for a plain REST catalog, `--endpoint-type` for Glue / S3 Tables |
 | `attachStatus: failed on N of M nodes`, or `catalog '<alias>' does not exist` from the client | The Iceberg ATTACH failed on those nodes (bad credential, unreachable catalog, alias collision) | Read the per-node DuckDB error in `qod pool status` under `catalogAttachFailures`, fix the source or secret, then `qod node restart` the affected nodes |
 

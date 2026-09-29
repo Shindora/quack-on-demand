@@ -72,7 +72,7 @@ class AttachErrorRedactorSpec extends AnyFlatSpec with Matchers:
     * It searches the subsets rather than adding fields one at a time because the validator has
     * mutual requirements -- under oauth2, `clientId` alone is invalid and `clientSecret` alone is
     * invalid, while the two together are valid -- so a greedy pass would find nothing at all and
-    * the spec would silently test an empty fixture. Eight string-typed fields is 256 subsets,
+    * the spec would silently test an empty fixture. Twelve string-typed fields is 4096 subsets,
     * checked largest first and stopped at the first valid one.
     */
   private def withPlaceholders(
@@ -104,6 +104,25 @@ class AttachErrorRedactorSpec extends AnyFlatSpec with Matchers:
       t.wire -> IcebergRestConfig(uri = "http://c", warehouse = "w", authType = Some(t))
     ) ++ IcebergEndpointType.values.toList.map(e =>
       e.wire -> IcebergRestConfig(uri = "http://c", warehouse = "w", endpointType = Some(e))
+    ) ++ awsShapes
+
+  /** The AWS-signed shapes again, now carrying static keys: that is the only arrangement under
+    * which `awsSecretAccessKey` / `awsSessionToken` are rendered, so without these the placeholder
+    * search never reaches them. `uri` is cleared for the endpoint types, which take none.
+    */
+  private def awsShapes: List[(String, IcebergRestConfig)] =
+    val aws = (c: IcebergRestConfig) =>
+      c.copy(
+        awsCredentials = Some(AwsCredentials.Config),
+        awsRegion = Some("eu-west-1"),
+        awsScope = List("s3://lake/")
+      )
+    List(
+      "sigv4+aws" -> aws(
+        IcebergRestConfig(uri = "http://c", warehouse = "w", authType = Some(IcebergAuthType.SigV4))
+      )
+    ) ++ IcebergEndpointType.values.toList.map(e =>
+      s"${e.wire}+aws" -> aws(IcebergRestConfig(warehouse = "w", endpointType = Some(e)))
     )
 
   // ---------------------------------------------------------------------------------------------
@@ -163,11 +182,18 @@ class AttachErrorRedactorSpec extends AnyFlatSpec with Matchers:
       "oauth2ServerUri",
       "oauth2Scope",
       "oauth2GrantType",
-      "token"
+      "token",
+      "awsCredentials",
+      "awsRegion",
+      "awsKeyId",
+      "awsSecretAccessKey",
+      "awsSessionToken",
+      "awsScope"
     )
-    IcebergRestConfig.CredentialFields.map(_._1) shouldBe List("clientSecret", "token")
+    IcebergRestConfig.CredentialFields.map(_._1) shouldBe
+      List("clientSecret", "token", "awsSecretAccessKey", "awsSessionToken")
     IcebergSetupSql.CredentialOption.values.map(_.optionName).toSet shouldBe
-      Set("CLIENT_SECRET", "TOKEN")
+      Set("CLIENT_SECRET", "TOKEN", "SECRET", "SESSION_TOKEN")
   }
 
   // ---------------------------------------------------------------------------------------------

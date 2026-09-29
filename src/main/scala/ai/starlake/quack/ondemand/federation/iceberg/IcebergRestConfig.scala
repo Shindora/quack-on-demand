@@ -41,6 +41,25 @@ object IcebergEndpointType:
     fromWire(s).toRight(s"unknown endpointType '$s' (expected one of: glue, s3_tables)")
   }
 
+/** Where the AWS credentials of an AWS-signed catalog (`sigv4`, `glue`, `s3_tables`) come from.
+  * `Config` carries static keys as `{{secret.NAME}}` placeholders; `CredentialChain` lets the aws
+  * extension resolve them on the node (instance role, env, profile). Unset keeps the pre-existing
+  * behaviour: no secret is rendered and DuckDB falls back to whatever default s3 secret the node
+  * holds, which is why a stored row without AWS fields still renders exactly as before.
+  */
+enum AwsCredentials(val wire: String):
+  case Config          extends AwsCredentials("config")
+  case CredentialChain extends AwsCredentials("credential_chain")
+
+object AwsCredentials:
+  def fromWire(s: String): Option[AwsCredentials] =
+    values.find(_.wire.equalsIgnoreCase(s.trim))
+
+  given Encoder[AwsCredentials] = Encoder.encodeString.contramap(_.wire)
+  given Decoder[AwsCredentials] = Decoder.decodeString.emap { s =>
+    fromWire(s).toRight(s"unknown awsCredentials '$s' (expected one of: config, credential_chain)")
+  }
+
 /** Typed declaration of one external Iceberg REST catalog, persisted as JSON in
   * `qodstate_federated_source.config`.
   *
@@ -61,7 +80,13 @@ final case class IcebergRestConfig(
     oauth2ServerUri: Option[String] = None,
     oauth2Scope: Option[String] = None,
     oauth2GrantType: Option[String] = None,
-    token: Option[String] = None
+    token: Option[String] = None,
+    awsCredentials: Option[AwsCredentials] = None,
+    awsRegion: Option[String] = None,
+    awsKeyId: Option[String] = None,
+    awsSecretAccessKey: Option[String] = None,
+    awsSessionToken: Option[String] = None,
+    awsScope: List[String] = Nil
 ):
 
   def toJson: String = this.asJson.noSpaces
@@ -127,11 +152,90 @@ final case class IcebergRestConfig(
         if credentialFieldsSet then
           errs += "endpointType takes no clientId, clientSecret, oauth2 or token fields"
 
+    errs ++= awsErrors
+
     errs ++= IcebergRestConfig.CredentialFields.flatMap { (name, read) =>
       IcebergRestConfig.placeholderErrors(name, read(this))
     }
 
     errs.result()
+
+  /** Whether this catalog signs its requests with AWS SigV4, i.e. may carry AWS credentials. */
+  def isAwsSigned: Boolean =
+    endpointType.isDefined || authType.contains(IcebergAuthType.SigV4)
+
+  /** Whether any AWS field is set. `awsCredentials` is what turns the secret on; the others are
+    * counted so a half-filled block is refused rather than silently dropped.
+    */
+  def hasAwsFields: Boolean =
+    awsCredentials.isDefined || IcebergRestConfig.isSet(awsRegion) ||
+      IcebergRestConfig.isSet(awsKeyId) || IcebergRestConfig.isSet(awsSecretAccessKey) ||
+      IcebergRestConfig.isSet(awsSessionToken) || awsScope.nonEmpty
+
+  /** The region the AWS secret is rendered with: the explicit one, else, for `s3_tables`, the one
+    * embedded in the table bucket ARN (`arn:aws:s3tables:<region>:<account>:bucket/<name>`), which
+    * is also where DuckDB itself takes the signing region from.
+    */
+  def effectiveAwsRegion: Option[String] =
+    awsRegion.map(_.trim).filter(_.nonEmpty).orElse {
+      Option
+        .when(endpointType.contains(IcebergEndpointType.S3Tables)) {
+          warehouse.trim.split(":", -1).toList
+        }
+        .collect {
+          case "arn" :: _ :: "s3tables" :: region :: _ :: _ :: Nil if region.nonEmpty => region
+        }
+    }
+
+  private def awsErrors: List[String] =
+    if !hasAwsFields then Nil
+    else if !isAwsSigned then
+      List(
+        "AWS credential fields (awsCredentials, awsRegion, awsKeyId, awsSecretAccessKey, " +
+          "awsSessionToken, awsScope) apply only to authType 'sigv4' and endpointType " +
+          "'glue' / 's3_tables'"
+      )
+    else
+      val errs = List.newBuilder[String]
+      awsCredentials match
+        case None =>
+          errs += "awsCredentials is required once any AWS field is set (config or credential_chain)"
+        case Some(AwsCredentials.Config) =>
+          if !IcebergRestConfig.isSet(awsKeyId) then
+            errs += "awsKeyId is required for awsCredentials 'config'"
+          if !IcebergRestConfig.isSet(awsSecretAccessKey) then
+            errs += "awsSecretAccessKey is required for awsCredentials 'config'"
+        case Some(AwsCredentials.CredentialChain) =>
+          if IcebergRestConfig.isSet(awsKeyId) || IcebergRestConfig.isSet(awsSecretAccessKey) ||
+            IcebergRestConfig.isSet(awsSessionToken)
+          then
+            errs += "awsCredentials 'credential_chain' takes no awsKeyId, awsSecretAccessKey " +
+              "or awsSessionToken"
+      if awsCredentials.isDefined && effectiveAwsRegion.isEmpty then
+        errs += (
+          if endpointType.contains(IcebergEndpointType.S3Tables) then
+            "awsRegion is required: it could not be derived from the warehouse, which is not " +
+              "an S3 Tables ARN (arn:aws:s3tables:<region>:<account>:bucket/<name>)"
+          else "awsRegion is required for AWS credentials"
+        )
+      // DuckDB picks the s3 secret for a path by longest matching scope and breaks ties on the
+      // secret NAME, alphabetically. An unscoped "qod_ice_<alias>" therefore ties with the node's
+      // own unscoped storage secret "quack_s3" and WINS ("qod" < "qua"), so it would sign every
+      // S3 read no longer scope covers, the tenant-db's own data included. Hence a scope is
+      // mandatory, and every entry must name a bucket: a bare "s3://" is the unscoped case again.
+      if awsCredentials.isDefined && awsScope.isEmpty then
+        errs += "awsScope is required: list the S3 prefixes holding this catalog's table data " +
+          "(e.g. s3://my-lake/). An unscoped secret would outrank QoD's own storage secret on " +
+          "every S3 read"
+      awsScope.foreach { entry =>
+        if !IcebergRestConfig.ScopeEntry.matches(entry.trim) then
+          errs += s"awsScope entry '$entry' must be an s3:// prefix naming a bucket " +
+            "(s3://bucket/ or s3://bucket/path/)"
+      }
+      errs ++= IcebergRestConfig.strayBraceErrors("awsRegion", awsRegion)
+      errs ++= IcebergRestConfig.strayBraceErrors("awsKeyId", awsKeyId)
+      awsScope.foreach(e => errs ++= IcebergRestConfig.strayBraceErrors("awsScope", Some(e)))
+      errs.result()
 
 /** An [[IcebergRestConfig]] that has passed [[IcebergRestConfig.validated]], carrying its alias
   * already NORMALIZED (lowercase, via Names.normalizeOrError). The constructor is private to the
@@ -157,7 +261,17 @@ object IcebergRestConfig:
     * and the spec's field-inventory test says so out loud when someone forgets.
     */
   private[iceberg] val CredentialFields: List[(String, IcebergRestConfig => Option[String])] =
-    List("clientSecret" -> (_.clientSecret), "token" -> (_.token))
+    List(
+      "clientSecret"       -> (_.clientSecret),
+      "token"              -> (_.token),
+      "awsSecretAccessKey" -> (_.awsSecretAccessKey),
+      "awsSessionToken"    -> (_.awsSessionToken)
+    )
+
+  /** One `awsScope` entry: `s3://`, a non-empty bucket, then an optional path. No quote, so the
+    * rendered list literal cannot be broken out of even before `duckdbLiteral` escapes it.
+    */
+  private val ScopeEntry = "s3://[^/\\s']+(/[^\\s']*)?".r
 
   private val SecretPlaceholder = "\\{\\{secret\\.[A-Za-z0-9_]+\\}\\}".r
 

@@ -239,8 +239,13 @@ final class McpPlatformTools(
       "config"      -> objProp(
         "Iceberg REST catalog declaration; required for an 'iceberg_rest' source. Fields: uri, " +
           "warehouse, authType (none | oauth2 | token | sigv4), endpointType (glue | s3_tables), " +
-          "clientId, clientSecret, oauth2ServerUri, oauth2Scope, oauth2GrantType, token. " +
-          "clientSecret and token must be {{secret.NAME}} placeholders, never literals."
+          "clientId, clientSecret, oauth2ServerUri, oauth2Scope, oauth2GrantType, token; for " +
+          "sigv4 / glue / s3_tables also awsCredentials (config | credential_chain), awsRegion, " +
+          "awsKeyId, awsSecretAccessKey, awsSessionToken, awsScope (list of s3:// prefixes " +
+          "holding the table data, required with awsCredentials). warehouse is the AWS account " +
+          "id for glue and the table bucket ARN for s3_tables. clientSecret, token, " +
+          "awsSecretAccessKey and awsSessionToken must be {{secret.NAME}} placeholders, never " +
+          "literals."
       ),
       "read_only" -> boolProp(
         "Refuse writes through this catalog; defaults to true for iceberg_rest, false for sql."
