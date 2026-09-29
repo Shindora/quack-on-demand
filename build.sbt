@@ -116,11 +116,16 @@ lazy val root = (project in file("."))
             " under libquackwire/binaries/. Run scripts/refresh-quackwire-binaries.sh (or QOD_VERSION=BUILD ./scripts/run-jar.sh for the host platform)."
         )
       val present = mandatory ++ optional.filter { case (p, f) => (srcRoot / p / f).exists }
-      present.map { case (p, f) =>
+      val natives = present.map { case (p, f) =>
         val out = outRoot / p / f
         IO.copyFile(srcRoot / p / f, out)
         out
       }
+      // The version stamp rides along so the runtime knows which .duckdb/<abi> cache holds the
+      // libduckdb these natives link against (LibDuckDbPreload in QuackNativeBridge.scala).
+      val stamp = outRoot / "VERSION"
+      IO.copyFile(srcRoot / "VERSION", stamp)
+      natives :+ stamp
     }.taskValue,
     libraryDependencySchemes += "io.circe" %% "circe-yaml-common" % VersionScheme.Always,
     dependencyOverrides ++= Seq(

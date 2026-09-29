@@ -1,5 +1,6 @@
 package ai.starlake.quack.edge.adapter
 
+import java.nio.file.{Files, Path}
 import java.util.Locale
 import scala.util.Using
 
@@ -199,6 +200,10 @@ private object NativeLoader:
     s"$osTag-$archTag"
 
   def loadFromResources(resourcePath: String): Unit =
+    // libquackwire links libduckdb dynamically. Loading the pinned one first lets the dynamic
+    // loader satisfy that dependency from the image already in the process, instead of from the
+    // library path baked in at build time (see LibDuckDbPreload).
+    LibDuckDbPreload.preload()
     val tmp =
       java.nio.file.Files.createTempFile("libquackwire-", System.mapLibraryName("quackwire"))
     Using.resource(
@@ -211,3 +216,69 @@ private object NativeLoader:
     }
     tmp.toFile.deleteOnExit()
     System.load(tmp.toAbsolutePath.toString)
+
+/** Loads the pinned libduckdb into the process before libquackwire, from the `.duckdb/<abi>/lib`
+  * cache the launchers provision.
+  *
+  * libquackwire depends on `@rpath/libduckdb.dylib` (`libduckdb.so`, `duckdb.dll`), and the only
+  * rpath baked into a vendored binary is the build machine's cache directory, which exists nowhere
+  * else. `run-jar.sh` and `qod start` / `qod serve` cover that by putting the cache on the loader
+  * path, but a JVM started through a bash script on macOS never sees `DYLD_LIBRARY_PATH` (System
+  * Integrity Protection strips `DYLD_*` when a protected binary such as `/bin/bash` runs), which is
+  * exactly how `sbt test` forks. An image already loaded under the same install name (macOS),
+  * soname (Linux) or module name (Windows) satisfies the dependency, so a preload makes the baked
+  * rpath irrelevant.
+  *
+  * Best effort by design: finding nothing, or failing to load what it found, leaves resolution to
+  * the loader path exactly as before, and [[QuackNativeSupport.effectiveNativeClient]] still
+  * decides whether the native client is usable.
+  */
+private[adapter] object LibDuckDbPreload extends com.typesafe.scalalogging.LazyLogging:
+
+  /** `libquackwire/binaries/VERSION`, bundled by build.sbt next to the natives. */
+  private val VersionResource = "/native/VERSION"
+
+  private val DuckDbVersion = "(\\d+\\.\\d+\\.\\d+)(?:-.*)?".r
+
+  /** The DuckDB release a libquackwire version stamp (`<abi>-<quack sha>-<rev>`) links against. */
+  def abiVersion(stamp: String): Option[String] =
+    stamp.trim match
+      case DuckDbVersion(v) => Some(v)
+      case _                => None
+
+  def bundledAbi: Option[String] =
+    Option(getClass.getResourceAsStream(VersionResource)).flatMap { in =>
+      scala.util.Using.resource(in)(s => abiVersion(new String(s.readAllBytes(), "UTF-8")))
+    }
+
+  /** Where the launchers put libduckdb, in the order they are tried: `$DUCKDB_CACHE_DIR/<abi>/lib`
+    * (run-jar.sh's and the qod launcher's air-gap layout), then `<cwd>/.duckdb/<abi>/lib` (run-jar
+    * .sh's default, and a repo-root `sbt test`).
+    */
+  def candidates(abi: String, env: Map[String, String], cwd: Path): List[Path] =
+    val lib = System.mapLibraryName("duckdb")
+    (env.get("DUCKDB_CACHE_DIR").map(_.trim).filter(_.nonEmpty).map(Path.of(_)).toList :+
+      cwd.resolve(".duckdb")).map(_.resolve(abi).resolve("lib").resolve(lib)).distinct
+
+  /** Loads the first existing candidate and returns it; None when there was nothing to load or the
+    * load failed. Never throws: an `UnsatisfiedLinkError` is a `java.lang.Error`, hence Throwable.
+    */
+  def preload(
+      abi: Option[String] = bundledAbi,
+      env: Map[String, String] = sys.env,
+      cwd: Path = Path.of("").toAbsolutePath,
+      load: String => Unit = System.load
+  ): Option[Path] =
+    abi.flatMap(a => candidates(a, env, cwd).find(Files.isRegularFile(_))).flatMap { lib =>
+      try
+        load(lib.toAbsolutePath.toString)
+        logger.debug(s"preloaded libduckdb from $lib")
+        Some(lib)
+      catch
+        case t: Throwable =>
+          logger.warn(
+            s"could not preload libduckdb from $lib (${t.getMessage}); libquackwire falls back " +
+              "to the dynamic loader path"
+          )
+          None
+    }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The native client finds libduckdb without relying on a build-machine path.** libquackwire
+  links libduckdb dynamically, and the only library path baked into a vendored binary is the cache
+  directory of the machine that built it. `run-jar.sh` and `qod start` / `qod serve` cover this by
+  putting their cache on the loader path, but a JVM started through a bash script on macOS never
+  sees `DYLD_LIBRARY_PATH` (System Integrity Protection strips it), so `sbt test` and similar
+  launches failed to load libquackwire. The manager now loads the pinned libduckdb first, from
+  `$DUCKDB_CACHE_DIR/<version>/lib` or `./.duckdb/<version>/lib`, which the loader then reuses for
+  libquackwire; the version is read from a stamp now bundled next to the natives. Finding nothing
+  falls back to the loader path as before.
+
 - **BREAKING: `qod agent` is now `qod fleet join`, with no alias.** The fleet server process moved
   under `qod fleet`; its flags and `QOD_FLEET_JOIN_TOKEN` are unchanged, and so is its default state
   directory, so an upgraded server still reaps a node orphaned by the previous version. **Before
