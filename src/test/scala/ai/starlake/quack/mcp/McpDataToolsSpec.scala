@@ -1,11 +1,18 @@
 // src/test/scala/ai/starlake/quack/mcp/McpDataToolsSpec.scala
 package ai.starlake.quack.mcp
 
-import ai.starlake.quack.McpConfig
-import ai.starlake.quack.edge.adapter.TestArrow
+import ai.starlake.quack.{CatalogConfig, McpConfig}
+import ai.starlake.quack.edge.adapter.{NodeLoadTracker, QuackResponse, TestArrow}
 import ai.starlake.quack.edge.{RouterFailure, StatementHistoryStore}
 import ai.starlake.quack.edge.FlightSqlRouter
-import ai.starlake.quack.model.{PoolKey, TenantDbKind}
+import ai.starlake.quack.model.{
+  FederatedSource,
+  FederatedSourceType,
+  PoolKey,
+  Role,
+  RunningNode,
+  TenantDbKind
+}
 import ai.starlake.quack.ondemand.PoolSupervisor
 import ai.starlake.quack.ondemand.api.{
   CatalogColumnEntry,
@@ -15,20 +22,34 @@ import ai.starlake.quack.ondemand.api.{
   CatalogPreviewHandlers,
   CatalogTableDetailResponse,
   CatalogTableEntry,
+  ExecCaller,
+  IcebergCatalogHandlers,
   ProfileHandlers,
+  RestCaller,
   TagHandlers,
   TenantDbHandlers
 }
 import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.catalog.DuckLakeCatalogReader
+import ai.starlake.quack.ondemand.catalog.iceberg.NodeMetadataQuery
+import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
 import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, RbacUser}
 import ai.starlake.quack.ondemand.telemetry.NoopTelemetryStore
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.{Json, JsonObject}
 import io.circe.parser.parse
+import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.{BigIntVector, BitVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.ipc.{ArrowReader, ArrowStreamReader, ArrowStreamWriter}
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.time.Instant
+import scala.collection.mutable.ListBuffer
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 /** Data-tier MCP tool contract: tenant inference, the run_sql row cap, error surfacing, and the
   * describe_table composition. Built over the in-memory supervisor + TestArrow readers; no Postgres
@@ -39,7 +60,8 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
   private val Tenant   = "acme"
   private val TenantDb = "acme_default"
 
-  private val patToken = "qod_pat_alice"
+  private val patToken       = "qod_pat_alice"
+  private val NonAdminPatTok = "qod_pat_bob"
 
   private def patFor(tenant: Option[String], admin: Boolean): McpPrincipal =
     val scope = SessionScope(
@@ -139,6 +161,214 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
       _ => None
     )
     new McpDataTools(cfg, executor, sup, catalog, history, tags, tenantDbs, profile, scopeOf)
+
+  // ------------------------------------------------------------------
+  // Iceberg fixture (Task 8): a minimal real Arrow-backed NodeMetadataQuery stub, reusing the
+  // approach of IcebergCatalogHandlersSpec rather than inventing a new harness.
+  // ------------------------------------------------------------------
+
+  private val IcebergAlias      = "ice"
+  private val IcebergSchema     = "probe"
+  private val IcebergTable      = "t"
+  private val IcebergSnapshotId = "1234567890123456789" // beyond JS's 2^53, still a valid Long
+
+  private enum AK:
+    case S, L, B
+
+  /** A real Arrow IPC stream reader over `cols`/`rows`, matching the shape
+    * `ArrowRowsDecoder.decode` expects -- built the same way IcebergCatalogHandlersSpec's fixture
+    * builds its canned node responses.
+    */
+  private def arrowReader(cols: List[(String, AK)], rows: List[List[Option[Any]]]): ArrowReader =
+    val allocator = new RootAllocator()
+    val fields    = cols.map {
+      case (n, AK.S) => Field.nullable(n, new ArrowType.Utf8())
+      case (n, AK.L) => Field.nullable(n, new ArrowType.Int(64, true))
+      case (n, AK.B) => Field.nullable(n, new ArrowType.Bool())
+    }
+    val schema = new Schema(java.util.List.of(fields*))
+    val root   = VectorSchemaRoot.create(schema, allocator)
+    val out    = new ByteArrayOutputStream()
+    val writer = new ArrowStreamWriter(root, null, out)
+    writer.start()
+    root.allocateNew()
+    rows.zipWithIndex.foreach { (row, i) =>
+      cols.zip(row).foreach { case ((name, kind), cell) =>
+        (kind, cell) match
+          case (AK.S, Some(v)) =>
+            root
+              .getVector(name)
+              .asInstanceOf[VarCharVector]
+              .setSafe(i, v.toString.getBytes("UTF-8"))
+          case (AK.S, None)    => root.getVector(name).asInstanceOf[VarCharVector].setNull(i)
+          case (AK.L, Some(v)) =>
+            root.getVector(name).asInstanceOf[BigIntVector].setSafe(i, v.asInstanceOf[Long])
+          case (AK.L, None)    => root.getVector(name).asInstanceOf[BigIntVector].setNull(i)
+          case (AK.B, Some(v)) =>
+            root
+              .getVector(name)
+              .asInstanceOf[BitVector]
+              .setSafe(i, if v.asInstanceOf[Boolean] then 1 else 0)
+          case (AK.B, None) => root.getVector(name).asInstanceOf[BitVector].setNull(i)
+      }
+    }
+    root.setRowCount(rows.length)
+    writer.writeBatch()
+    writer.end()
+    writer.close()
+    root.close()
+    new ArrowStreamReader(new ByteArrayInputStream(out.toByteArray), allocator)
+
+  private def icebergSnapshotsReader(): ArrowReader = arrowReader(
+    List(
+      "snapshot_id"  -> AK.S,
+      "parent_id"    -> AK.S,
+      "seq"          -> AK.L,
+      "ts_ms"        -> AK.L,
+      "summary_json" -> AK.S,
+      "is_current"   -> AK.B
+    ),
+    List(
+      List(
+        Some(IcebergSnapshotId),
+        None,
+        Some(1L),
+        Some(1700000000000L),
+        Some("""{"operation":"append"}"""),
+        Some(true)
+      )
+    )
+  )
+
+  private def icebergColumnsReader(): ArrowReader = arrowReader(
+    List("column_name" -> AK.S, "column_type" -> AK.S, "null" -> AK.S),
+    List(List(Some("id"), Some("BIGINT"), Some("YES")))
+  )
+
+  private def icebergFilesReader(): ArrowReader = arrowReader(
+    List(
+      "file_path"                -> AK.S,
+      "content"                  -> AK.S,
+      "file_format"              -> AK.S,
+      "record_count"             -> AK.L,
+      "manifest_sequence_number" -> AK.L
+    ),
+    List(List(Some("s3://w/a.parquet"), Some("DATA"), Some("PARQUET"), Some(3L), Some(1L)))
+  )
+
+  /** Answers `iceberg_load_table_response` (snapshots), `iceberg_metadata` (files) and `DESCRIBE`
+    * (columns) by substring match on the SQL, exactly like the respond() dispatch in
+    * IcebergCatalogHandlersSpec.
+    */
+  private def icebergMeta(
+      metaSqls: ListBuffer[String] = ListBuffer.empty
+  ): NodeMetadataQuery =
+    val node = RunningNode(
+      nodeId = "n1",
+      poolKey = PoolKey(Tenant, TenantDb, "sales"),
+      role = Role.ReadOnly,
+      host = "127.0.0.1",
+      port = 21900,
+      token = "tok",
+      pid = None,
+      podName = None,
+      startedAt = Instant.EPOCH
+    )
+    new NodeMetadataQuery(
+      readPool = (_, _) => Some(PoolKey(Tenant, TenantDb, "sales")),
+      readNodes = _ => List(node),
+      isAttached = (_, _) => true,
+      attachSummary = (_, _) => None,
+      send = (_, sql) =>
+        IO {
+          metaSqls += sql
+          if sql.contains("iceberg_load_table_response") then
+            QuackResponse.Ok(icebergSnapshotsReader(), 0L, () => ())
+          else if sql.contains("iceberg_metadata") then
+            QuackResponse.Ok(icebergFilesReader(), 0L, () => ())
+          else if sql.contains("DESCRIBE") then
+            QuackResponse.Ok(icebergColumnsReader(), 0L, () => ())
+          else sys.error(s"unexpected metadata sql: $sql")
+        },
+      timeoutSec = 5,
+      maxRows = 10000
+    )
+
+  /** `McpDataTools` wired with a stub `IcebergCatalogHandlers` exposing one enabled `ice` alias on
+    * `acme_default`; `previewExec` answers the routed preview/sample query.
+    */
+  private def icebergFixture(
+      previewExec: CatalogPreviewHandlers.PreviewExecutor,
+      metaSqls: ListBuffer[String] = ListBuffer.empty,
+      sampleTimeout: FiniteDuration = 30.seconds
+  ): McpDataTools =
+    val store   = new InMemoryControlPlaneStore()
+    val backend = StubQuackBackend.noop()
+    val tracker = new NodeLoadTracker
+    val sup     = new PoolSupervisor(backend, tracker, store)
+    sup.createTenant(ai.starlake.quack.model.Tenant(Tenant)).unsafeRunSync()
+    sup.createTenantDb(Tenant, TenantDb, TenantDbKind.InMemory, Map.empty, "").unsafeRunSync()
+    sup
+      .createPool(
+        PoolKey(Tenant, TenantDb, "sales"),
+        ai.starlake.quack.model.RoleDistribution(0, 0, 1)
+      )
+      .unsafeRunSync()
+
+    val tdId    = sup.findTenantDb(Tenant, TenantDb).get.id
+    val sources = Map(
+      tdId -> List(
+        FederatedSource("s1", tdId, IcebergAlias, sourceType = FederatedSourceType.IcebergRest)
+      )
+    )
+
+    val icebergHandlers = new IcebergCatalogHandlers(
+      sup,
+      sourcesOf = id => sources.getOrElse(id, Nil),
+      meta = icebergMeta(metaSqls),
+      executor = previewExec,
+      callerOf = RestCaller.staticOnly,
+      cfg = CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30)
+    )
+
+    // Fail-closed like Main's mcpScopeOf: only the static key (none here) is "unrestricted";
+    // every other token resolves to its own scope, or to NoAccess when unknown.
+    val scopeOf: String => Option[SessionScope] = SessionScope.failClosed(
+      None,
+      Map(
+        patToken       -> SessionScope(superuser = false, manageableTenants = Set(Tenant)),
+        NonAdminPatTok -> SessionScope.NoAccess
+      ).get
+    )
+    val catalog = new CatalogHandlers((_, _) => stubReader, sup, store)
+    val history = new CatalogHistoryHandlers((_, _) => stubReader, sup)
+    val tags    = new TagHandlers(
+      sup,
+      store,
+      snapshotExists = (_, _, _) => true,
+      snapshotsExist = (_, _, ids) => ids
+    )
+    val tenantDbs =
+      new TenantDbHandlers(sup, federatedStore = None, catalog = None, requireEncryption = false)
+    val profile = new ProfileHandlers(
+      _ => None,
+      NoopTelemetryStore,
+      new StatementHistoryStore(),
+      _ => None
+    )
+    new McpDataTools(
+      McpConfig(),
+      previewExec,
+      sup,
+      catalog,
+      history,
+      tags,
+      tenantDbs,
+      profile,
+      scopeOf,
+      iceberg = Some(icebergHandlers),
+      sampleTimeout = sampleTimeout
+    )
 
   private def call(
       tools: McpDataTools,
@@ -521,6 +751,200 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
     cols.flatMap(_.hcursor.get[String]("name").toOption) should contain("r_regionkey")
     json.hcursor.downField("sample").downField("rows").as[List[Json]].toOption.get should
       have size 2
+  }
+
+  // ------------------------------------------------------------------
+  // iceberg argument (Task 8): table_history and describe_table routed at an attached
+  // iceberg_rest source instead of the DuckLake catalog.
+  // ------------------------------------------------------------------
+
+  "table_history" should "route to the iceberg handlers and return string snapshot ids" in {
+    val tools = icebergFixture(rangeExecutor(1))
+    val out   = call(
+      tools,
+      "table_history",
+      McpPrincipal.StaticKey,
+      "database" -> Json.fromString(TenantDb),
+      "schema"   -> Json.fromString(IcebergSchema),
+      "table"    -> Json.fromString(IcebergTable),
+      "tenant"   -> Json.fromString(Tenant),
+      "iceberg"  -> Json.fromString(IcebergAlias)
+    )
+    val json  = out.toOption.getOrElse(fail(s"expected Right, got $out"))
+    val snaps = json.hcursor.downField("snapshots").as[List[Json]].toOption.get
+    snaps should have size 1
+    val idField = snaps.head.hcursor.downField("snapshotId")
+    idField.as[String].toOption shouldBe Some(IcebergSnapshotId)
+    // A JSON string, not a bare number: the id is beyond JavaScript's 2^53.
+    idField.focus.get.isString shouldBe true
+  }
+
+  it should "answer the iceberg-unavailable error when handlers are not wired" in {
+    val tools = fixture(rangeExecutor(1)) // no iceberg handlers: constructor default None
+    val out   = call(
+      tools,
+      "table_history",
+      McpPrincipal.StaticKey,
+      "database" -> Json.fromString(TenantDb),
+      "schema"   -> Json.fromString("tpch1"),
+      "table"    -> Json.fromString("region"),
+      "tenant"   -> Json.fromString(Tenant),
+      "iceberg"  -> Json.fromString(IcebergAlias)
+    )
+    out shouldBe Left("iceberg catalogs are not available on this manager")
+  }
+
+  // No "iceberg omitted" case against the real `history.history` DuckLake path here: this
+  // fixture's `stubReader` only overrides `getTable`/`maxSnapshotId` (what describe_table and
+  // list_tables need), not `listTableHistory`, and no test in this file exercised table_history
+  // before Task 8 -- wiring that up is outside this task's scope. The `case None =>` arm added
+  // below is the pre-existing `history.history(...)` call, byte-for-byte, just moved under the
+  // branch; describe_table's own "iceberg omitted" behavior is covered by the existing
+  // "describe_table should compose catalog columns with a decoded sample" test above.
+
+  "describe_table" should "compose iceberg detail with a 5-row sample when 'iceberg' is given" in {
+    val tools = icebergFixture(rangeExecutor(10))
+    val out   = call(
+      tools,
+      "describe_table",
+      McpPrincipal.StaticKey,
+      "database" -> Json.fromString(TenantDb),
+      "schema"   -> Json.fromString(IcebergSchema),
+      "table"    -> Json.fromString(IcebergTable),
+      "tenant"   -> Json.fromString(Tenant),
+      "iceberg"  -> Json.fromString(IcebergAlias)
+    )
+    val json = out.toOption.getOrElse(fail(s"expected Right, got $out"))
+    json.hcursor.downField("table").downField("alias").as[String].toOption shouldBe
+      Some(IcebergAlias)
+    val cols = json.hcursor.downField("columns").as[List[Json]].toOption.get
+    cols.flatMap(_.hcursor.get[String]("name").toOption) should contain("id")
+    json.hcursor.downField("sample").downField("rows").as[List[Json]].toOption.get should
+      have size 5
+  }
+
+  /** A tenant-acme admin PAT whose own maxRows (2) is below the sample cap. */
+  private val icebergPat: McpPrincipal =
+    new McpPrincipal.Pat(
+      PatPrincipal(
+        user = RbacUser(id = "u1", tenant = Some(Tenant), username = "alice", role = "admin"),
+        patId = "pat-1",
+        scope = SessionScope(superuser = false, manageableTenants = Set(Tenant)),
+        isAdmin = true,
+        restriction = TokenRestriction.Unrestricted.copy(maxRows = Some(2))
+      ),
+      patToken
+    )
+
+  private def describeIcebergIO(tools: McpDataTools, principal: McpPrincipal) =
+    // Only a superuser credential names the tenant; a PAT infers it.
+    val tenantArg =
+      if principal == McpPrincipal.StaticKey then List("tenant" -> Json.fromString(Tenant))
+      else Nil
+    val args = List(
+      "database" -> Json.fromString(TenantDb),
+      "schema"   -> Json.fromString(IcebergSchema),
+      "table"    -> Json.fromString(IcebergTable),
+      "iceberg"  -> Json.fromString(IcebergAlias)
+    ) ++ tenantArg
+    tools.tools
+      .find(_.name == "describe_table")
+      .getOrElse(fail("tool describe_table not defined"))
+      .run(principal, JsonObject(args*))
+
+  private def describeIceberg(tools: McpDataTools, principal: McpPrincipal) =
+    describeIcebergIO(tools, principal).unsafeRunSync()
+
+  it should "run the iceberg sample as the PAT's owner with its restriction, never system" in {
+    val seen = scala.collection.mutable.ListBuffer.empty[ExecCaller]
+    val sqls = scala.collection.mutable.ListBuffer.empty[String]
+    val recording: CatalogPreviewHandlers.PreviewExecutor = (caller, key, sql) =>
+      seen += caller
+      sqls += sql
+      rangeExecutor(10)(caller, key, sql)
+    val out  = describeIceberg(icebergFixture(recording), icebergPat)
+    val json = out.toOption.getOrElse(fail(s"expected Right, got $out"))
+    seen.toList.map(c => (c.identity, c.restriction.maxRows, c.patId, c.system)) shouldBe
+      List(("alice", Some(2), Some("pat-1"), false))
+    // The PAT's maxRows lowers the sample: one row past the cap is fetched, the cap is returned.
+    sqls.toList shouldBe List(
+      s"""SELECT * FROM "$IcebergAlias"."$IcebergSchema"."$IcebergTable" LIMIT 3"""
+    )
+    json.hcursor.downField("sample").downField("rows").as[List[Json]].toOption.get should
+      have size 2
+    json.hcursor.downField("sample").get[Boolean]("truncated").toOption shouldBe Some(true)
+  }
+
+  it should "degrade to the iceberg detail alone when the sample is denied or fails" in {
+    val denied: CatalogPreviewHandlers.PreviewExecutor =
+      (_, _, _) => IO.pure(Left(RouterFailure.AccessDenied("no grant on ice.probe.t")))
+    val boom: CatalogPreviewHandlers.PreviewExecutor =
+      (_, _, _) => IO.raiseError(new java.util.concurrent.TimeoutException("slow node"))
+    for exec <- List(denied, boom); principal <- List(McpPrincipal.StaticKey, icebergPat) do
+      val out  = describeIceberg(icebergFixture(exec), principal)
+      val json = out.toOption.getOrElse(fail(s"expected Right, got $out"))
+      json.hcursor.downField("table").downField("alias").as[String].toOption shouldBe
+        Some(IcebergAlias)
+      json.hcursor.downField("columns").as[List[Json]].toOption.get should not be empty
+      json.hcursor.downField("sample").focus shouldBe None
+  }
+
+  it should "degrade to the iceberg detail alone when the sample never completes" in {
+    val never: CatalogPreviewHandlers.PreviewExecutor = (_, _, _) => IO.never
+    val tools = icebergFixture(never, sampleTimeout = 200.millis)
+    val out   = describeIcebergIO(tools, icebergPat).timeout(10.seconds).unsafeRunSync()
+    val json  = out.toOption.getOrElse(fail(s"expected Right, got $out"))
+    json.hcursor.downField("columns").as[List[Json]].toOption.get should not be empty
+    json.hcursor.downField("sample").focus shouldBe None
+  }
+
+  /** A tenant-scoped, NON-admin PAT: its scope manages no tenant. */
+  private val nonAdminPat: McpPrincipal =
+    new McpPrincipal.Pat(
+      PatPrincipal(
+        user = RbacUser(id = "u2", tenant = Some(Tenant), username = "bob", role = "user"),
+        patId = "pat-2",
+        scope = SessionScope.NoAccess,
+        isAdmin = false,
+        restriction = TokenRestriction.Unrestricted
+      ),
+      NonAdminPatTok
+    )
+
+  "the iceberg tools" should "refuse a non-admin PAT before any metadata read or statement" in {
+    val metaSqls                                     = ListBuffer.empty[String]
+    val execCalls                                    = ListBuffer.empty[String]
+    val exec: CatalogPreviewHandlers.PreviewExecutor = (caller, key, sql) =>
+      execCalls += sql
+      rangeExecutor(10)(caller, key, sql)
+    val tools  = icebergFixture(exec, metaSqls)
+    val common = List(
+      "database" -> Json.fromString(TenantDb),
+      "schema"   -> Json.fromString(IcebergSchema),
+      "table"    -> Json.fromString(IcebergTable),
+      "iceberg"  -> Json.fromString(IcebergAlias)
+    )
+    for tool <- List("describe_table", "table_history") do
+      val out = call(tools, tool, nonAdminPat, common*)
+      out.swap.toOption.getOrElse(fail(s"$tool: expected Left, got $out")) should
+        include("tenant_forbidden")
+    metaSqls shouldBe empty
+    execCalls shouldBe empty
+  }
+
+  "describe_table" should "answer the iceberg-unavailable error when handlers are not wired" in {
+    val tools = fixture(rangeExecutor(10))
+    val out   = call(
+      tools,
+      "describe_table",
+      McpPrincipal.StaticKey,
+      "database" -> Json.fromString(TenantDb),
+      "schema"   -> Json.fromString(IcebergSchema),
+      "table"    -> Json.fromString(IcebergTable),
+      "tenant"   -> Json.fromString(Tenant),
+      "iceberg"  -> Json.fromString(IcebergAlias)
+    )
+    out shouldBe Left("iceberg catalogs are not available on this manager")
   }
 
   // ------------------------------------------------------------------

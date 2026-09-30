@@ -10,6 +10,7 @@ import ai.starlake.quack.ondemand.api.{
   CatalogPreviewHandlers,
   ErrorResponse,
   ExecCaller,
+  IcebergCatalogHandlers,
   PoolPicks,
   ProfileHandlers,
   TagHandlers,
@@ -17,10 +18,13 @@ import ai.starlake.quack.ondemand.api.{
 }
 import ai.starlake.quack.ondemand.api.Dtos.given
 import ai.starlake.quack.ondemand.auth.SessionScope
+import ai.starlake.quack.ondemand.catalog.iceberg.IcebergCatalogSql
 import cats.effect.IO
 import io.circe.{Json, JsonObject}
 import io.circe.syntax._
 import sttp.model.StatusCode
+
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 /** The MCP data tier: the tools every authenticated principal gets. Each tool goes through the SAME
   * enforcement as the REST/FlightSQL surface it mirrors -- `run_sql` through the injected routed
@@ -48,7 +52,16 @@ final class McpDataTools(
     branchTarget: (String, String, String) => Either[
       String,
       (String, ai.starlake.quack.model.PoolKey)
-    ] = (_, _, b) => Left(s"branch '$b' not found (branching unavailable)")
+    ] = (_, _, b) => Left(s"branch '$b' not found (branching unavailable)"),
+    /** Read-only views over external Iceberg REST catalogs (Task 8). `None` on a manager with no
+      * federation store wired -- every tool call naming an `iceberg` alias then answers the same
+      * caller-facing error rather than routing to the DuckLake catalog handlers by accident.
+      */
+    iceberg: Option[IcebergCatalogHandlers] = None,
+    /** Bound on the Iceberg `describe_table` sample (a remote scan): past it the call degrades to
+      * the detail alone. Main passes `catalog.previewTimeoutSec`, the REST preview's bound.
+      */
+    sampleTimeout: FiniteDuration = 30.seconds
 ):
 
   import McpDataTools._
@@ -300,9 +313,13 @@ final class McpDataTools(
     inputSchema = objectSchema(
       required = List("database", "schema", "table"),
       props = "database" -> strProp("Database (tenant-db) name."),
-      "schema" -> strProp("Schema name."),
-      "table"  -> strProp("Table name."),
-      "tenant" -> strProp("Tenant id; only for superuser credentials (PATs infer it)."),
+      "schema"  -> strProp("Schema name."),
+      "table"   -> strProp("Table name."),
+      "tenant"  -> strProp("Tenant id; only for superuser credentials (PATs infer it)."),
+      "iceberg" ->
+        strProp(
+          "Alias of an attached iceberg_rest source; the schema and table are inside that catalog."
+        ),
       branchProp
     ),
     adminOnly = false,
@@ -321,42 +338,100 @@ final class McpDataTools(
       yield (tenant, t._1, t._2, schema, table)) match
         case Left(err)                                          => IO.pure(Left(err))
         case Right((tenant, database, poolKey0, schema, table)) =>
-          IO.blocking(
-            bridge(
-              catalog
-                .getTable(tenant, database, schema, table, None, None, None, principal.rawToken)(
-                  scopeOf
+          str(args, "iceberg") match
+            case Some(alias) =>
+              describeIcebergTable(principal, tenant, database, alias, schema, table, poolKey0)
+            case None =>
+              IO.blocking(
+                bridge(
+                  catalog
+                    .getTable(
+                      tenant,
+                      database,
+                      schema,
+                      table,
+                      None,
+                      None,
+                      None,
+                      principal.rawToken
+                    )(
+                      scopeOf
+                    )
                 )
-            )
-          ).flatMap {
+              ).flatMap {
+                case Left(err)     => IO.pure(Left(err))
+                case Right(detail) =>
+                  poolKey0 match
+                    case None =>
+                      // No routable pool: the schema alone is still an answer.
+                      IO.pure(Right(Json.obj("table" -> detail.asJson)))
+                    case Some(poolKey) =>
+                      // LIMIT one past the sample cap so `truncated` marks that more rows exist.
+                      val sampleSql =
+                        s"""SELECT * FROM "$schema"."$table" LIMIT ${SampleRows + 1}"""
+                      val caller = callerFor(principal)
+                      // The token's maxRows must lower this preview too, not just run_sql: the
+                      // invariant is "a token can lower the cap and never raise it", stated
+                      // without qualifying it to one tool.
+                      val eff = caller.effectiveMaxRows(SampleRows, SampleRows)
+                      execute(caller, poolKey, sampleSql, eff).map {
+                        case Left(_)       => Right(Json.obj("table" -> detail.asJson))
+                        case Right(sample) =>
+                          Right(
+                            Json.obj(
+                              "table"   -> detail.asJson,
+                              "columns" -> detail.columns.asJson,
+                              "sample"  -> sample
+                            )
+                          )
+                      }
+              }
+  )
+
+  /** `describe_table` routed at an Iceberg alias: the table detail from [[IcebergCatalogHandlers]]
+    * (admin-gated metadata), plus a small `sample` run like the DuckLake arm's: through the routed
+    * executor as the MCP principal (`callerFor`: the static key is the system caller, a PAT its
+    * owner with the token's restriction and id), capped by the token's maxRows. The sample never
+    * goes through a REST credential lookup, and any sample failure (no pool, ACL denial, router
+    * failure, a raised error, `sampleTimeout` elapsing) degrades to the detail alone instead of
+    * failing the call.
+    */
+  private def describeIcebergTable(
+      principal: McpPrincipal,
+      tenant: String,
+      database: String,
+      alias: String,
+      schema: String,
+      table: String,
+      poolKey0: Option[ai.starlake.quack.model.PoolKey]
+  ): IO[Either[String, Json]] =
+    iceberg match
+      case None      => IO.pure(Left(IcebergUnavailable))
+      case Some(ice) =>
+        ice
+          .detail(tenant, database, alias, schema, table, principal.rawToken)(scopeOf)
+          .map(bridge)
+          .flatMap {
             case Left(err)     => IO.pure(Left(err))
             case Right(detail) =>
+              val detailOnly = Json.obj(
+                "table"   -> detail.asJson,
+                "columns" -> detail.columns.asJson
+              )
               poolKey0 match
-                case None =>
-                  // No routable pool: the schema alone is still an answer.
-                  IO.pure(Right(Json.obj("table" -> detail.asJson)))
+                case None          => IO.pure(Right(detailOnly))
                 case Some(poolKey) =>
-                  // LIMIT one past the sample cap so `truncated` marks that more rows exist.
-                  val sampleSql =
-                    s"""SELECT * FROM "$schema"."$table" LIMIT ${SampleRows + 1}"""
                   val caller = callerFor(principal)
-                  // The token's maxRows must lower this preview too, not just run_sql: the
-                  // invariant is "a token can lower the cap and never raise it", stated without
-                  // qualifying it to one tool.
-                  val eff = caller.effectiveMaxRows(SampleRows, SampleRows)
-                  execute(caller, poolKey, sampleSql, eff).map {
-                    case Left(_)       => Right(Json.obj("table" -> detail.asJson))
-                    case Right(sample) =>
-                      Right(
-                        Json.obj(
-                          "table"   -> detail.asJson,
-                          "columns" -> detail.columns.asJson,
-                          "sample"  -> sample
-                        )
-                      )
+                  val eff    = caller.effectiveMaxRows(SampleRows, SampleRows)
+                  // One row past the cap so `truncated` marks that more rows exist.
+                  val sampleSql =
+                    IcebergCatalogSql.preview(detail.alias, schema, table, None, eff + 1)
+                  execute(caller, poolKey, sampleSql, eff).timeout(sampleTimeout).attempt.map {
+                    case Right(Right(sample)) =>
+                      Right(detailOnly.deepMerge(Json.obj("sample" -> sample)))
+                    case _ => Right(detailOnly)
                   }
           }
-  )
 
   // ---------- table_history ----------
 
@@ -364,14 +439,19 @@ final class McpDataTools(
     name = "table_history",
     description =
       "Snapshot history of one table: who changed it, when, and how (change verbs). Use the " +
-        "snapshot ids with run_sql time travel: AT (VERSION => n).",
+        "snapshot ids with run_sql time travel: AT (VERSION => n). For an iceberg source, " +
+        "snapshot ids are strings; time travel with run_sql AT (VERSION => <id>).",
     inputSchema = objectSchema(
       required = List("database", "schema", "table"),
       props = "database" -> strProp("Database (tenant-db) name."),
-      "schema" -> strProp("Schema name."),
-      "table"  -> strProp("Table name."),
-      "limit"  -> intProp("Max history entries (default 50)."),
-      "tenant" -> strProp("Tenant id; only for superuser credentials (PATs infer it).")
+      "schema"  -> strProp("Schema name."),
+      "table"   -> strProp("Table name."),
+      "limit"   -> intProp("Max history entries (default 50)."),
+      "tenant"  -> strProp("Tenant id; only for superuser credentials (PATs infer it)."),
+      "iceberg" ->
+        strProp(
+          "Alias of an attached iceberg_rest source; the schema and table are inside that catalog."
+        )
     ),
     adminOnly = false,
     run = (principal, args) =>
@@ -384,23 +464,42 @@ final class McpDataTools(
       yield (tenant, database, schema, table)) match
         case Left(err)                                => IO.pure(Left(err))
         case Right((tenant, database, schema, table)) =>
-          IO.blocking(
-            bridge(
-              history.history(
-                tenant,
-                database,
-                schema,
-                table,
-                int(args, "limit"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                principal.rawToken
-              )(scopeOf)
-            ).map(_.asJson)
-          )
+          str(args, "iceberg") match
+            case Some(alias) =>
+              iceberg match
+                case None      => IO.pure(Left(IcebergUnavailable))
+                case Some(ice) =>
+                  ice
+                    .history(
+                      tenant,
+                      database,
+                      alias,
+                      schema,
+                      table,
+                      int(args, "limit"),
+                      None,
+                      None,
+                      principal.rawToken
+                    )(scopeOf)
+                    .map(res => bridge(res).map(_.asJson))
+            case None =>
+              IO.blocking(
+                bridge(
+                  history.history(
+                    tenant,
+                    database,
+                    schema,
+                    table,
+                    int(args, "limit"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    principal.rawToken
+                  )(scopeOf)
+                ).map(_.asJson)
+              )
   )
 
   // ---------- list_snapshots ----------
@@ -473,3 +572,8 @@ object McpDataTools:
 
   /** Recent statements included in my_usage. */
   private val RecentStatements = 20
+
+  /** Answer for an `iceberg` argument on a manager with no [[IcebergCatalogHandlers]] wired (no
+    * federation store). Same text on every iceberg-routed tool.
+    */
+  private val IcebergUnavailable = "iceberg catalogs are not available on this manager"
