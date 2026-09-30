@@ -28,17 +28,11 @@ object CatalogPreviewHandlers:
     */
   type PreviewExecutor = (ExecCaller, PoolKey, String) => IO[Either[RouterFailure, QueryResult]]
 
-  /** The executor identity of the static key (and of the internal system legs such as the restore
-    * dry run). Which credential maps to it is decided in ONE place, [[RestCaller]]: the configured
-    * static key only; a session runs as its user, a PAT as its owner with its own
-    * `TokenRestriction`, and any token that does not resolve is refused with 401. It is never a
-    * fallback for an unresolved token (a PAT used to fall through to it, bypassing per-table ACL,
-    * column masking, row filtering and the token's restriction). The real executor adapter
-    * ([[ai.starlake.quack.Main]]) maps this identity to a synthetic superuser
-    * [[ai.starlake.quack.ondemand.rbac.EffectiveSet]] (`user.tenant = None`) so
-    * `PostgresAclValidator`'s superuser bypass applies -- NOT `effectiveSet = None`, which the
-    * validator treats as "no RBAC principal bound to this session" and denies fail-safe. Public
-    * (not `private[api]`) so Main's adapter, in a different package, can match on it.
+  /** The display label of a system caller ([[ExecCaller.system]]: the static key, the restore dry
+    * run, the branch change counter) in logs and statement history. It carries NO privilege: the
+    * routed executor decides on `ExecCaller.system` alone, because user names are not reserved and
+    * a tenant user may be called "superuser". Which credential is a system caller is decided in
+    * [[RestCaller]] (REST) and `McpDataTools.callerFor` (MCP).
     */
   val SuperuserIdentity = "superuser"
 

@@ -43,7 +43,6 @@ final class CatalogRestoreHandlers(
     catalogAlias: (String, String) => String = (_, td) => td,
     audit: AuditRecorder = AuditRecorder.noop
 ):
-  import CatalogPreviewHandlers.SuperuserIdentity
 
   private type Out[T] = IO[Either[(StatusCode, ErrorResponse), T]]
 
@@ -277,7 +276,7 @@ final class CatalogRestoreHandlers(
             toSnapshot,
             currentSnapshot
           )
-          // Runs as SuperuserIdentity rather than the resolved caller: the ACL parser has no
+          // Runs as a system caller rather than the resolved caller: the ACL parser has no
           // grammar for the ducklake_table_changes table function and fail-closed denies it as
           // an unsupported construct, which would wall an ACL'd (DDL+RO, no ALL) caller out of
           // the mandatory dry-run leg even though their CTAS execute is correctly authorized.
@@ -287,7 +286,7 @@ final class CatalogRestoreHandlers(
           // metadata via the catalog history/snapshot reads -- this isn't a missing table grant,
           // it's a parser gap on one specific table function.
           readExecutor(
-            ExecCaller.unrestricted(s"restore-dryrun-$tid-$db", SuperuserIdentity),
+            ExecCaller.system(s"restore-dryrun-$tid-$db"),
             poolKey,
             sql
           )

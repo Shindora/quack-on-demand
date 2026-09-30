@@ -279,6 +279,7 @@ class PatApiAdmissionSpec
           val caller = seen.get().getOrElse(fail("the executor was never called"))
           caller.identity shouldBe SecurityFixtures.AliceUsername
           caller.identity should not be CatalogPreviewHandlers.SuperuserIdentity
+          caller.system shouldBe false
           caller.patId shouldBe Some(rec.id)
           caller.restriction.maxRows shouldBe Some(3)
         }

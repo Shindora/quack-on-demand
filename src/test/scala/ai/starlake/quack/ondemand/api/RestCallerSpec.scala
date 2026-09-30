@@ -62,3 +62,18 @@ class RestCallerSpec extends AnyFlatSpec with Matchers:
     RestCaller.staticOnly("conn", Some(PatTok)).isLeft shouldBe true
     RestCaller.staticOnly("conn", Some(SessionTok)).isLeft shouldBe true
   }
+
+  it should "flag only the static key (and the absent credential) as a system caller" in {
+    resolver("conn", Some(StaticKey)).map(_.system) shouldBe Right(true)
+    resolver("conn", None).map(_.system) shouldBe Right(true)
+    resolver("conn", Some(SessionTok)).map(_.system) shouldBe Right(false)
+    resolver("conn", Some(PatTok)).map(_.system) shouldBe Right(false)
+  }
+
+  it should "never flag a session or PAT whose user is named 'superuser' as a system caller" in {
+    val r = RestCaller(Some(StaticKey), sentinelSessionOf, sentinelPatOf)
+    r("conn", Some(SentinelSessionTok)).map(c => (c.identity, c.system)) shouldBe
+      Right(("superuser", false))
+    r("conn", Some(SentinelPatTok)).map(c => (c.identity, c.system, c.patId)) shouldBe
+      Right(("superuser", false, Some("pat-sentinel")))
+  }

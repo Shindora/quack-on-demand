@@ -71,4 +71,4 @@ object RestCaller:
     )
 
   private def superuser(connectionId: String): ExecCaller =
-    ExecCaller.unrestricted(connectionId, CatalogPreviewHandlers.SuperuserIdentity)
+    ExecCaller.system(connectionId)

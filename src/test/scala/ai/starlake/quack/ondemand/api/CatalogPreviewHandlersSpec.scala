@@ -733,6 +733,20 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
       Some((StatusCode.Unauthorized, "unauthorized"))
     seenCallers shouldBe Nil
 
+  it should "flag the static key as a system caller, and nothing else" in new Stubs:
+    val h = handlers(sessionsOverride = sessionOf, patsOverride = patOf)
+    preview(h, apiKey = Some(StaticKey))
+    preview(h, apiKey = Some(SessionTok))
+    preview(h, apiKey = Some(PatTok))
+    seenCallers.map(_.system) shouldBe List(true, false, false)
+
+  it should "run a session or PAT of a tenant user NAMED 'superuser' as that user, not system" in new Stubs:
+    val h = handlers(sessionsOverride = sentinelSessionOf, patsOverride = sentinelPatOf)
+    preview(h, apiKey = Some(SentinelSessionTok))
+    preview(h, apiKey = Some(SentinelPatTok))
+    seenCallers.map(c => (c.identity, c.system, c.patId)) shouldBe
+      List(("superuser", false, None), ("superuser", false, Some("pat-sentinel")))
+
   "dataDiff" should "run the static key as the unrestricted superuser" in new Stubs:
     queueDiffResults(summary = Nil, page = Nil)
     val h = handlers(executorOverride = queuedExecutor)
@@ -787,6 +801,31 @@ object IdentityFixtures:
   val sessionOf: String => Option[SessionTokenStore.Session] = t =>
     Option.when(t == SessionTok)(
       SessionTokenStore.Session(alice, SessionScope(false, Set("acme")), Instant.now())
+    )
+
+  // A tenant-scoped user whose NAME is the old sentinel: user names are not reserved.
+  val SentinelSessionTok = "sentinel-session"
+  val SentinelPatTok     = "qod_pat_sentinel"
+  private val sentinel   =
+    AuthenticatedProfile("superuser", "admin", Set.empty, Map.empty, "db", Some("acme"))
+  val sentinelSessionOf: String => Option[SessionTokenStore.Session] = t =>
+    Option.when(t == SentinelSessionTok)(
+      SessionTokenStore.Session(sentinel, SessionScope(false, Set("acme")), Instant.now())
+    )
+  val sentinelPatOf: String => Option[PatPrincipal] = t =>
+    Option.when(t == SentinelPatTok)(
+      PatPrincipal(
+        user = RbacUser(
+          id = "u-sentinel",
+          tenant = Some("acme"),
+          username = "superuser",
+          role = "admin"
+        ),
+        patId = "pat-sentinel",
+        scope = SessionScope(false, Set("acme")),
+        isAdmin = true,
+        restriction = TokenRestriction.Unrestricted
+      )
     )
 
   val patOf: String => Option[PatPrincipal] = t =>

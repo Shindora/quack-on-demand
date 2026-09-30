@@ -410,7 +410,9 @@ class CatalogRestoreHandlersSpec extends AnyFlatSpec with Matchers:
       apiKey = Some(IdentityFixtures.PatTok)
     ).isRight shouldBe
       true
-    readCallers.map(_.identity) shouldBe List(CatalogPreviewHandlers.SuperuserIdentity)
+    readCallers.map(c => (c.identity, c.system)) shouldBe
+      List((CatalogPreviewHandlers.SuperuserIdentity, true))
+    writeCallers shouldBe Nil
 
   it should "401 an unresolvable token on both legs without calling either executor" in new Stubs:
     val h = handlers(

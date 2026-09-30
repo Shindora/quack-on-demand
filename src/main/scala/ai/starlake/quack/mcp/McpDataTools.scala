@@ -66,10 +66,6 @@ final class McpDataTools(
 
   // ---------- shared helpers ----------
 
-  private def identityOf(principal: McpPrincipal): String = principal match
-    case McpPrincipal.StaticKey => CatalogPreviewHandlers.SuperuserIdentity
-    case McpPrincipal.Pat(p)    => p.user.username
-
   private def connectionIdOf(principal: McpPrincipal): String = principal match
     case McpPrincipal.StaticKey => "mcp-static"
     case McpPrincipal.Pat(p)    => s"mcp-${p.patId}"
@@ -91,11 +87,10 @@ final class McpDataTools(
     * arguments against. `patId` carries the acting token's id for statement-history and audit
     * attribution -- `None` for the static key, which is not a token at all.
     */
-  private def callerFor(principal: McpPrincipal): ExecCaller =
-    val patId = principal match
-      case McpPrincipal.StaticKey => None
-      case McpPrincipal.Pat(p)    => Some(p.patId)
-    ExecCaller(connectionIdOf(principal), identityOf(principal), principal.restriction, patId)
+  private def callerFor(principal: McpPrincipal): ExecCaller = principal match
+    case McpPrincipal.StaticKey => ExecCaller.system(connectionIdOf(principal))
+    case McpPrincipal.Pat(p)    =>
+      ExecCaller(connectionIdOf(principal), p.user.username, p.restriction, Some(p.patId))
 
   /** Execute `sql` through the routed executor and decode at most `maxRows` rows. */
   private def execute(

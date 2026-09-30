@@ -89,9 +89,10 @@ object BranchWiring extends LazyLogging:
         fork: Long,
         head: Long
     ): IO[Either[String, (Long, Long, Long)]] =
-      val sql    = DataDiffSql.summarySql(alias, change.schema, change.table, fork, head)
-      val caller =
-        ExecCaller.unrestricted(s"branch-counts-$tenant", CatalogPreviewHandlers.SuperuserIdentity)
+      val sql = DataDiffSql.summarySql(alias, change.schema, change.table, fork, head)
+      // System caller: aggregate change counts over the branch's own catalog, run for the
+      // lifecycle (propose / merge validation), not on behalf of a statement author.
+      val caller = ExecCaller.system(s"branch-counts-$tenant")
       executor(caller, poolKeyOf(branch), sql).timeout(timeout).attempt.map {
         case Left(e)          => Left(e.getMessage)
         case Right(Left(f))   => Left(f.reason)
