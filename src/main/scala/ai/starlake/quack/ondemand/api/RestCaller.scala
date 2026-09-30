@@ -33,7 +33,8 @@ final class RestCaller(
   private val staticBytes =
     staticKey.filter(_.nonEmpty).map(_.getBytes(StandardCharsets.UTF_8))
 
-  private def isStatic(token: String): Boolean =
+  /** Constant-time match against the configured static key; an empty key never matches. */
+  def isStaticKey(token: String): Boolean =
     staticBytes.exists(k => MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8), k))
 
   def apply(
@@ -41,9 +42,9 @@ final class RestCaller(
       apiKey: Option[String]
   ): Either[(StatusCode, ErrorResponse), ExecCaller] =
     apiKey match
-      case None                   => Right(RestCaller.superuser(connectionId))
-      case Some(t) if isStatic(t) => Right(RestCaller.superuser(connectionId))
-      case Some(t)                =>
+      case None                      => Right(RestCaller.superuser(connectionId))
+      case Some(t) if isStaticKey(t) => Right(RestCaller.superuser(connectionId))
+      case Some(t)                   =>
         sessionOf(t) match
           case Some(s) => Right(ExecCaller.unrestricted(connectionId, s.profile.username))
           case None    =>

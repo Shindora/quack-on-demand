@@ -1605,23 +1605,14 @@ object Main extends IOApp with LazyLogging:
 
       // Branches (Epic 1): the lifecycle service and its REST handlers. The actor resolver
       // accepts a session JWT (UI / CLI login), a PAT (the MCP data tools curry the bearer as
-      // apiKey) or nothing (the static key, already admitted by the perimeter guard).
-      val branchActorOf: Option[String] => ai.starlake.quack.ondemand.branch.BranchActor = token =>
-        token.flatMap(sessionTokens.get) match
-          case Some(s) =>
-            ai.starlake.quack.ondemand.branch.BranchActor(
-              s.profile.username,
-              isAdmin = s.scope.superuser || s.scope.manageableTenants.nonEmpty
-            )
-          case None =>
-            token.flatMap(patAuthenticator.resolve) match
-              case Some(p) =>
-                ai.starlake.quack.ondemand.branch.BranchActor(p.user.username, isAdmin = p.isAdmin)
-              case None =>
-                ai.starlake.quack.ondemand.branch.BranchActor(
-                  ai.starlake.quack.ondemand.api.CatalogPreviewHandlers.SuperuserIdentity,
-                  isAdmin = true
-                )
+      // apiKey), the static key, or nothing (the MCP static principal); any other present token
+      // is refused with 401 instead of becoming the superuser admin actor.
+      val branchActorOf =
+        ai.starlake.quack.ondemand.api.BranchHandlers.actorResolver(
+          restCaller,
+          sessionTokens.get,
+          patAuthenticator.resolve
+        )
       lazy val branchService: ai.starlake.quack.ondemand.branch.BranchService =
         new ai.starlake.quack.ondemand.branch.BranchService(
           cfg = mgrCfg.branching,

@@ -14,6 +14,10 @@
   preview and diff page), and any other token is refused with 401 before a statement runs. The
   restore dry run still counts changes under the system identity, but only once the caller
   resolved.
+  The branch endpoints (create, changes, propose, merge, discard) had the same fallback: a token
+  that resolved as neither a session nor a PAT (a session expiring between the guard and the
+  handler) acted as the superuser admin, able to approve a merge. It is now refused with 401
+  before the branch service runs.
 
 - **The native client finds libduckdb without relying on a build-machine path.** libquackwire
   links libduckdb dynamically, and the only library path baked into a vendored binary is the cache
