@@ -13,6 +13,7 @@ import ai.starlake.quack.ondemand.api.{
   CatalogUndropHandlers,
   ConfigHandlers,
   ConfigRegistry,
+  ExecCaller,
   HistoryHandlers,
   ManifestHandlers,
   PatHandlers,
@@ -20,7 +21,7 @@ import ai.starlake.quack.ondemand.api.{
   SessionTokenStore,
   UsageHandlers
 }
-import ai.starlake.quack.ondemand.auth.SessionScope
+import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.catalog.{DroppedTableEntry, DuckLakeCatalogReader}
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
@@ -183,7 +184,31 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
     * `pats` is a real Postgres-backed PatHandlers purely to satisfy the constructor (see the class
     * scaladoc); this spec never calls a PAT tool.
     */
+  // A tenant-admin PAT an MCP agent presents: the handlers resolve it through their RestCaller.
+  private val AgentRaw         = "qod_pat_mcp_agent"
+  private val AgentRestriction =
+    TokenRestriction.Unrestricted.copy(maxRows = Some(7), pools = Some(Set("bi")))
+  private val AgentPat = PatPrincipal(
+    user = ai.starlake.quack.ondemand.state.RbacUser(
+      id = "u-agent",
+      tenant = Some(Tenant0),
+      username = "agent-owner",
+      role = "admin"
+    ),
+    patId = "pat-agent",
+    scope = SessionScope(superuser = false, manageableTenants = Set(Tenant0)),
+    isAdmin = true,
+    restriction = AgentRestriction
+  )
+
   private def withTools(test: McpPlatformTools => Unit): Unit =
+    withRecordingTools((tools, _) => test(tools))
+
+  /** Same as [[withTools]], plus every `(leg, caller)` the executors received. */
+  private def withRecordingTools(
+      test: (McpPlatformTools, scala.collection.mutable.ListBuffer[(String, ExecCaller)]) => Unit
+  ): Unit =
+    val seen = scala.collection.mutable.ListBuffer.empty[(String, ExecCaller)]
     if !TestPostgres.reachable then
       cancel(
         s"local Postgres not reachable at ${TestPostgres.pgHost}:${TestPostgres.pgPort}; skipping"
@@ -213,18 +238,21 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
           )
         )
       val readExecutor: CatalogPreviewHandlers.PreviewExecutor =
-        (_, _, _) => readResult
+        (caller, _, _) => { seen += (("read", caller)); readResult }
       val writeExecutor: CatalogPreviewHandlers.PreviewExecutor =
-        (_, _, sql) => {
+        (caller, _, sql) => {
+          seen += (("write", caller))
           writeSql = Some(sql);
           IO.pure(Right(QueryResult(emptyReader(), () => closed = true, "node-1", 1L)))
         }
       val undropExecutor: CatalogPreviewHandlers.PreviewExecutor =
-        (_, _, sql) => {
+        (caller, _, sql) => {
+          seen += (("undrop", caller))
           writeSql = Some(sql);
           IO.pure(Right(QueryResult(emptyReader(), () => closed = true, "node-1", 1L)))
         }
 
+      val callers  = RestCaller(patOf = t => Option.when(t == AgentRaw)(AgentPat))
       val restoreH = new CatalogRestoreHandlers(
         sup,
         store,
@@ -232,14 +260,14 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
         writeExecutor,
         (_, _) => restoreReader(),
         CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30),
-        RestCaller.staticOnly
+        callers
       )
       val undropH = new CatalogUndropHandlers(
         sup,
         undropExecutor,
         (_, _) => undropReader(),
         CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30),
-        RestCaller.staticOnly
+        callers
       )
 
       val manifest = new ManifestHandlers(
@@ -265,7 +293,7 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
         usageH,
         scopeOf
       )
-      test(tools)
+      test(tools, seen)
     finally
       Try(if pats != null then pats.close())
       Try(TestPostgres.dropDatabase(dbName))
@@ -342,3 +370,70 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
     r.get[String]("restoredAs").toOption shouldBe Some("doomed")
     r.get[Long]("fromSnapshot").toOption shouldBe Some(39L)
   }
+
+  // ---------- a PAT agent runs as its owner (never as the system caller) ----------
+
+  private def agent: McpPrincipal = new McpPrincipal.Pat(AgentPat, AgentRaw)
+
+  private def ownerShape(c: ExecCaller) = (c.identity, c.restriction, c.patId, c.system)
+
+  "restore_snapshot with a PAT" should "run the replace as the PAT's owner, with its restriction and id" in
+    withRecordingTools { (tools, seen) =>
+      val out = call(
+        tools,
+        "restore_snapshot",
+        agent,
+        "database" -> Json.fromString(TenantDb),
+        "schema"   -> Json.fromString("tpch1"),
+        "table"    -> Json.fromString("orders"),
+        "to"       -> Json.fromString("39")
+      )
+      withClue(out)(out.isRight shouldBe true)
+      seen.toList.map((leg, c) => (leg, ownerShape(c))) shouldBe
+        List(("write", ("agent-owner", AgentRestriction, Some("pat-agent"), false)))
+    }
+
+  it should "keep its dry run on the system caller (aggregate counts only)" in
+    withRecordingTools { (tools, seen) =>
+      val out = call(
+        tools,
+        "restore_snapshot",
+        agent,
+        "database" -> Json.fromString(TenantDb),
+        "schema"   -> Json.fromString("tpch1"),
+        "table"    -> Json.fromString("orders"),
+        "to"       -> Json.fromString("39"),
+        "dry_run"  -> Json.True
+      )
+      withClue(out)(out.isRight shouldBe true)
+      seen.toList.map((leg, c) => (leg, c.system, c.patId)) shouldBe List(("read", true, None))
+    }
+
+  "undrop_table with a PAT" should "run the CTAS as the PAT's owner, with its restriction and id" in
+    withRecordingTools { (tools, seen) =>
+      val out = call(
+        tools,
+        "undrop_table",
+        agent,
+        "database" -> Json.fromString(TenantDb),
+        "schema"   -> Json.fromString("tpch1"),
+        "table"    -> Json.fromString("doomed")
+      )
+      withClue(out)(out.isRight shouldBe true)
+      seen.toList.map((leg, c) => (leg, ownerShape(c))) shouldBe
+        List(("undrop", ("agent-owner", AgentRestriction, Some("pat-agent"), false)))
+    }
+
+  "the static key" should "run restore and undrop as the system caller" in
+    withRecordingTools { (tools, seen) =>
+      call(
+        tools,
+        "undrop_table",
+        McpPrincipal.StaticKey,
+        "tenant"   -> Json.fromString(Tenant0),
+        "database" -> Json.fromString(TenantDb),
+        "schema"   -> Json.fromString("tpch1"),
+        "table"    -> Json.fromString("doomed")
+      ).isRight shouldBe true
+      seen.toList.map((leg, c) => (leg, c.system)) shouldBe List(("undrop", true))
+    }
