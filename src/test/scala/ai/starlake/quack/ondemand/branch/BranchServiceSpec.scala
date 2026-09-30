@@ -275,6 +275,27 @@ class BranchServiceSpec extends AnyFlatSpec with Matchers:
       Left("concurrent_write")
   }
 
+  it should "refuse a branch-only token's merge (it writes main), even for an admin" in {
+    val f = new Fixture
+    f.create("x")
+    f.touchBranch()
+    f.service
+      .propose("acme", f.parent.name, "x", f.admin1, None)
+      .unsafeRunSync()
+      .isRight shouldBe true
+    val branchOnlyBoss = BranchActor("boss", isAdmin = true, branchOnly = true)
+    val refused        = f.service
+      .merge("acme", f.parent.name, "x", Some(10L), branchOnlyBoss, None)
+      .unsafeRunSync()
+    refused.left.map(f => (f.status, f.code)) shouldBe Left((403, "branch_only_token"))
+    f.mergeBatches shouldBe empty
+    // The same admin without the restriction merges.
+    f.service
+      .merge("acme", f.parent.name, "x", Some(10L), f.admin2, None)
+      .unsafeRunSync()
+      .isRight shouldBe true
+  }
+
   it should "fast-forward, tag the new snapshot and tear the branch down" in {
     val f = new Fixture
     f.create("x")

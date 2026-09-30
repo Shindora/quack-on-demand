@@ -30,9 +30,11 @@ import java.time.temporal.ChronoUnit
 import scala.util.control.NonFatal
 
 /** Who is asking. `isAdmin` = tenant admin on the tenant, superuser, or the static key; every other
-  * principal is a plain data-plane user and must be able to connect to the parent.
+  * principal is a plain data-plane user and must be able to connect to the parent. `branchOnly` =
+  * the credential is a PAT restricted to branch writes: it may create and write branches, but a
+  * merge writes main, so merge refuses it (`branch_only_token`).
   */
-final case class BranchActor(identity: String, isAdmin: Boolean)
+final case class BranchActor(identity: String, isAdmin: Boolean, branchOnly: Boolean = false)
 
 /** A refusal, with the HTTP status the REST layer maps it to. Codes are the stable snake_case
   * vocabulary of design section 4.
@@ -565,6 +567,16 @@ final class BranchService(
       _      <-
         if actor.isAdmin then Right(())
         else Left(BranchFailure.forbidden("admin_required", "merge requires a tenant admin"))
+      _ <-
+        if !actor.branchOnly then Right(())
+        else
+          Left(
+            BranchFailure.forbidden(
+              "branch_only_token",
+              "this token may only write on a branch; merging writes main and needs a " +
+                "credential without the branch-only restriction"
+            )
+          )
       b     <- liveBranch(parent, name)
       merge <- b.status match
         case BranchStatus.Proposed =>

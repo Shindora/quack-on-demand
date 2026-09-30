@@ -15,6 +15,7 @@ import ai.starlake.quack.ondemand.api.{
   HistoryHandlers,
   ManifestHandlers,
   PatHandlers,
+  RestCaller,
   SessionTokenStore,
   UsageHandlers
 }
@@ -71,8 +72,8 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
       (_, _) => throw new UnsupportedOperationException("not exercised")
     val cfg      = CatalogConfig()
     val restoreH =
-      new CatalogRestoreHandlers(sup, store, boom, boom, reader, cfg, _ => None)
-    val undropH = new CatalogUndropHandlers(sup, boom, reader, cfg, _ => None)
+      new CatalogRestoreHandlers(sup, store, boom, boom, reader, cfg, RestCaller.staticOnly)
+    val undropH = new CatalogUndropHandlers(sup, boom, reader, cfg, RestCaller.staticOnly)
     (restoreH, undropH)
 
   private def liveConfigEntries = ConfigRegistry.collect(

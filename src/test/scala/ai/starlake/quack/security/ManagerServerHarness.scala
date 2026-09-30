@@ -452,10 +452,16 @@ object ManagerServerHarness:
         override def currentTableInfo(schema: String, table: String): Option[(Long, Long)] = None
         override def latestTableSnapshot(schema: String, table: String): Option[Long]      = None
 
+    // Main's executor-identity resolver: static key, session, PAT (when wired), else 401.
+    val restCaller = RestCaller(
+      staticKey = staticApiKey,
+      sessionOf = sessions.get,
+      patOf = t => patAuth.flatMap(_.resolve(t))
+    )
     val previewHandlers = new CatalogPreviewHandlers(
       sup,
       store,
-      sessions.get,
+      restCaller,
       previewExecutor,
       previewReader,
       CatalogConfig(),
@@ -466,7 +472,7 @@ object ManagerServerHarness:
       previewExecutor,
       previewReader,
       CatalogConfig(),
-      sessions.get,
+      restCaller,
       audit = audit
     )
     val restoreHandlers = new CatalogRestoreHandlers(
@@ -476,7 +482,7 @@ object ManagerServerHarness:
       previewExecutor,
       (_, _) => restoreReader,
       CatalogConfig(),
-      sessions.get,
+      restCaller,
       audit = audit
     )
 

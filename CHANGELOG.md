@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **Security: a personal access token on the catalog endpoints no longer runs as superuser.**
+  The guard admits a PAT on `/api` wherever its owner's session would be admitted, but the catalog
+  preview, data diff, undrop and restore handlers resolved their executor identity through the
+  session-only lookup, and a credential it could not resolve ran as the synthetic superuser. A
+  tenant-admin PAT therefore read any table of its tenant's databases with no per-table ACL, no
+  column masking and no row filtering, and undrop and restore wrote as superuser; the PAT's own
+  restriction (pools, maxRows, branchOnly) was dropped too. The tenant boundary held. The same
+  applied over MCP: an agent's `restore_snapshot` and `undrop_table` curry its PAT into these
+  handlers, so they ran as superuser; they now run as the PAT's owner and can answer `acl_denied`
+  where they used to succeed. These handlers now resolve the caller in one place (`RestCaller`):
+  the static key runs as the system caller, a session as its user, a PAT as its owner with its
+  restriction and id (its maxRows also caps the preview and diff page), and any other token is
+  refused with 401 before a statement runs. The restore dry run and the branch change counter
+  still run as the system caller, and return aggregate change counts only.
+  The branch endpoints (create, changes, propose, merge, discard) had the same fallback: a token
+  that resolved as neither a session nor a PAT (a session expiring between the guard and the
+  handler) acted as the superuser admin, able to approve a merge. It is now refused with 401
+  before the branch service runs. A PAT created with `--branch-only` can no longer merge a branch
+  (merging writes main): 403 `branch_only_token`.
+
+- **Security: a user named "superuser" no longer bypasses the data-plane checks.** The routed
+  executor behind the catalog endpoints and the MCP data tools granted the synthetic superuser
+  set (no ACL, no column masking, no row filtering, no protected-write guard) to any caller whose
+  user name was `superuser`, and user names are not reserved: a tenant admin could create such a
+  tenant user and use its session or PAT. Privilege now comes from a typed system flag set only
+  for the static key and the two internal system legs above, never from a user name.
+
 - **The native client finds libduckdb without relying on a build-machine path.** libquackwire
   links libduckdb dynamically, and the only library path baked into a vendored binary is the cache
   directory of the machine that built it. `run-jar.sh` and `qod start` / `qod serve` cover this by

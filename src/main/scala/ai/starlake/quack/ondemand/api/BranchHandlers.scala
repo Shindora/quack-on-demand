@@ -15,16 +15,17 @@ import sttp.model.StatusCode
 
 /** REST handlers for branches (Epic 1). Gate = [[TenantDbGate]] on the PARENT tenant-db (tenant
   * resolve, [[TenantScopeCheck]], DuckLake kind), then everything else is the service's business
-  * rules. The actor is the session's username (tenant admin or superuser) or, for the static key
-  * and the MCP PAT seam, the identity `identityOf` resolves: an MCP data-tier PAT curries its
-  * bearer as `apiKey` and arrives here as a non-admin actor whose `mayUse` gate is the handshake.
+  * rules. The actor is what `actorOf` resolves: the session's username (tenant admin or superuser),
+  * a PAT's owner (an MCP data-tier PAT curries its bearer as `apiKey` and arrives here as a
+  * non-admin actor whose `mayUse` gate is the handshake), or the static key; any other token is a
+  * 401 before the service is reached (see [[BranchHandlers.actorResolver]]). The data diff
+  * delegates to [[CatalogPreviewHandlers]], whose [[RestCaller]] resolves the executor identity.
   */
 final class BranchHandlers(
     sup: PoolSupervisor,
     service: BranchService,
     preview: CatalogPreviewHandlers,
-    sessions: String => Option[ai.starlake.quack.ondemand.api.SessionTokenStore.Session],
-    actorOf: Option[String] => BranchActor,
+    actorOf: Option[String] => Either[(StatusCode, ErrorResponse), BranchActor],
     audit: AuditRecorder = AuditRecorder.noop
 ):
 
@@ -43,6 +44,15 @@ final class BranchHandlers(
       apiKey,
       requireDuckLake = Some("branching requires a ducklake tenant-db")
     )(scopeOf)
+
+  /** [[gate]], then the actor: an unresolvable token is a 401 and never reaches the service. */
+  private def gatedActor(rawTenant: String, tenantDb: String, apiKey: Option[String])(
+      scopeOf: String => Option[SessionScope]
+  ): Either[(StatusCode, ErrorResponse), (String, String, BranchActor)] =
+    for
+      (tid, db) <- gate(rawTenant, tenantDb, apiKey)(scopeOf)
+      actor     <- actorOf(apiKey)
+    yield (tid, db, actor)
 
   private def entry(b: Branch): BranchEntry =
     BranchEntry(
@@ -102,11 +112,11 @@ final class BranchHandlers(
   def create(req: BranchCreateRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[BranchEntry] =
-    gate(req.tenant, req.tenantDb, apiKey)(scopeOf) match
-      case Left(e)          => IO.pure(Left(e))
-      case Right((tid, db)) =>
+    gatedActor(req.tenant, req.tenantDb, apiKey)(scopeOf) match
+      case Left(e)                 => IO.pure(Left(e))
+      case Right((tid, db, actor)) =>
         service
-          .create(tid, db, req.name, req.ttlHours, req.fromSnapshot, actorOf(apiKey), apiKey)
+          .create(tid, db, req.name, req.ttlHours, req.fromSnapshot, actor, apiKey)
           .map(_.left.map(toErr).map(entry))
 
   def list(
@@ -143,11 +153,11 @@ final class BranchHandlers(
       counts: Option[Boolean],
       apiKey: Option[String]
   )(scopeOf: String => Option[SessionScope]): Out[BranchChangesResponse] =
-    gate(tenant, tenantDb, apiKey)(scopeOf) match
-      case Left(e)          => IO.pure(Left(e))
-      case Right((tid, db)) =>
+    gatedActor(tenant, tenantDb, apiKey)(scopeOf) match
+      case Left(e)                 => IO.pure(Left(e))
+      case Right((tid, db, actor)) =>
         service
-          .changes(tid, db, branch, counts.getOrElse(true), actorOf(apiKey), apiKey)
+          .changes(tid, db, branch, counts.getOrElse(true), actor, apiKey)
           .map(_.left.map(toErr).map { case (b, cs) => changesResponse(b, cs) })
 
   /** Delegates to the catalog data-diff on the BRANCH tenant-db over `(fork, head]`. */
@@ -217,11 +227,11 @@ final class BranchHandlers(
   def propose(req: BranchOpRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[BranchProposeResponse] =
-    gate(req.tenant, req.tenantDb, apiKey)(scopeOf) match
-      case Left(e)          => IO.pure(Left(e))
-      case Right((tid, db)) =>
+    gatedActor(req.tenant, req.tenantDb, apiKey)(scopeOf) match
+      case Left(e)                 => IO.pure(Left(e))
+      case Right((tid, db, actor)) =>
         service
-          .propose(tid, db, req.branch, actorOf(apiKey), apiKey)
+          .propose(tid, db, req.branch, actor, apiKey)
           .map(_.left.map(toErr).map { case (b, m, cs) =>
             BranchProposeResponse(entry(b), mergeEntry(m), changesResponse(b, cs))
           })
@@ -229,11 +239,11 @@ final class BranchHandlers(
   def merge(req: BranchMergeRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[BranchMergeResponse] =
-    gate(req.tenant, req.tenantDb, apiKey)(scopeOf) match
-      case Left(e)          => IO.pure(Left(e))
-      case Right((tid, db)) =>
+    gatedActor(req.tenant, req.tenantDb, apiKey)(scopeOf) match
+      case Left(e)                 => IO.pure(Left(e))
+      case Right((tid, db, actor)) =>
         service
-          .merge(tid, db, req.branch, req.expectedMainSnapshot, actorOf(apiKey), apiKey)
+          .merge(tid, db, req.branch, req.expectedMainSnapshot, actor, apiKey)
           .map(_.left.map(toErr).map { case (b, m, cs) =>
             BranchMergeResponse(entry(b), mergeEntry(m), changesResponse(b, cs))
           })
@@ -241,9 +251,36 @@ final class BranchHandlers(
   def discard(req: BranchOpRequest, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
   ): Out[BranchEntry] =
-    gate(req.tenant, req.tenantDb, apiKey)(scopeOf) match
-      case Left(e)          => IO.pure(Left(e))
-      case Right((tid, db)) =>
+    gatedActor(req.tenant, req.tenantDb, apiKey)(scopeOf) match
+      case Left(e)                 => IO.pure(Left(e))
+      case Right((tid, db, actor)) =>
         service
-          .discard(tid, db, req.branch, actorOf(apiKey), apiKey)
+          .discard(tid, db, req.branch, actor, apiKey)
           .map(_.left.map(toErr).map(entry))
+
+object BranchHandlers:
+
+  private val StaticActor = BranchActor(CatalogPreviewHandlers.SuperuserIdentity, isAdmin = true)
+
+  /** The branch actor a bearer resolves to, through [[RestCaller.resolve]] (the one resolution):
+    * absent (the static key, as the MCP static principal curries it; the REST guard never admits a
+    * credential-less request) or the configured static key -> the superuser admin actor; a session
+    * -> its user, admin when it manages a tenant; a PAT -> its owner, admin per the PAT, carrying
+    * its `branchOnly` restriction (merge refuses it). Any other present token (unknown, expired,
+    * revoked, a session that died between the guard and the handler) is refused with 401
+    * `unauthorized`: it used to become the superuser admin actor, able to approve a merge.
+    */
+  def actorResolver(
+      callers: RestCaller
+  ): Option[String] => Either[(StatusCode, ErrorResponse), BranchActor] =
+    apiKey =>
+      callers.resolve(apiKey).map {
+        case RestCaller.Principal.System     => StaticActor
+        case RestCaller.Principal.Session(s) =>
+          BranchActor(
+            s.profile.username,
+            isAdmin = s.scope.superuser || s.scope.manageableTenants.nonEmpty
+          )
+        case RestCaller.Principal.Pat(p) =>
+          BranchActor(p.user.username, isAdmin = p.isAdmin, branchOnly = p.restriction.branchOnly)
+      }

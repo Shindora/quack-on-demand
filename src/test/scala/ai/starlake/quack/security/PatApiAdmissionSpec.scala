@@ -1,13 +1,18 @@
 // src/test/scala/ai/starlake/quack/security/PatApiAdmissionSpec.scala
 package ai.starlake.quack.security
 
+import ai.starlake.quack.edge.RouterFailure
+import ai.starlake.quack.model.{Pool, RoleDistribution, TenantDb, TenantDbKind}
+import ai.starlake.quack.ondemand.api.{CatalogPreviewHandlers, ExecCaller}
 import ai.starlake.quack.ondemand.auth.{PatAuthenticator, TokenRestriction}
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
 import ai.starlake.quack.ondemand.state.{LiquibaseRunner, PatStore, UserGrant, UserStore}
+import cats.effect.IO
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.util.concurrent.atomic.AtomicReference
 import scala.util.Try
 
 /** End-to-end contract of a PAT presented as the `/api` bearer credential (`X-API-Key` header): the
@@ -200,4 +205,83 @@ class PatApiAdmissionSpec
       withClue(s"create-with-pat body: ${minted.body()}") {
         minted.statusCode() shouldBe 200
       }
+    }
+
+  // ------------------------------------------------------------------
+  // (f) a PAT on the catalog preview runs as its owner, never as superuser
+  //
+  // Regression: the catalog preview / data-diff / undrop / restore handlers
+  // resolved their executor identity through the JWT-only session lookup, so a
+  // PAT (admitted by the guard's PAT arm) fell through to the synthetic
+  // superuser: no per-table ACL, no column masking, no row filtering, and the
+  // token's own restriction (pools, maxRows, branchOnly) dropped.
+  // ------------------------------------------------------------------
+
+  "a tenant-admin PAT on the catalog preview" should
+    "reach the executor as its owner, with its restriction and pat id" in {
+      TestPostgres.ensureReachable()
+      val fix = SecurityFixtures.freshStore()
+      fix.store.upsertTenantDb(
+        TenantDb(
+          id = "td-patdl001",
+          tenantId = SecurityFixtures.TenantId,
+          name = "acme_patdl",
+          kind = TenantDbKind.DuckLake,
+          metastore = Map(
+            "pgHost"     -> "127.0.0.1",
+            "pgPort"     -> "5432",
+            "pgUser"     -> "u",
+            "pgPassword" -> "p",
+            "dbName"     -> "acme_patdl",
+            "schemaName" -> "main"
+          ),
+          dataPath = "/tmp/qod-pat-preview-test"
+        )
+      )
+      fix.store.upsertPool(
+        Pool(
+          id = "p-patdl001",
+          tenantId = SecurityFixtures.TenantId,
+          tenantDbId = "td-patdl001",
+          name = "dlbi",
+          size = 1,
+          distribution = RoleDistribution(writeonly = 0, readonly = 0, dual = 1)
+        )
+      )
+      val seen = new AtomicReference[Option[ExecCaller]](None)
+      val recording: CatalogPreviewHandlers.PreviewExecutor = (caller, _, _) =>
+        IO {
+          seen.set(Some(caller))
+          Left(RouterFailure.Unavailable("recorded"))
+        }
+      val h = ManagerServerHarness.boot(
+        fix.store,
+        staticApiKey = Some("static-key-1"),
+        patStore = Some(pats),
+        patUserOf =
+          Some((tenant, username) => users.userIdOf(tenant, username).flatMap(users.userById)),
+        patAuth = Some(patAuth),
+        previewExecutor = recording
+      )
+      try
+        val uid = users
+          .userIdOf(Some(SecurityFixtures.TenantId), SecurityFixtures.AliceUsername)
+          .getOrElse(fail("fixture user alice not found"))
+        val restriction = TokenRestriction.Unrestricted.copy(maxRows = Some(3))
+        val (rec, raw)  = pats.mint(uid, "preview-pat", restriction, None, 0)
+        val resp        = get(
+          h.httpClient,
+          s"${h.baseUrl}/api/catalog/tenant/${SecurityFixtures.TenantId}/database/acme_patdl" +
+            "/schemas/main/tables/region/preview",
+          apiKey = Some(raw)
+        )
+        withClue(s"PAT preview body: ${resp.body()}") {
+          val caller = seen.get().getOrElse(fail("the executor was never called"))
+          caller.identity shouldBe SecurityFixtures.AliceUsername
+          caller.identity should not be CatalogPreviewHandlers.SuperuserIdentity
+          caller.system shouldBe false
+          caller.patId shouldBe Some(rec.id)
+          caller.restriction.maxRows shouldBe Some(3)
+        }
+      finally h.shutdown()
     }

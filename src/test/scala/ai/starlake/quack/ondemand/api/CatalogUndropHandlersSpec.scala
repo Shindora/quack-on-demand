@@ -5,7 +5,7 @@ import ai.starlake.quack.edge.{QueryResult, RouterFailure}
 import ai.starlake.quack.edge.adapter.NodeLoadTracker
 import ai.starlake.quack.model.{PoolKey, RoleDistribution, Tenant, TenantDbKind}
 import ai.starlake.quack.ondemand.PoolSupervisor
-import ai.starlake.quack.ondemand.auth.SessionScope
+import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.catalog.{DroppedTableEntry, DuckLakeCatalogReader}
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
@@ -96,30 +96,34 @@ class CatalogUndropHandlersSpec extends AnyFlatSpec with Matchers:
           case None    => liveTables.contains((schema, table))
 
   trait Stubs:
-    val (sup, store)                 = supervisor()
-    val telemetryStore               = new RecordingTelemetryStore
-    val audit                        = new AuditRecorder(telemetryStore, _ => None)
-    var seenSql: Option[String]      = None
-    var seenPoolKey: Option[PoolKey] = None
-    var closed                       = false
+    val (sup, store)                  = supervisor()
+    val telemetryStore                = new RecordingTelemetryStore
+    val audit                         = new AuditRecorder(telemetryStore, _ => None)
+    var seenSql: Option[String]       = None
+    var seenPoolKey: Option[PoolKey]  = None
+    var seenCallers: List[ExecCaller] = Nil
+    var closed                        = false
     var executorResult: IO[Either[RouterFailure, QueryResult]] =
       IO.pure(Right(QueryResult(emptyReader(), () => closed = true, "node-1", 1L)))
     val executor: CatalogPreviewHandlers.PreviewExecutor =
       (caller, poolKey, sql) =>
         seenSql = Some(sql)
         seenPoolKey = Some(poolKey)
+        seenCallers = seenCallers :+ caller
         executorResult
 
     def handlers(
         readerOverride: DuckLakeCatalogReader = stubReader(),
-        cfgOverride: CatalogConfig = CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30)
+        cfgOverride: CatalogConfig = CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30),
+        sessionsOverride: String => Option[SessionTokenStore.Session] = _ => None,
+        patsOverride: String => Option[PatPrincipal] = _ => None
     ): CatalogUndropHandlers =
       new CatalogUndropHandlers(
         sup,
         executor,
         (_, _) => readerOverride,
         cfgOverride,
-        _ => None,
+        RestCaller(Some(IdentityFixtures.StaticKey), sessionsOverride, patsOverride),
         audit = audit
       )
 
@@ -272,3 +276,32 @@ class CatalogUndropHandlersSpec extends AnyFlatSpec with Matchers:
     sink.get shouldBe 200
     h.recoverable("acme", "acme_tpch1", Some(0), NoKey)(NoScope).unsafeRunSync()
     sink.get shouldBe 1
+
+  // ---------- executor identity (PAT regression) ----------
+
+  "undrop's CTAS" should "run the static key as the unrestricted superuser" in new Stubs:
+    undrop(handlers(), apiKey = Some(IdentityFixtures.StaticKey)).isRight shouldBe true
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List((CatalogPreviewHandlers.SuperuserIdentity, TokenRestriction.Unrestricted, None))
+
+  it should "run a session as its user, unrestricted" in new Stubs:
+    val h = handlers(sessionsOverride = IdentityFixtures.sessionOf)
+    undrop(h, apiKey = Some(IdentityFixtures.SessionTok)).isRight shouldBe true
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List(("alice", TokenRestriction.Unrestricted, None))
+
+  it should "run a PAT as its owner, with the PAT's restriction and id (never superuser)" in new Stubs:
+    val h = handlers(patsOverride = IdentityFixtures.patOf)
+    undrop(h, apiKey = Some(IdentityFixtures.PatTok)).isRight shouldBe true
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List(("alice", IdentityFixtures.PatRestriction, Some(IdentityFixtures.PatId)))
+
+  it should "401 an unresolvable token without calling the executor" in new Stubs:
+    val h = handlers(
+      sessionsOverride = IdentityFixtures.sessionOf,
+      patsOverride = IdentityFixtures.patOf
+    )
+    val out = undrop(h, apiKey = Some("qod_pat_unknown"))
+    out.left.toOption.map(e => (e._1, e._2.error)) shouldBe
+      Some((StatusCode.Unauthorized, "unauthorized"))
+    seenCallers shouldBe Nil

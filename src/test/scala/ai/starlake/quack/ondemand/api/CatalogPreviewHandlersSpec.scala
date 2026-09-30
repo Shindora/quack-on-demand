@@ -6,11 +6,11 @@ import ai.starlake.quack.edge.adapter.NodeLoadTracker
 import ai.starlake.quack.edge.auth.AuthenticatedProfile
 import ai.starlake.quack.model.{PoolKey, RoleDistribution, SnapshotTag, Tenant, TenantDbKind}
 import ai.starlake.quack.ondemand.PoolSupervisor
-import ai.starlake.quack.ondemand.auth.SessionScope
+import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.catalog.{DuckLakeCatalogReader, SchemaDiffResult}
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
-import ai.starlake.quack.ondemand.state.InMemoryControlPlaneStore
+import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, RbacUser}
 import ai.starlake.quack.ondemand.telemetry.AuditRecorder
 import ai.starlake.quack.ondemand.telemetry.testkit.RecordingTelemetryStore
 import cats.effect.IO
@@ -160,12 +160,13 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
   private val cfg = CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30)
 
   trait Stubs:
-    val (sup, store)                 = supervisor()
-    val telemetryStore               = new RecordingTelemetryStore
-    val audit                        = new AuditRecorder(telemetryStore, _ => None)
-    var seenSql: Option[String]      = None
-    var seenUser: Option[String]     = None
-    var seenPoolKey: Option[PoolKey] = None
+    val (sup, store)                  = supervisor()
+    val telemetryStore                = new RecordingTelemetryStore
+    val audit                         = new AuditRecorder(telemetryStore, _ => None)
+    var seenSql: Option[String]       = None
+    var seenUser: Option[String]      = None
+    var seenPoolKey: Option[PoolKey]  = None
+    var seenCallers: List[ExecCaller] = Nil
     var executorResult: IO[Either[RouterFailure, QueryResult]] =
       IO.pure(
         Right(QueryResult(oneRowReader(), () => (), "node-1", 5L))
@@ -174,6 +175,7 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
     val executor: CatalogPreviewHandlers.PreviewExecutor =
       (caller, poolKey, sql) =>
         seenSql = Some(sql)
+        seenCallers = seenCallers :+ caller
         seenUser = Some(caller.identity)
         seenPoolKey = Some(poolKey)
         executorResult
@@ -185,6 +187,7 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
     val queuedExecutor: CatalogPreviewHandlers.PreviewExecutor        =
       (caller, poolKey, sql) =>
         seenSqls = seenSqls :+ sql
+        seenCallers = seenCallers :+ caller
         seenUser = Some(caller.identity)
         seenPoolKey = Some(poolKey)
         executorResults match
@@ -197,12 +200,14 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
         cfgOverride: CatalogConfig = cfg,
         sessionsOverride: String => Option[SessionTokenStore.Session] = _ => None,
         readerOverride: DuckLakeCatalogReader = stubReader(),
-        executorOverride: CatalogPreviewHandlers.PreviewExecutor = executor
+        executorOverride: CatalogPreviewHandlers.PreviewExecutor = executor,
+        patsOverride: String => Option[PatPrincipal] = _ => None,
+        staticKey: Option[String] = Some(IdentityFixtures.StaticKey)
     ): CatalogPreviewHandlers =
       new CatalogPreviewHandlers(
         sup,
         store,
-        sessionsOverride,
+        RestCaller(staticKey, sessionsOverride, patsOverride),
         executorOverride,
         (_, _) => readerOverride,
         cfgOverride,
@@ -293,7 +298,7 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
     val h = new CatalogPreviewHandlers(
       nonDuckLakeSup,
       nonDuckLakeStore,
-      _ => None,
+      RestCaller.staticOnly,
       executor,
       (_, _) => stubReader(),
       cfg,
@@ -351,7 +356,7 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
     val h                        = new CatalogPreviewHandlers(
       noPoolSup,
       noPoolStore,
-      _ => None,
+      RestCaller.staticOnly,
       executor,
       (_, _) => stubReader(),
       cfg,
@@ -693,3 +698,143 @@ class CatalogPreviewHandlersSpec extends AnyFlatSpec with Matchers:
     val out = dataDiff(h, from = "42", to = "42")
     out.left.toOption.get._1 shouldBe StatusCode.NotFound
     out.left.toOption.get._2.error shouldBe "not_found"
+
+  // ---------- executor identity (PAT regression) ----------
+
+  import IdentityFixtures.*
+
+  "preview" should "run the static key as the unrestricted superuser" in new Stubs:
+    val h = handlers()
+    preview(h, apiKey = Some(StaticKey))
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List((CatalogPreviewHandlers.SuperuserIdentity, TokenRestriction.Unrestricted, None))
+
+  it should "run a session as its user, unrestricted" in new Stubs:
+    val h = handlers(sessionsOverride = sessionOf)
+    preview(h, apiKey = Some(SessionTok))
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List(("alice", TokenRestriction.Unrestricted, None))
+
+  it should "run a PAT as its owner, with the PAT's restriction and id (never superuser)" in new Stubs:
+    val h = handlers(patsOverride = patOf)
+    preview(h, apiKey = Some(PatTok))
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List(("alice", PatRestriction, Some(PatId)))
+
+  it should "cap the fetch at the PAT's maxRows" in new Stubs:
+    val h = handlers(patsOverride = patOf)
+    preview(h, apiKey = Some(PatTok), limit = Some(50))
+    seenSql shouldBe Some(s"""SELECT * FROM "tpch1"."region" LIMIT ${PatMaxRows + 1}""")
+
+  it should "401 an unresolvable token without calling the executor" in new Stubs:
+    val h   = handlers(sessionsOverride = sessionOf, patsOverride = patOf)
+    val out = preview(h, apiKey = Some("qod_pat_unknown"))
+    out.left.toOption.map(e => (e._1, e._2.error)) shouldBe
+      Some((StatusCode.Unauthorized, "unauthorized"))
+    seenCallers shouldBe Nil
+
+  it should "flag the static key as a system caller, and nothing else" in new Stubs:
+    val h = handlers(sessionsOverride = sessionOf, patsOverride = patOf)
+    preview(h, apiKey = Some(StaticKey))
+    preview(h, apiKey = Some(SessionTok))
+    preview(h, apiKey = Some(PatTok))
+    seenCallers.map(_.system) shouldBe List(true, false, false)
+
+  it should "run a session or PAT of a tenant user NAMED 'superuser' as that user, not system" in new Stubs:
+    val h = handlers(sessionsOverride = sentinelSessionOf, patsOverride = sentinelPatOf)
+    preview(h, apiKey = Some(SentinelSessionTok))
+    preview(h, apiKey = Some(SentinelPatTok))
+    seenCallers.map(c => (c.identity, c.system, c.patId)) shouldBe
+      List(("superuser", false, None), ("superuser", false, Some("pat-sentinel")))
+
+  "dataDiff" should "run the static key as the unrestricted superuser" in new Stubs:
+    queueDiffResults(summary = Nil, page = Nil)
+    val h = handlers(executorOverride = queuedExecutor)
+    dataDiff(h, apiKey = Some(StaticKey))
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)).distinct shouldBe
+      List((CatalogPreviewHandlers.SuperuserIdentity, TokenRestriction.Unrestricted, None))
+
+  it should "run a session as its user, unrestricted" in new Stubs:
+    queueDiffResults(summary = Nil, page = Nil)
+    val h = handlers(executorOverride = queuedExecutor, sessionsOverride = sessionOf)
+    dataDiff(h, apiKey = Some(SessionTok))
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)).distinct shouldBe
+      List(("alice", TokenRestriction.Unrestricted, None))
+
+  it should "run a PAT as its owner, with the PAT's restriction and id (never superuser)" in new Stubs:
+    queueDiffResults(summary = Nil, page = Nil)
+    val h = handlers(executorOverride = queuedExecutor, patsOverride = patOf)
+    dataDiff(h, apiKey = Some(PatTok))
+    seenCallers should have size 2
+    seenCallers.map(c => (c.identity, c.restriction, c.patId)).distinct shouldBe
+      List(("alice", PatRestriction, Some(PatId)))
+    // The page size honours the PAT's maxRows: fetch = limit * 2 + 2.
+    seenSqls(1) should endWith(s"LIMIT ${PatMaxRows * 2 + 2}")
+
+  it should "401 an unresolvable token without calling the executor" in new Stubs:
+    val h =
+      handlers(
+        executorOverride = queuedExecutor,
+        sessionsOverride = sessionOf,
+        patsOverride = patOf
+      )
+    val out = dataDiff(h, apiKey = Some("qod_pat_unknown"))
+    out.left.toOption.map(e => (e._1, e._2.error)) shouldBe
+      Some((StatusCode.Unauthorized, "unauthorized"))
+    seenCallers shouldBe Nil
+
+/** Credentials shared by the executor-identity cases of the catalog handler specs: a static key, a
+  * session for `alice`, and a PAT owned by `alice` carrying a non-trivial restriction.
+  */
+object IdentityFixtures:
+  val StaticKey                        = "static-key-1"
+  val SessionTok                       = "alice-session"
+  val PatTok                           = "qod_pat_alice"
+  val PatId                            = "pat-00000001"
+  val PatMaxRows                       = 3
+  val PatRestriction: TokenRestriction =
+    TokenRestriction.Unrestricted.copy(pools = Some(Set("bi")), maxRows = Some(PatMaxRows))
+
+  private val alice =
+    AuthenticatedProfile("alice", "admin", Set.empty, Map.empty, "db", Some("acme"))
+
+  val sessionOf: String => Option[SessionTokenStore.Session] = t =>
+    Option.when(t == SessionTok)(
+      SessionTokenStore.Session(alice, SessionScope(false, Set("acme")), Instant.now())
+    )
+
+  // A tenant-scoped user whose NAME is the old sentinel: user names are not reserved.
+  val SentinelSessionTok = "sentinel-session"
+  val SentinelPatTok     = "qod_pat_sentinel"
+  private val sentinel   =
+    AuthenticatedProfile("superuser", "admin", Set.empty, Map.empty, "db", Some("acme"))
+  val sentinelSessionOf: String => Option[SessionTokenStore.Session] = t =>
+    Option.when(t == SentinelSessionTok)(
+      SessionTokenStore.Session(sentinel, SessionScope(false, Set("acme")), Instant.now())
+    )
+  val sentinelPatOf: String => Option[PatPrincipal] = t =>
+    Option.when(t == SentinelPatTok)(
+      PatPrincipal(
+        user = RbacUser(
+          id = "u-sentinel",
+          tenant = Some("acme"),
+          username = "superuser",
+          role = "admin"
+        ),
+        patId = "pat-sentinel",
+        scope = SessionScope(false, Set("acme")),
+        isAdmin = true,
+        restriction = TokenRestriction.Unrestricted
+      )
+    )
+
+  val patOf: String => Option[PatPrincipal] = t =>
+    Option.when(t == PatTok)(
+      PatPrincipal(
+        user = RbacUser(id = "u-alice", tenant = Some("acme"), username = "alice", role = "admin"),
+        patId = PatId,
+        scope = SessionScope(false, Set("acme")),
+        isAdmin = true,
+        restriction = PatRestriction
+      )
+    )

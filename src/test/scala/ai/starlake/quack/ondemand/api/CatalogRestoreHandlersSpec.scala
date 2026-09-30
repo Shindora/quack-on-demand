@@ -6,7 +6,7 @@ import ai.starlake.quack.edge.adapter.NodeLoadTracker
 import ai.starlake.quack.edge.auth.AuthenticatedProfile
 import ai.starlake.quack.model.{PoolKey, RoleDistribution, Tenant, TenantDbKind}
 import ai.starlake.quack.ondemand.PoolSupervisor
-import ai.starlake.quack.ondemand.auth.SessionScope
+import ai.starlake.quack.ondemand.auth.{PatPrincipal, SessionScope, TokenRestriction}
 import ai.starlake.quack.ondemand.catalog.DuckLakeCatalogReader
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
@@ -151,20 +151,26 @@ class CatalogRestoreHandlersSpec extends AnyFlatSpec with Matchers:
       )
     var writeResult: IO[Either[RouterFailure, QueryResult]] =
       IO.pure(Right(QueryResult(emptyReader(), () => closed = true, "node-1", 1L)))
+    var readCallers: List[ExecCaller]                        = Nil
+    var writeCallers: List[ExecCaller]                       = Nil
     val readExecutor: CatalogPreviewHandlers.PreviewExecutor =
       (caller, poolKey, sql) => {
-        readSql = Some(sql); readPool = Some(poolKey); readUser = Some(caller.identity); readResult
+        readSql = Some(sql); readPool = Some(poolKey); readUser = Some(caller.identity)
+        readCallers = readCallers :+ caller
+        readResult
       }
     val writeExecutor: CatalogPreviewHandlers.PreviewExecutor =
       (caller, poolKey, sql) => {
         writeSql = Some(sql); writePool = Some(poolKey); writeUser = Some(caller.identity)
+        writeCallers = writeCallers :+ caller
         writeResult
       }
 
     def handlers(
         readerOverride: DuckLakeCatalogReader = stubReader(),
         cfgOverride: CatalogConfig = CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30),
-        sessionsOverride: String => Option[SessionTokenStore.Session] = _ => None
+        sessionsOverride: String => Option[SessionTokenStore.Session] = _ => None,
+        patsOverride: String => Option[PatPrincipal] = _ => None
     ): CatalogRestoreHandlers =
       new CatalogRestoreHandlers(
         sup,
@@ -173,7 +179,7 @@ class CatalogRestoreHandlersSpec extends AnyFlatSpec with Matchers:
         writeExecutor,
         (_, _) => readerOverride,
         cfgOverride,
-        sessionsOverride,
+        RestCaller(Some(IdentityFixtures.StaticKey), sessionsOverride, patsOverride),
         audit = audit
       )
 
@@ -375,3 +381,48 @@ class CatalogRestoreHandlersSpec extends AnyFlatSpec with Matchers:
     val out = restore(h)
     out.toOption.get.newSnapshot shouldBe Some(43L)
     telemetryStore.events.last.outcome shouldBe "ok"
+
+  // ---------- executor identity (PAT regression) ----------
+
+  "restore's replace" should "run the static key as the unrestricted superuser" in new Stubs:
+    restore(handlers(), to = "39", apiKey = Some(IdentityFixtures.StaticKey)).isRight shouldBe true
+    writeCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List((CatalogPreviewHandlers.SuperuserIdentity, TokenRestriction.Unrestricted, None))
+
+  it should "run a session as its user, unrestricted" in new Stubs:
+    val h = handlers(sessionsOverride = IdentityFixtures.sessionOf)
+    restore(h, to = "39", apiKey = Some(IdentityFixtures.SessionTok)).isRight shouldBe true
+    writeCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List(("alice", TokenRestriction.Unrestricted, None))
+
+  it should "run a PAT as its owner, with the PAT's restriction and id (never superuser)" in new Stubs:
+    val h = handlers(patsOverride = IdentityFixtures.patOf)
+    restore(h, to = "39", apiKey = Some(IdentityFixtures.PatTok)).isRight shouldBe true
+    writeCallers.map(c => (c.identity, c.restriction, c.patId)) shouldBe
+      List(("alice", IdentityFixtures.PatRestriction, Some(IdentityFixtures.PatId)))
+
+  it should "keep the PAT's dry run on the system identity (aggregate counts only)" in new Stubs:
+    val h = handlers(patsOverride = IdentityFixtures.patOf)
+    restore(
+      h,
+      to = "39",
+      dryRun = Some(true),
+      apiKey = Some(IdentityFixtures.PatTok)
+    ).isRight shouldBe
+      true
+    readCallers.map(c => (c.identity, c.system)) shouldBe
+      List((CatalogPreviewHandlers.SuperuserIdentity, true))
+    writeCallers shouldBe Nil
+
+  it should "401 an unresolvable token on both legs without calling either executor" in new Stubs:
+    val h = handlers(
+      sessionsOverride = IdentityFixtures.sessionOf,
+      patsOverride = IdentityFixtures.patOf
+    )
+    List(Some(true), None).foreach { dry =>
+      val out = restore(h, to = "39", dryRun = dry, apiKey = Some("qod_pat_unknown"))
+      out.left.toOption.map(e => (e._1, e._2.error)) shouldBe
+        Some((StatusCode.Unauthorized, "unauthorized"))
+    }
+    readCallers shouldBe Nil
+    writeCallers shouldBe Nil
