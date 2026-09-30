@@ -16,6 +16,7 @@ import ai.starlake.quack.ondemand.api.{
   HistoryHandlers,
   ManifestHandlers,
   PatHandlers,
+  RestCaller,
   SessionTokenStore,
   UsageHandlers
 }
@@ -231,14 +232,14 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
         writeExecutor,
         (_, _) => restoreReader(),
         CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30),
-        _ => None
+        RestCaller.staticOnly
       )
       val undropH = new CatalogUndropHandlers(
         sup,
         undropExecutor,
         (_, _) => undropReader(),
         CatalogConfig(previewMaxRows = 100, previewTimeoutSec = 30),
-        _ => None
+        RestCaller.staticOnly
       )
 
       val manifest = new ManifestHandlers(

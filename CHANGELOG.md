@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Security: a personal access token on the catalog REST endpoints no longer runs as superuser.**
+  The guard admits a PAT on `/api` wherever its owner's session would be admitted, but the catalog
+  preview, data diff, undrop and restore handlers resolved their executor identity through the
+  session-only lookup, and a credential it could not resolve ran as the synthetic superuser. A
+  tenant-admin PAT therefore read any table of its tenant's databases with no per-table ACL, no
+  column masking and no row filtering, and undrop and restore wrote as superuser; the PAT's own
+  restriction (pools, maxRows, branchOnly) was dropped too. The tenant boundary held. These
+  handlers now resolve the caller in one place (`RestCaller`): the static key runs as superuser, a
+  session as its user, a PAT as its owner with its restriction and id (its maxRows also caps the
+  preview and diff page), and any other token is refused with 401 before a statement runs. The
+  restore dry run still counts changes under the system identity, but only once the caller
+  resolved.
+
 - **The native client finds libduckdb without relying on a build-machine path.** libquackwire
   links libduckdb dynamically, and the only library path baked into a vendored binary is the cache
   directory of the machine that built it. `run-jar.sh` and `qod start` / `qod serve` cover this by

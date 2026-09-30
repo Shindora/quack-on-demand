@@ -28,26 +28,17 @@ object CatalogPreviewHandlers:
     */
   type PreviewExecutor = (ExecCaller, PoolKey, String) => IO[Either[RouterFailure, QueryResult]]
 
-  /** Identity contract for the executor call: a valid session token resolves to its
-    * `(profile.username)`; no token, an unresolved token (static API key), or open/dev mode all
-    * fall back to `"superuser"` as the executor `user` -- mirroring the data-plane's
-    * superuser-bypass semantics (a static-key / no-session caller is treated as trusted, exactly
-    * like every other REST handler in this codebase). The real executor adapter
+  /** The executor identity of the static key (and of the internal system legs such as the restore
+    * dry run). Which credential maps to it is decided in ONE place, [[RestCaller]]: the configured
+    * static key only; a session runs as its user, a PAT as its owner with its own
+    * `TokenRestriction`, and any token that does not resolve is refused with 401. It is never a
+    * fallback for an unresolved token (a PAT used to fall through to it, bypassing per-table ACL,
+    * column masking, row filtering and the token's restriction). The real executor adapter
     * ([[ai.starlake.quack.Main]]) maps this identity to a synthetic superuser
     * [[ai.starlake.quack.ondemand.rbac.EffectiveSet]] (`user.tenant = None`) so
     * `PostgresAclValidator`'s superuser bypass applies -- NOT `effectiveSet = None`, which the
     * validator treats as "no RBAC principal bound to this session" and denies fail-safe. Public
     * (not `private[api]`) so Main's adapter, in a different package, can match on it.
-    *
-    * SAFETY INVARIANT (perimeter-enforced): this fallback is only sound because
-    * `ManagerServer.apiKeyGuard` guarantees that when a static API key is configured, the only
-    * requests reaching this handler carry either a VALID admin session or the static key itself; an
-    * expired/revoked/forged session token is rejected with 401 at the perimeter and never reaches
-    * this fallback. In open mode (no static key) everything is trusted by definition. If the
-    * perimeter contract ever changes (for example per-endpoint guards), this conflation of
-    * "unresolved token" with "trusted static key" must be revisited: the durable shape is a typed
-    * caller identity minted by the guard (see the authz-consolidation item in
-    * docs/AUDIT-FOLLOWUPS.md P3).
     */
   val SuperuserIdentity = "superuser"
 
@@ -75,15 +66,13 @@ object CatalogPreviewHandlers:
 final class CatalogPreviewHandlers(
     sup: PoolSupervisor,
     store: ControlPlaneStore,
-    sessions: String => Option[SessionTokenStore.Session],
+    callerOf: RestCaller,
     executor: CatalogPreviewHandlers.PreviewExecutor,
     resolveReader: (String, String) => DuckLakeCatalogReader,
     cfg: CatalogConfig,
     catalogAlias: (String, String) => String = (_, td) => td,
     audit: AuditRecorder = AuditRecorder.noop
 ):
-  import CatalogPreviewHandlers.SuperuserIdentity
-
   private type Out[T] = IO[Either[(StatusCode, ErrorResponse), T]]
 
   private def err(code: StatusCode, error: String, msg: String) =
@@ -130,11 +119,6 @@ final class CatalogPreviewHandlers(
   /** Pool pick for `(tenant, tenantDb)`; delegates to [[PoolPicks.readPoolKey]]. */
   private def firstPoolKey(tenant: String, tenantDb: String): Option[PoolKey] =
     PoolPicks.readPoolKey(sup, tenant, tenantDb)
-
-  private def identityOf(apiKey: Option[String]): String =
-    apiKey.flatMap(sessions) match
-      case Some(session) => session.profile.username
-      case None          => SuperuserIdentity
 
   private def buildSql(
       schema: String,
@@ -326,69 +310,96 @@ final class CatalogPreviewHandlers(
                   )
                 )
               case Some(poolKey) =>
-                val snapshotId = resolution match
-                  case SnapshotSelector.Resolution.Current   => None
-                  case SnapshotSelector.Resolution.At(id, _) => Some(id)
-                val effectiveLimit =
-                  limit.map(_.max(1)).getOrElse(cfg.previewMaxRows).min(cfg.previewMaxRows)
-                // Fetch one row beyond the cap so ArrowRowsDecoder's truncation check has
-                // something to observe: a SQL `LIMIT effectiveLimit` would hand the decoder a
-                // stream that never has more rows than the cap, so `truncated` could never be
-                // true no matter how large the underlying table is. `decode` still stops
-                // collecting at `effectiveLimit` -- the response never carries the extra row.
-                val sql  = buildSql(schema, table, snapshotId, effectiveLimit + 1)
-                val user = identityOf(apiKey)
+                callerOf(s"preview-$tid-$db", apiKey) match
+                  case Left(e) =>
+                    audit.rest(
+                      apiKey,
+                      "control-plane",
+                      AuditActions.CatalogPreviewRead,
+                      "denied",
+                      tenant = Some(tid),
+                      target = Some(s"$db/$schema/$table")
+                    )
+                    IO.pure(Left(e))
+                  case Right(caller) =>
+                    runPreview(tid, db, schema, table, resolution, limit, poolKey, caller, apiKey)
 
-                executor(ExecCaller.unrestricted(s"preview-$tid-$db", user), poolKey, sql)
-                  .timeout(cfg.previewTimeoutSec.seconds)
-                  .attempt
-                  .map {
-                    case Left(_) =>
-                      audit.rest(
-                        apiKey,
-                        "control-plane",
-                        AuditActions.CatalogPreviewRead,
-                        "denied",
-                        tenant = Some(tid),
-                        target = Some(s"$db/$schema/$table")
-                      )
-                      err(StatusCode.BadGateway, "preview_failed", "preview query timed out")
-                    case Right(Left(RouterFailure.AccessDenied(reason))) =>
-                      audit.rest(
-                        apiKey,
-                        "control-plane",
-                        AuditActions.CatalogPreviewRead,
-                        "denied",
-                        tenant = Some(tid),
-                        target = Some(s"$db/$schema/$table")
-                      )
-                      err(StatusCode.Forbidden, "acl_denied", reason)
-                    case Right(Left(failure)) =>
-                      audit.rest(
-                        apiKey,
-                        "control-plane",
-                        AuditActions.CatalogPreviewRead,
-                        "denied",
-                        tenant = Some(tid),
-                        target = Some(s"$db/$schema/$table")
-                      )
-                      err(StatusCode.BadGateway, "preview_failed", failure.reason)
-                    case Right(Right(result)) =>
-                      try
-                        val (columns, rows, truncated) =
-                          ArrowRowsDecoder.decode(result.rows, effectiveLimit)
-                        audit.rest(
-                          apiKey,
-                          "control-plane",
-                          AuditActions.CatalogPreviewRead,
-                          "ok",
-                          tenant = Some(tid),
-                          target = Some(s"$db/$schema/$table"),
-                          detail = Map("rowsReturned" -> rows.size.toString)
-                        )
-                        Right(PreviewResponse(columns, rows, snapshotId, truncated))
-                      finally result.close()
-                  }
+  private def runPreview(
+      tid: String,
+      db: String,
+      schema: String,
+      table: String,
+      resolution: SnapshotSelector.Resolution,
+      limit: Option[Int],
+      poolKey: PoolKey,
+      caller: ExecCaller,
+      apiKey: Option[String]
+  ): Out[PreviewResponse] =
+    val snapshotId = resolution match
+      case SnapshotSelector.Resolution.Current   => None
+      case SnapshotSelector.Resolution.At(id, _) => Some(id)
+    // A PAT's own maxRows lowers the cap (never raises it), as on the MCP surface.
+    val effectiveLimit = caller.effectiveMaxRows(
+      cfg.previewMaxRows,
+      limit.map(_.max(1)).getOrElse(cfg.previewMaxRows)
+    )
+    // Fetch one row beyond the cap so ArrowRowsDecoder's truncation check has
+    // something to observe: a SQL `LIMIT effectiveLimit` would hand the decoder a
+    // stream that never has more rows than the cap, so `truncated` could never be
+    // true no matter how large the underlying table is. `decode` still stops
+    // collecting at `effectiveLimit` -- the response never carries the extra row.
+    val sql = buildSql(schema, table, snapshotId, effectiveLimit + 1)
+
+    executor(caller, poolKey, sql)
+      .timeout(cfg.previewTimeoutSec.seconds)
+      .attempt
+      .map {
+        case Left(_) =>
+          audit.rest(
+            apiKey,
+            "control-plane",
+            AuditActions.CatalogPreviewRead,
+            "denied",
+            tenant = Some(tid),
+            target = Some(s"$db/$schema/$table")
+          )
+          err(StatusCode.BadGateway, "preview_failed", "preview query timed out")
+        case Right(Left(RouterFailure.AccessDenied(reason))) =>
+          audit.rest(
+            apiKey,
+            "control-plane",
+            AuditActions.CatalogPreviewRead,
+            "denied",
+            tenant = Some(tid),
+            target = Some(s"$db/$schema/$table")
+          )
+          err(StatusCode.Forbidden, "acl_denied", reason)
+        case Right(Left(failure)) =>
+          audit.rest(
+            apiKey,
+            "control-plane",
+            AuditActions.CatalogPreviewRead,
+            "denied",
+            tenant = Some(tid),
+            target = Some(s"$db/$schema/$table")
+          )
+          err(StatusCode.BadGateway, "preview_failed", failure.reason)
+        case Right(Right(result)) =>
+          try
+            val (columns, rows, truncated) =
+              ArrowRowsDecoder.decode(result.rows, effectiveLimit)
+            audit.rest(
+              apiKey,
+              "control-plane",
+              AuditActions.CatalogPreviewRead,
+              "ok",
+              tenant = Some(tid),
+              target = Some(s"$db/$schema/$table"),
+              detail = Map("rowsReturned" -> rows.size.toString)
+            )
+            Right(PreviewResponse(columns, rows, snapshotId, truncated))
+          finally result.close()
+      }
 
   /** Row-level data diff between two snapshots (Spec 02). Same execution shape as [[preview]] (gate
     * -> selector resolution -> pool pick -> executor -> Arrow decode), but two statements: a
@@ -567,11 +578,49 @@ final class CatalogPreviewHandlers(
       apiKey: Option[String],
       denied: (StatusCode, String, String) => Either[(StatusCode, ErrorResponse), DataDiffResponse]
   ): Out[DataDiffResponse] =
-    val alias          = catalogAlias(tid, db)
-    val fn             = DataDiffSql.diffFn(alias, schema, table, fromId, toId)
-    val effectiveLimit = limit.map(_.max(1)).getOrElse(cfg.previewMaxRows).min(cfg.previewMaxRows)
-    val fetch          = effectiveLimit * 2 + 2
-    val filterPred     = types
+    callerOf(s"diff-$tid-$db", apiKey) match
+      case Left((code, e)) => IO.pure(denied(code, e.error, e.message))
+      case Right(caller)   =>
+        runDiffAs(
+          tid,
+          db,
+          schema,
+          table,
+          fromId,
+          toId,
+          limit,
+          cur,
+          types,
+          poolKey,
+          caller,
+          apiKey,
+          denied
+        )
+
+  private def runDiffAs(
+      tid: String,
+      db: String,
+      schema: String,
+      table: String,
+      fromId: Long,
+      toId: Long,
+      limit: Option[Int],
+      cur: Option[(Long, Long)],
+      types: Option[Set[String]],
+      poolKey: PoolKey,
+      caller: ExecCaller,
+      apiKey: Option[String],
+      denied: (StatusCode, String, String) => Either[(StatusCode, ErrorResponse), DataDiffResponse]
+  ): Out[DataDiffResponse] =
+    val alias = catalogAlias(tid, db)
+    val fn    = DataDiffSql.diffFn(alias, schema, table, fromId, toId)
+    // A PAT's own maxRows lowers the page size (never raises it), as on the MCP surface.
+    val effectiveLimit = caller.effectiveMaxRows(
+      cfg.previewMaxRows,
+      limit.map(_.max(1)).getOrElse(cfg.previewMaxRows)
+    )
+    val fetch      = effectiveLimit * 2 + 2
+    val filterPred = types
       .map(ts => s" AND change_type IN (${ts.toList.sorted.map(quoteLit).mkString(", ")})")
       .getOrElse("")
     val cursorPred = cur.map((s, r) => s" AND (snapshot_id, rowid) > ($s, $r)").getOrElse("")
@@ -579,10 +628,9 @@ final class CatalogPreviewHandlers(
     val pageSql    =
       s"SELECT * FROM $fn WHERE 1=1$cursorPred$filterPred " +
         s"ORDER BY snapshot_id, rowid, change_type LIMIT $fetch"
-    val user = identityOf(apiKey)
 
     def run(sql: String): IO[Either[Throwable, Either[RouterFailure, QueryResult]]] =
-      executor(ExecCaller.unrestricted(s"diff-$tid-$db", user), poolKey, sql)
+      executor(caller, poolKey, sql)
         .timeout(cfg.previewTimeoutSec.seconds)
         .attempt
 

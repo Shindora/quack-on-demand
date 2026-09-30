@@ -39,7 +39,7 @@ final class CatalogRestoreHandlers(
     writeExecutor: CatalogPreviewHandlers.PreviewExecutor,
     resolveReader: (String, String) => DuckLakeCatalogReader,
     cfg: CatalogConfig,
-    sessions: String => Option[SessionTokenStore.Session],
+    callerOf: RestCaller,
     catalogAlias: (String, String) => String = (_, td) => td,
     audit: AuditRecorder = AuditRecorder.noop
 ):
@@ -55,11 +55,6 @@ final class CatalogRestoreHandlers(
   /** Same unsafe-char screen as CatalogUndropHandlers: these values end up inside SQL text. */
   private def hasUnsafeChars(s: String): Boolean =
     s.exists(c => c == '\'' || c == '"' || c == ';' || c == '\\' || c.isWhitespace || c.isControl)
-
-  private def identityOf(apiKey: Option[String]): String =
-    apiKey.flatMap(sessions) match
-      case Some(session) => session.profile.username
-      case None          => SuperuserIdentity
 
   private def gate(rawTenant: String, tenantDb: String, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
@@ -207,21 +202,27 @@ final class CatalogRestoreHandlers(
                             "confirm against the fresh state"
                         )
                       )
-                    else if dryRun then
-                      runDryRun(tid, db, req, toSnapshot, currentSnapshot, apiKey, denied, okAudit)
                     else
-                      runExecute(
-                        tid,
-                        db,
-                        req,
-                        toSnapshot,
-                        currentSnapshot,
-                        preTableId,
-                        reader,
-                        apiKey,
-                        denied,
-                        okAudit
-                      )
+                      // Resolved before either leg: an unresolvable token is a 401 even on the
+                      // dry run, which itself runs as the system identity (see runDryRun).
+                      callerOf(s"restore-$tid-$db", apiKey) match
+                        case Left((code, e)) => IO.pure(denied(code, e.error, e.message))
+                        case Right(caller)   =>
+                          if dryRun then
+                            runDryRun(tid, db, req, toSnapshot, currentSnapshot, denied, okAudit)
+                          else
+                            runExecute(
+                              tid,
+                              db,
+                              req,
+                              toSnapshot,
+                              currentSnapshot,
+                              preTableId,
+                              reader,
+                              caller,
+                              denied,
+                              okAudit
+                            )
 
   private def runDryRun(
       tid: String,
@@ -229,7 +230,6 @@ final class CatalogRestoreHandlers(
       req: RestoreRequest,
       toSnapshot: Long,
       currentSnapshot: Long,
-      apiKey: Option[String],
       denied: (StatusCode, String, String) => Either[(StatusCode, ErrorResponse), RestoreResponse],
       okAudit: Map[String, String] => Unit
   ): Out[RestoreResponse] =
@@ -277,7 +277,7 @@ final class CatalogRestoreHandlers(
             toSnapshot,
             currentSnapshot
           )
-          // Runs as SuperuserIdentity rather than identityOf(apiKey): the ACL parser has no
+          // Runs as SuperuserIdentity rather than the resolved caller: the ACL parser has no
           // grammar for the ducklake_table_changes table function and fail-closed denies it as
           // an unsupported construct, which would wall an ACL'd (DDL+RO, no ALL) caller out of
           // the mandatory dry-run leg even though their CTAS execute is correctly authorized.
@@ -315,7 +315,7 @@ final class CatalogRestoreHandlers(
       currentSnapshot: Long,
       preTableId: Long,
       reader: DuckLakeCatalogReader,
-      apiKey: Option[String],
+      caller: ExecCaller,
       denied: (StatusCode, String, String) => Either[(StatusCode, ErrorResponse), RestoreResponse],
       okAudit: Map[String, String] => Unit
   ): Out[RestoreResponse] =
@@ -361,11 +361,7 @@ final class CatalogRestoreHandlers(
         // the same); a false positive requires "conflict" in an unrelated engine error.
         def isConflict(reason: String): Boolean =
           reason.toLowerCase(Locale.ROOT).contains("conflict")
-        writeExecutor(
-          ExecCaller.unrestricted(s"restore-$tid-$db", identityOf(apiKey)),
-          poolKey,
-          sql
-        )
+        writeExecutor(caller, poolKey, sql)
           .timeout(cfg.restoreTimeoutSec.seconds)
           .attempt
           .map {

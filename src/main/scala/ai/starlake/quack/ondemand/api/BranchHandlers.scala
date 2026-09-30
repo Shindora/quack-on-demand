@@ -15,15 +15,15 @@ import sttp.model.StatusCode
 
 /** REST handlers for branches (Epic 1). Gate = [[TenantDbGate]] on the PARENT tenant-db (tenant
   * resolve, [[TenantScopeCheck]], DuckLake kind), then everything else is the service's business
-  * rules. The actor is the session's username (tenant admin or superuser) or, for the static key
-  * and the MCP PAT seam, the identity `identityOf` resolves: an MCP data-tier PAT curries its
-  * bearer as `apiKey` and arrives here as a non-admin actor whose `mayUse` gate is the handshake.
+  * rules. The actor is what `actorOf` resolves: the session's username (tenant admin or superuser),
+  * a PAT's owner (an MCP data-tier PAT curries its bearer as `apiKey` and arrives here as a
+  * non-admin actor whose `mayUse` gate is the handshake), or the static key. The data diff
+  * delegates to [[CatalogPreviewHandlers]], whose [[RestCaller]] resolves the executor identity.
   */
 final class BranchHandlers(
     sup: PoolSupervisor,
     service: BranchService,
     preview: CatalogPreviewHandlers,
-    sessions: String => Option[ai.starlake.quack.ondemand.api.SessionTokenStore.Session],
     actorOf: Option[String] => BranchActor,
     audit: AuditRecorder = AuditRecorder.noop
 ):

@@ -1555,11 +1555,21 @@ object Main extends IOApp with LazyLogging:
       val previewExecutor: ai.starlake.quack.ondemand.api.CatalogPreviewHandlers.PreviewExecutor =
         routedExecutor(recordExecution = false)
 
+      // The executor identity of the catalog preview / data-diff / undrop / restore handlers:
+      // static key -> superuser, session -> its user, PAT -> its owner WITH its restriction and
+      // id, anything else -> 401. The JWT-only `sessionTokens.get` used to sit here, so a PAT
+      // (admitted by the guard) fell through to the synthetic superuser.
+      val restCaller = ai.starlake.quack.ondemand.api.RestCaller(
+        staticKey = mgrCfg.apiKey,
+        sessionOf = sessionTokens.get,
+        patOf = patAuthenticator.resolve
+      )
+
       val previewHandlers: Option[ai.starlake.quack.ondemand.api.CatalogPreviewHandlers] = Some(
         new ai.starlake.quack.ondemand.api.CatalogPreviewHandlers(
           sup,
           store,
-          sessionTokens.get,
+          restCaller,
           previewExecutor,
           catalogReader,
           mgrCfg.catalog,
@@ -1574,7 +1584,7 @@ object Main extends IOApp with LazyLogging:
           routedExecutor(recordExecution = true),
           catalogReader,
           mgrCfg.catalog,
-          sessionTokens.get,
+          restCaller,
           audit = auditRecorder
         )
       )
@@ -1587,7 +1597,7 @@ object Main extends IOApp with LazyLogging:
           routedExecutor(recordExecution = true),
           catalogReader,
           mgrCfg.catalog,
-          sessionTokens.get,
+          restCaller,
           catalogAlias = (t, td) => TenantDb.catalogAlias(sup.effectiveMetastoreFor(t, td), td),
           audit = auditRecorder
         )
@@ -1644,7 +1654,6 @@ object Main extends IOApp with LazyLogging:
             sup,
             branchService,
             ph,
-            sessionTokens.get,
             branchActorOf,
             audit = auditRecorder
           )

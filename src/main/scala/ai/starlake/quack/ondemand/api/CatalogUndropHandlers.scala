@@ -30,11 +30,9 @@ final class CatalogUndropHandlers(
     executor: CatalogPreviewHandlers.PreviewExecutor,
     resolveReader: (String, String) => DuckLakeCatalogReader,
     cfg: CatalogConfig,
-    sessions: String => Option[SessionTokenStore.Session],
+    callerOf: RestCaller,
     audit: AuditRecorder = AuditRecorder.noop
 ):
-  import CatalogPreviewHandlers.SuperuserIdentity
-
   private type Out[T] = IO[Either[(StatusCode, ErrorResponse), T]]
 
   private def err(code: StatusCode, error: String, msg: String) =
@@ -47,11 +45,6 @@ final class CatalogUndropHandlers(
     */
   private def hasUnsafeChars(s: String): Boolean =
     s.exists(c => c == '\'' || c == '"' || c == ';' || c == '\\' || c.isWhitespace || c.isControl)
-
-  private def identityOf(apiKey: Option[String]): String =
-    apiKey.flatMap(sessions) match
-      case Some(session) => session.profile.username
-      case None          => SuperuserIdentity
 
   private def gate(rawTenant: String, tenantDb: String, apiKey: Option[String])(
       scopeOf: String => Option[SessionScope]
@@ -191,54 +184,54 @@ final class CatalogUndropHandlers(
                       )
                     )
                   case Some(poolKey) =>
-                    val sql =
-                      s"CREATE TABLE ${quoteIdent(req.schema)}.${quoteIdent(target)} AS " +
-                        s"SELECT * FROM ${quoteIdent(req.schema)}.${quoteIdent(req.table)} " +
-                        s"AT (VERSION => $fromSnapshot)"
-                    def committedResponse(): Either[(StatusCode, ErrorResponse), UndropResponse] =
-                      audit.rest(
-                        apiKey,
-                        "control-plane",
-                        AuditActions.CatalogUndrop,
-                        "ok",
-                        tenant = Some(tid),
-                        target = Some(s"$db/${req.schema}.${req.table}"),
-                        detail = Map(
-                          "schema"       -> req.schema,
-                          "table"        -> req.table,
-                          "restoredAs"   -> target,
-                          "fromSnapshot" -> fromSnapshot.toString
-                        )
-                      )
-                      Right(UndropResponse(req.schema, req.table, target, fromSnapshot))
-                    executor(
-                      ExecCaller.unrestricted(s"undrop-$tid-$db", identityOf(apiKey)),
-                      poolKey,
-                      sql
-                    )
-                      .timeout(cfg.undropTimeoutSec.seconds)
-                      .attempt
-                      .map {
-                        case Left(e) =>
-                          // Cancellation of the blocking HTTP leg is best-effort, so a CTAS that
-                          // outlives the timeout may still have committed on the node: probe the
-                          // catalog before answering so the response and audit reflect reality.
-                          if reader
-                              .maxSnapshotId()
-                              .exists(m => reader.tableExistsAt(req.schema, target, m))
-                          then committedResponse()
-                          else
-                            val msg = e match
-                              case _: java.util.concurrent.TimeoutException =>
-                                s"undrop timed out after ${cfg.undropTimeoutSec}s"
-                              case other => s"undrop failed: ${other.getMessage}"
-                            denied(StatusCode.BadGateway, "undrop_failed", msg)
-                        case Right(Left(RouterFailure.AccessDenied(reason))) =>
-                          denied(StatusCode.Forbidden, "acl_denied", reason)
-                        case Right(Left(failure)) =>
-                          denied(StatusCode.BadGateway, "undrop_failed", failure.reason)
-                        case Right(Right(result)) =>
-                          // A CTAS result stream carries only a row count nobody reads.
-                          result.close()
-                          committedResponse()
-                      }
+                    callerOf(s"undrop-$tid-$db", apiKey) match
+                      case Left((code, e)) => IO.pure(denied(code, e.error, e.message))
+                      case Right(caller)   =>
+                        val sql =
+                          s"CREATE TABLE ${quoteIdent(req.schema)}.${quoteIdent(target)} AS " +
+                            s"SELECT * FROM ${quoteIdent(req.schema)}.${quoteIdent(req.table)} " +
+                            s"AT (VERSION => $fromSnapshot)"
+                        def committedResponse()
+                            : Either[(StatusCode, ErrorResponse), UndropResponse] =
+                          audit.rest(
+                            apiKey,
+                            "control-plane",
+                            AuditActions.CatalogUndrop,
+                            "ok",
+                            tenant = Some(tid),
+                            target = Some(s"$db/${req.schema}.${req.table}"),
+                            detail = Map(
+                              "schema"       -> req.schema,
+                              "table"        -> req.table,
+                              "restoredAs"   -> target,
+                              "fromSnapshot" -> fromSnapshot.toString
+                            )
+                          )
+                          Right(UndropResponse(req.schema, req.table, target, fromSnapshot))
+                        executor(caller, poolKey, sql)
+                          .timeout(cfg.undropTimeoutSec.seconds)
+                          .attempt
+                          .map {
+                            case Left(e) =>
+                              // Cancellation of the blocking HTTP leg is best-effort, so a CTAS that
+                              // outlives the timeout may still have committed on the node: probe the
+                              // catalog before answering so the response and audit reflect reality.
+                              if reader
+                                  .maxSnapshotId()
+                                  .exists(m => reader.tableExistsAt(req.schema, target, m))
+                              then committedResponse()
+                              else
+                                val msg = e match
+                                  case _: java.util.concurrent.TimeoutException =>
+                                    s"undrop timed out after ${cfg.undropTimeoutSec}s"
+                                  case other => s"undrop failed: ${other.getMessage}"
+                                denied(StatusCode.BadGateway, "undrop_failed", msg)
+                            case Right(Left(RouterFailure.AccessDenied(reason))) =>
+                              denied(StatusCode.Forbidden, "acl_denied", reason)
+                            case Right(Left(failure)) =>
+                              denied(StatusCode.BadGateway, "undrop_failed", failure.reason)
+                            case Right(Right(result)) =>
+                              // A CTAS result stream carries only a row count nobody reads.
+                              result.close()
+                              committedResponse()
+                          }
