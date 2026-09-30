@@ -18,6 +18,7 @@ function IcebergAliasBody({
   const [schemas, setSchemas] = useState<CatalogSchemaEntry[]>([]);
   const [schema, setSchema] = useState('');
   const [tables, setTables] = useState<string[]>([]);
+  const [tablesLoading, setTablesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Sequence guards: a namespace switch (or a re-mount on a different alias)
   // must not let an older, still-in-flight schemas/tables fetch overwrite a
@@ -42,11 +43,14 @@ function IcebergAliasBody({
 
   useEffect(() => {
     const seq = ++tablesSeq.current;
-    if (!schema) { setTables([]); return; }
+    if (!schema) { setTables([]); setTablesLoading(false); return; }
     setError(null);
+    setTables([]);
+    setTablesLoading(true);
     api.listIcebergTables(tenant, tenantDb, alias, schema)
       .then(r => { if (seq === tablesSeq.current) setTables(r); })
-      .catch(e => { if (seq === tablesSeq.current) setError(errorMessage(e)); });
+      .catch(e => { if (seq === tablesSeq.current) setError(errorMessage(e)); })
+      .finally(() => { if (seq === tablesSeq.current) setTablesLoading(false); });
   }, [tenant, tenantDb, alias, schema]);
 
   return (
@@ -68,7 +72,9 @@ function IcebergAliasBody({
           {schema && (
             <>
               <h4 style={{ marginTop: 0 }}>Tables in <code>{schema}</code></h4>
-              {tables.length === 0
+              {tablesLoading
+                ? <em style={{ color: '#888' }}>Loading...</em>
+                : tables.length === 0
                 ? <em style={{ color: '#888' }}>no tables</em>
                 : (
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
