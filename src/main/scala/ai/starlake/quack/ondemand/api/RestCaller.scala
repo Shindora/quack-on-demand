@@ -37,23 +37,40 @@ final class RestCaller(
   def isStaticKey(token: String): Boolean =
     staticBytes.exists(k => MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8), k))
 
+  /** The ONE credential resolution (static key, then session, then PAT, else 401) shared by the
+    * executor caller below and the branch actor ([[BranchHandlers.actorResolver]]).
+    */
+  def resolve(apiKey: Option[String]): Either[(StatusCode, ErrorResponse), RestCaller.Principal] =
+    apiKey match
+      case None                      => Right(RestCaller.Principal.System)
+      case Some(t) if isStaticKey(t) => Right(RestCaller.Principal.System)
+      case Some(t)                   =>
+        sessionOf(t) match
+          case Some(s) => Right(RestCaller.Principal.Session(s))
+          case None    =>
+            patOf(t) match
+              case Some(p) => Right(RestCaller.Principal.Pat(p))
+              case None    => Left(RestCaller.Unauthorized)
+
   def apply(
       connectionId: String,
       apiKey: Option[String]
   ): Either[(StatusCode, ErrorResponse), ExecCaller] =
-    apiKey match
-      case None                      => Right(RestCaller.superuser(connectionId))
-      case Some(t) if isStaticKey(t) => Right(RestCaller.superuser(connectionId))
-      case Some(t)                   =>
-        sessionOf(t) match
-          case Some(s) => Right(ExecCaller.unrestricted(connectionId, s.profile.username))
-          case None    =>
-            patOf(t) match
-              case Some(p) =>
-                Right(ExecCaller(connectionId, p.user.username, p.restriction, Some(p.patId)))
-              case None => Left(RestCaller.Unauthorized)
+    resolve(apiKey).map {
+      case RestCaller.Principal.System     => ExecCaller.system(connectionId)
+      case RestCaller.Principal.Session(s) =>
+        ExecCaller.unrestricted(connectionId, s.profile.username)
+      case RestCaller.Principal.Pat(p) =>
+        ExecCaller(connectionId, p.user.username, p.restriction, Some(p.patId))
+    }
 
 object RestCaller:
+
+  /** What a REST credential resolved to. `System` = the static key (or the absent credential). */
+  enum Principal:
+    case System
+    case Session(session: SessionTokenStore.Session)
+    case Pat(pat: PatPrincipal)
 
   /** A resolver that knows no credential but the static key (`None`): every token is refused. */
   val staticOnly: RestCaller = new RestCaller(None, _ => None, _ => None)
@@ -69,6 +86,3 @@ object RestCaller:
       "unauthorized",
       "the credential does not resolve to a live session, token or the static key"
     )
-
-  private def superuser(connectionId: String): ExecCaller =
-    ExecCaller.system(connectionId)

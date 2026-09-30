@@ -262,30 +262,25 @@ object BranchHandlers:
 
   private val StaticActor = BranchActor(CatalogPreviewHandlers.SuperuserIdentity, isAdmin = true)
 
-  /** The branch actor a bearer resolves to, mirroring [[RestCaller]]: absent (the static key, as
-    * the MCP static principal curries it; the REST guard never admits a credential-less request) or
-    * the configured static key -> the superuser admin actor; a session -> its user, admin when it
-    * manages a tenant; a PAT -> its owner, admin per the PAT. Any other present token (unknown,
-    * expired, revoked, a session that died between the guard and the handler) is refused with 401
+  /** The branch actor a bearer resolves to, through [[RestCaller.resolve]] (the one resolution):
+    * absent (the static key, as the MCP static principal curries it; the REST guard never admits a
+    * credential-less request) or the configured static key -> the superuser admin actor; a session
+    * -> its user, admin when it manages a tenant; a PAT -> its owner, admin per the PAT, carrying
+    * its `branchOnly` restriction (merge refuses it). Any other present token (unknown, expired,
+    * revoked, a session that died between the guard and the handler) is refused with 401
     * `unauthorized`: it used to become the superuser admin actor, able to approve a merge.
     */
   def actorResolver(
-      callers: RestCaller,
-      sessionOf: String => Option[SessionTokenStore.Session],
-      patOf: String => Option[ai.starlake.quack.ondemand.auth.PatPrincipal]
+      callers: RestCaller
   ): Option[String] => Either[(StatusCode, ErrorResponse), BranchActor] =
-    case None                              => Right(StaticActor)
-    case Some(t) if callers.isStaticKey(t) => Right(StaticActor)
-    case Some(t)                           =>
-      sessionOf(t) match
-        case Some(s) =>
-          Right(
-            BranchActor(
-              s.profile.username,
-              isAdmin = s.scope.superuser || s.scope.manageableTenants.nonEmpty
-            )
+    apiKey =>
+      callers.resolve(apiKey).map {
+        case RestCaller.Principal.System     => StaticActor
+        case RestCaller.Principal.Session(s) =>
+          BranchActor(
+            s.profile.username,
+            isAdmin = s.scope.superuser || s.scope.manageableTenants.nonEmpty
           )
-        case None =>
-          patOf(t) match
-            case Some(p) => Right(BranchActor(p.user.username, isAdmin = p.isAdmin))
-            case None    => Left(RestCaller.Unauthorized)
+        case RestCaller.Principal.Pat(p) =>
+          BranchActor(p.user.username, isAdmin = p.isAdmin, branchOnly = p.restriction.branchOnly)
+      }

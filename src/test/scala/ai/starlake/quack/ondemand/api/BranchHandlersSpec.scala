@@ -100,7 +100,7 @@ class BranchHandlersSpec extends AnyFlatSpec with Matchers:
       sup,
       service,
       preview,
-      BranchHandlers.actorResolver(callers, sessionOf, patOf)
+      BranchHandlers.actorResolver(callers)
     )
 
     def merge(key: Option[String]) =
@@ -149,7 +149,7 @@ class BranchHandlersSpec extends AnyFlatSpec with Matchers:
       }
     }
   "BranchHandlers.actorResolver" should "map each credential to its actor" in {
-    val resolve = BranchHandlers.actorResolver(RestCaller(Some(StaticKey)), sessionOf, patOf)
+    val resolve = BranchHandlers.actorResolver(RestCaller(Some(StaticKey), sessionOf, patOf))
     resolve(None).map(a => (a.identity, a.isAdmin)) shouldBe
       Right((CatalogPreviewHandlers.SuperuserIdentity, true))
     resolve(Some(StaticKey)).map(a => (a.identity, a.isAdmin)) shouldBe
@@ -159,4 +159,17 @@ class BranchHandlersSpec extends AnyFlatSpec with Matchers:
     resolve(Some("qod_pat_unknown")).left.toOption.map(_._1) shouldBe
       Some(StatusCode.Unauthorized)
     resolve(Some(StaticKey + "x")).isLeft shouldBe true
+  }
+
+  it should "carry a PAT's branchOnly restriction into the actor" in {
+    val branchOnlyPat = "qod_pat_branch_only"
+    val patOf2: String => Option[ai.starlake.quack.ondemand.auth.PatPrincipal] = t =>
+      if t == branchOnlyPat then
+        patOf(PatTok).map(p => p.copy(restriction = p.restriction.copy(branchOnly = true)))
+      else patOf(t)
+    val resolve = BranchHandlers.actorResolver(RestCaller(Some(StaticKey), sessionOf, patOf2))
+    resolve(Some(branchOnlyPat)).map(_.branchOnly) shouldBe Right(true)
+    resolve(Some(PatTok)).map(_.branchOnly) shouldBe Right(false)
+    resolve(Some(SessionTok)).map(_.branchOnly) shouldBe Right(false)
+    resolve(Some(StaticKey)).map(_.branchOnly) shouldBe Right(false)
   }

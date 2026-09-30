@@ -1467,11 +1467,7 @@ object Main extends IOApp with LazyLogging:
       // apiKey), the static key, or nothing (the MCP static principal); any other present token
       // is refused with 401 instead of becoming the superuser admin actor.
       val branchActorOf =
-        ai.starlake.quack.ondemand.api.BranchHandlers.actorResolver(
-          restCaller,
-          sessionTokens.get,
-          patAuthenticator.resolve
-        )
+        ai.starlake.quack.ondemand.api.BranchHandlers.actorResolver(restCaller)
       lazy val branchService: ai.starlake.quack.ondemand.branch.BranchService =
         new ai.starlake.quack.ondemand.branch.BranchService(
           cfg = mgrCfg.branching,
