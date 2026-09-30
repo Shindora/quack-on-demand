@@ -3,6 +3,7 @@ import { api, errorMessage } from '../api/client';
 import type { TenantDbKind, TenantDbResponse, UpdateTenantDbRequest, MetastoreDefaultsResponse } from '../api/types';
 import CatalogBrowser from './CatalogBrowser';
 import CatalogSnapshotsPanel from './CatalogSnapshotsPanel';
+import IcebergCatalogBrowser from './IcebergCatalogBrowser';
 import DataPathEditor, {
   buildObjectStore, parseExtras as parseStoreExtras,
   type StoreType,
@@ -272,7 +273,7 @@ export default function DatabaseSection({ tenant }: { tenant: string }) {
       <div className="card">
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
           <div className="card-title" style={{ margin: 0 }}>
-            Catalog &mdash; <code>{browsing}</code>
+            Catalog: <code>{browsing}</code>
           </div>
           <button type="button" className="link-button" onClick={() => setBrowsing(null)}>&larr; Back to databases</button>
         </div>
@@ -281,6 +282,9 @@ export default function DatabaseSection({ tenant }: { tenant: string }) {
           tenantDb={browsing}
           onCatalogMutated={() => setCatalogGen(g => g + 1)}
         />
+        {/* External Iceberg catalogs declared on this database (renders nothing when there are
+            none), so they are reachable from the database view and not only from /catalog. */}
+        <IcebergCatalogBrowser tenant={tenant} tenantDb={browsing} />
         <CatalogSnapshotsPanel tenant={tenant} tenantDb={browsing} refreshToken={catalogGen} />
       </div>
     );

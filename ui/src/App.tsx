@@ -150,6 +150,7 @@ function Shell() {
         </span>
         <NavLink to="/"        end className={({ isActive }) => isActive ? 'active' : ''}>Nodes</NavLink>
         <NavLink to="/tenants"     className={({ isActive }) => isActive ? 'active' : ''}>Tenants</NavLink>
+        <NavLink to="/catalog"     className={({ isActive }) => isActive ? 'active' : ''}>Catalog</NavLink>
         <NavLink to="/users"       className={({ isActive }) => isActive ? 'active' : ''}>Users</NavLink>
         {role === 'admin' && isSuperuser && (
           <NavLink to="/servers"    className={({ isActive }) => isActive ? 'active' : ''}>Servers</NavLink>
