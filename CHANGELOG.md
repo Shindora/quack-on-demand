@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.9
 
 - **Security: a personal access token on the catalog endpoints no longer runs as superuser.**
   The guard admits a PAT on `/api` wherever its owner's session would be admitted, but the catalog
@@ -87,6 +87,11 @@
   (400), because v1 carries no per-snapshot sequence number for history ordering and paging to use.
   DuckLake-only operations (restore, undrop, tags, schema diff, catalog-wide snapshot list) are not
   exposed on an Iceberg source; DuckDB's Iceberg extension does not support them.
+
+- **Admin UI: the catalog is one click away, Iceberg included.** The top menu has a Catalog link,
+  and the catalog shown inside a database (Tenants > tenant > Databases > table count) now lists
+  that database's external Iceberg catalogs too; an Iceberg namespace is picked from a dropdown.
+  The selected schema or namespace is readable in dark mode.
 
 ## 0.9.8
 
