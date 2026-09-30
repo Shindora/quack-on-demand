@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom';
 import { api, errorMessage } from '../api/client';
 import type { CatalogSchemaEntry, FederatedSourceResponse } from '../api/types';
 
-/** Nested schema/table browser for one attached Iceberg alias, shown inline when the alias
-  * row is expanded. Mirrors CatalogBrowser's schema-aside / table-main layout at a smaller
-  * scale, against the Iceberg-specific list endpoints (table names only, no row counts). */
+/** Namespace/table browser for one attached Iceberg alias, shown inline when the alias row is
+  * expanded: a namespace dropdown (preselected when there is only one) above that namespace's
+  * tables, against the Iceberg-specific list endpoints (table names only, no row counts). */
 function IcebergAliasBody({
   tenant,
   tenantDb,
@@ -18,6 +18,7 @@ function IcebergAliasBody({
   const [schemas, setSchemas] = useState<CatalogSchemaEntry[]>([]);
   const [schema, setSchema] = useState('');
   const [tables, setTables] = useState<string[]>([]);
+  const [tablesLoading, setTablesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Sequence guards: a namespace switch (or a re-mount on a different alias)
   // must not let an older, still-in-flight schemas/tables fetch overwrite a
@@ -31,76 +32,70 @@ function IcebergAliasBody({
     setSchema('');
     setSchemas([]);
     api.listIcebergSchemas(tenant, tenantDb, alias)
-      .then(r => { if (seq === schemasSeq.current) setSchemas(r); })
+      .then(r => {
+        if (seq !== schemasSeq.current) return;
+        setSchemas(r);
+        // A single namespace needs no choice: select it so its tables show at once.
+        if (r.length === 1) setSchema(r[0].name);
+      })
       .catch(e => { if (seq === schemasSeq.current) setError(errorMessage(e)); });
   }, [tenant, tenantDb, alias]);
 
   useEffect(() => {
     const seq = ++tablesSeq.current;
-    if (!schema) { setTables([]); return; }
+    if (!schema) { setTables([]); setTablesLoading(false); return; }
     setError(null);
+    setTables([]);
+    setTablesLoading(true);
     api.listIcebergTables(tenant, tenantDb, alias, schema)
       .then(r => { if (seq === tablesSeq.current) setTables(r); })
-      .catch(e => { if (seq === tablesSeq.current) setError(errorMessage(e)); });
+      .catch(e => { if (seq === tablesSeq.current) setError(errorMessage(e)); })
+      .finally(() => { if (seq === tablesSeq.current) setTablesLoading(false); });
   }, [tenant, tenantDb, alias, schema]);
 
   return (
     <div style={{ padding: '.75rem 1rem', background: 'var(--bg-elev)' }}>
       {error && <p style={{ color: 'red' }}>Error: {error}</p>}
-      <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 24 }}>
-        <aside>
-          <h4 style={{ marginTop: 0 }}>Namespaces</h4>
-          {schemas.length === 0
-            ? <em style={{ color: '#888' }}>no namespaces</em>
-            : (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {schemas.map(s => {
-                  const active = s.name === schema;
-                  return (
-                    <li
-                      key={s.name}
-                      onClick={() => setSchema(s.name)}
-                      className={'tree-item' + (active ? ' selected' : '')}
-                      style={{
-                        cursor: 'pointer',
-                        padding: '4px 8px',
-                        borderRadius: 4,
-                        fontWeight: active ? 600 : 400,
-                      }}
-                    >
-                      {s.name}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-        </aside>
-        <main>
-          <h4 style={{ marginTop: 0 }}>
-            Tables in {schema ? <code>{schema}</code> : <em style={{ color: '#888' }}>pick a namespace</em>}
-          </h4>
+      {schemas.length === 0 ? (
+        <em style={{ color: '#888' }}>no namespaces</em>
+      ) : (
+        <>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            Namespace
+            <select value={schema} onChange={ev => setSchema(ev.target.value)}>
+              {schemas.length > 1 && <option value="">Pick a namespace</option>}
+              {schemas.map(s => (
+                <option key={s.name} value={s.name}>{s.name}</option>
+              ))}
+            </select>
+          </label>
           {schema && (
-            tables.length === 0
-              ? <em style={{ color: '#888' }}>no tables</em>
-              : (
-                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                  {tables.map(t => (
-                    <li key={t} style={{ padding: '4px 0' }}>
-                      <Link
-                        to={
-                          `/catalog/${encodeURIComponent(tenant)}/${encodeURIComponent(tenantDb)}` +
-                          `/iceberg/${encodeURIComponent(alias)}/${encodeURIComponent(schema)}/${encodeURIComponent(t)}`
-                        }
-                      >
-                        <code>{t}</code>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              )
+            <>
+              <h4 style={{ marginTop: 0 }}>Tables in <code>{schema}</code></h4>
+              {tablesLoading
+                ? <em style={{ color: '#888' }}>Loading...</em>
+                : tables.length === 0
+                ? <em style={{ color: '#888' }}>no tables</em>
+                : (
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                    {tables.map(t => (
+                      <li key={t} style={{ padding: '4px 0' }}>
+                        <Link
+                          to={
+                            `/catalog/${encodeURIComponent(tenant)}/${encodeURIComponent(tenantDb)}` +
+                            `/iceberg/${encodeURIComponent(alias)}/${encodeURIComponent(schema)}/${encodeURIComponent(t)}`
+                          }
+                        >
+                          <code>{t}</code>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+            </>
           )}
-        </main>
-      </div>
+        </>
+      )}
     </div>
   );
 }
