@@ -1,0 +1,230 @@
+# Delegating data-access authorization to Open Policy Agent
+
+QoD can hand the data-access decisions of a tenant to that tenant's own
+[Open Policy Agent](https://www.openpolicyagent.org/) server. QoD stays the enforcement point; the
+tenant's Rego policy is the source of truth for:
+
+1. **pool access**, decided once at session handshake (the `connect` rule), and
+2. **table access**, decided once per statement for every table the statement touches (the
+   `statement` rule).
+
+Row filters and column masks are not decided by OPA in this version (see "Result" below).
+
+## Modes
+
+Each tenant is in exactly one mode:
+
+| Mode | Pool access | Table access |
+|---|---|---|
+| `qod` | QoD pool grants (`qodstate_pool_permission`) | QoD role permissions (`qodstate_role_permission`) |
+| `opa` | the tenant's OPA, `connect` rule | the tenant's OPA, `statement` rule |
+
+On an `opa` tenant QoD's grant tables are ignored. Role and group **memberships** still resolve
+(QoD RBAC graph plus JWT/OIDC claim names) and are sent to OPA as identity attributes. OPA
+authorizes; it does not create users: users of an `opa` tenant are provisioned as usual (SCIM,
+OIDC, CLI, REST).
+
+`opa` mode always validates statements, even when the manager-wide `QOD_ACL_ENABLED` is false: a
+policy you configured is never silently ignored by a global flag. Any stored mode other than exactly
+`qod` is treated as `opa` (fail closed).
+
+Superusers (users with no tenant) never reach OPA, in either mode.
+
+## Configuration
+
+### Manager-wide (environment)
+
+| Env | Default | Meaning |
+|---|---|---|
+| `QOD_ACL_MODE` | `qod` | Mode of a tenant that sets none. |
+| `QOD_OPA_URL` | empty | OPA base URL for `opa` tenants that set none (an operator-run sidecar). |
+| `QOD_OPA_TIMEOUT_MS` | `2000` | Bound on one whole OPA exchange (connect, headers and body). |
+| `QOD_OPA_CACHE_TTL_SEC` | `5` | Seconds an allow / deny is cached. `0` disables the cache. |
+
+### Per tenant
+
+```bash
+qod tenant set-acl acme --mode opa --opa-url https://opa.acme.internal:8181 \
+    --opa-policy-path qod/authz --opa-token "$OPA_TOKEN"
+qod tenant set-acl acme --send-statement-text      # include the SQL text in the input
+qod tenant set-acl acme --mode qod                 # back to QoD grants
+```
+
+- Omitted options keep their stored value; an empty string clears one (`--mode ''` = manager
+  default, `--opa-url ''` = fall back to `QOD_OPA_URL`, `--opa-token ''` = no token).
+- `--opa-policy-path` defaults to `qod/authz`; it is slash-separated identifiers only.
+- Switching a tenant to `opa` with neither a tenant URL nor `QOD_OPA_URL` is refused
+  (`400 opa_url_required`).
+- The token is write-only: sent as `Authorization: Bearer <token>`, never returned (responses only
+  say whether one is set), redacted in exported manifests.
+- The same settings are available in the admin UI (tenant page, Access control section) and the
+  MCP admin tool `set_tenant_acl`.
+
+**Manifest re-import.** An exported manifest carries the token redacted. Re-importing it onto a
+tenant that still has a stored token keeps that token. Importing it where no token is stored (a
+fresh control plane) is an import error, not a silent drop: supply the real value in the manifest,
+or import without `opaToken` and set it afterwards with `qod tenant set-acl`.
+
+## The contract
+
+QoD calls `POST {opaUrl}/v1/data/{policyPath}/connect` and
+`POST {opaUrl}/v1/data/{policyPath}/statement`.
+
+### connect input
+
+```json
+{"input": {
+  "kind": "connect",
+  "tenant": "acme",
+  "database": "tpch",
+  "pool": "bi",
+  "parentPool": null,
+  "user": {"name": "alice", "roles": ["analyst"], "groups": ["emea"], "claims": {"dept": "fin"}},
+  "client": {"edge": "flightsql"}
+}}
+```
+
+- `pool` is the addressed pool. For a branch pool (`__br_<id8>`) `parentPool` is an array of the
+  parent database's pool names, so a policy can let a branch inherit access from its parent; it is
+  `null` for a regular pool.
+- `roles` and `groups` are the resolved closure, sorted. `claims` are the verified token claims
+  when the session was authenticated by a token, `{}` otherwise.
+- `client.edge` is `flightsql`, `quack` (native Quack front door), `mcp` (MCP tools and the REST
+  SQL preview), `rest` (branch creation access probe) or `dry-run` (`qod tenant opa-test`).
+
+### statement input
+
+```json
+{"input": {
+  "kind": "statement",
+  "tenant": "acme",
+  "database": "tpch",
+  "pool": "bi",
+  "parentPool": null,
+  "user": {"name": "alice", "roles": ["analyst"], "groups": ["emea"], "claims": {"dept": "fin"}},
+  "client": {"edge": "mcp"},
+  "statement": {"class": "WRITE"},
+  "accesses": [
+    {"catalog": "tpch", "schema": "main", "table": "lineitem", "verb": "write"},
+    {"catalog": "tpch", "schema": "main", "table": "orders", "verb": "read"}
+  ]
+}}
+```
+
+- `statement.class` is `READ`, `WRITE` or `DDL`.
+- `accesses` is the exact table set QoD's SQL parser extracts (the same parser and catalog
+  qualification as QoD's own grant check), fully qualified, sorted, deduplicated, with lowercase
+  verbs `read | write | ddl`.
+- `statement.text` (the SQL) is present only when the tenant enables `--send-statement-text`, so
+  SQL literals do not land in your decision logs by default.
+- A statement with no table references (`COMMIT`, `SET`, `USE`, `SHOW`) is admitted without
+  calling OPA, so the `statement` rule never sees an empty `accesses`.
+
+### Result
+
+```json
+{"result": {"allow": true}}
+{"result": {"allow": false, "reason": "emea analysts cannot write lineitem",
+            "denied": [{"catalog": "tpch", "schema": "main", "table": "lineitem", "verb": "write"}]}}
+```
+
+- `reason` reaches the client after truncation to 256 characters and removal of control
+  characters.
+- `denied` is advisory: it narrows the error message to the listed accesses. Entries that do not
+  match an input access are ignored; a deny with no usable `denied` names every access.
+- `decision_id` (top level of OPA's response, present when OPA decision logging is on) is recorded
+  on QoD's denial audit row as `opa_decision_id`, next to `authz_source=opa`, so you can join the
+  two logs.
+
+### Fail closed
+
+Only a literal JSON `true` at `result.allow` allows.
+
+| OPA response | Outcome |
+|---|---|
+| `allow: true` | allow |
+| `allow: false` | deny, with `reason` and `denied` |
+| `allow` missing, `"true"`, `1`, `null`; `result` missing (rule undefined); non-JSON body | deny, "policy error: ..." naming the problem |
+| `row_filter` or `masks` present (any value) | deny: reserved for a future version, rejected now |
+| timeout, connection refused, non-2xx status, body larger than 1 MiB, no URL configured | error |
+
+How each outcome reaches the client:
+
+| Outcome | Handshake | Statement |
+|---|---|---|
+| allow | admitted | executed |
+| deny | permission refusal, "pool access denied by policy: <reason>" | permission refusal naming the denied tables and the reason |
+| error | `UNAVAILABLE`, "authorization service unavailable" (retryable) | same |
+
+An outage is reported as `UNAVAILABLE`, not as a permission error, so clients retry and nobody
+chases a phantom grant problem. There is no circuit breaker: during an outage every decision waits
+up to `QOD_OPA_TIMEOUT_MS` and is refused. The timeout bounds the whole exchange, including the
+response body, and the body is capped at 1 MiB.
+
+## What QoD still enforces on an `opa` tenant
+
+Independently of OPA:
+
+- superuser bypass (superusers never reach OPA);
+- user existence, `enabled`, lock, forced password change, session revocation;
+- pool lockdown and bucket denial, the protected-write guard, filtered metadata, catalog write
+  screening;
+- row and column policies (RLS / CLS) from QoD's own policy tables;
+- statements QoD cannot authorize precisely (parse errors, unsupported constructs, unqualifiable
+  table references) are refused before OPA is called, with no wildcard escape.
+
+## Revocation and caching
+
+- Allow and deny decisions are cached for `QOD_OPA_CACHE_TTL_SEC` seconds. The cache key covers
+  every field of the input (and the tenant's OPA settings), so a different question is never
+  answered from a cached decision; errors are never cached.
+- A Rego or data change applies to new decisions within the TTL. It does **not** kill running
+  sessions or statements: pool access is decided at handshake, so a session admitted before the
+  change stays connected until it reconnects. Statement decisions re-evaluate within the TTL.
+- OPA cannot push a revocation to QoD. QoD-side events (user disabled, locked, deleted, logged out)
+  keep their usual behaviour.
+
+## Dry run
+
+```bash
+qod tenant opa-test acme --pool bi --user alice                                  # connect
+qod tenant opa-test acme --pool bi --user alice --sql "SELECT * FROM orders"     # statement
+```
+
+Prints the exact input document and the tenant OPA's answer (`allow`, `deny` or `error`). Nothing
+is executed and the decision cache is neither read nor filled. Differences from a live session:
+`client.edge` is `dry-run`, `claims` is `{}`, and unqualified tables resolve to the pool's
+database and its `main` schema (no session `USE` state).
+
+## Starter policy
+
+[`qod-authz.rego`](qod-authz.rego) (package `qod.authz`) reproduces QoD's own grant semantics
+from data you load into OPA, so a migrating tenant starts from equivalence and edits from there:
+
+```json
+{"qod": {
+  "pool_grants":  {"acme": {"analyst": ["bi"], "admin": ["*"]}},
+  "table_grants": {"acme": {"analyst": [{"catalog": "tpch", "schema": "*", "table": "*", "verb": "RO"}]}}
+}}
+```
+
+- `pool_grants[tenant][role]`: pool names the role may connect to, `"*"` for every pool. A
+  branch pool is allowed when the role holds any of its parent pools.
+- `table_grants[tenant][role]`: `catalog` / `schema` / `table` patterns (`"*"` matches anything)
+  with a verb: `RO` covers read, `RW` read and write, `DDL` ddl, `ALL` everything.
+
+Run it locally:
+
+```bash
+opa run --server --addr 127.0.0.1:8181 qod-authz.rego grants.json
+QOD_OPA_URL=http://127.0.0.1:8181 ...           # or per tenant: qod tenant set-acl acme --opa-url ...
+qod tenant set-acl acme --mode opa
+qod tenant opa-test acme --pool bi --user alice --sql "SELECT * FROM tpch.main.orders"
+```
+
+## Known limitation: catalog listings
+
+With filtered metadata on (`QOD_ACL_FILTERED_METADATA`, default true), `information_schema` and
+`duckdb_*` listings are narrowed by **QoD grants**, not by OPA. An `opa` tenant whose users hold
+no QoD role permissions therefore sees empty catalog listings: this fails closed (nothing leaks),
+but BI tools that browse the catalog show no tables, even though queries OPA allows run normally.
