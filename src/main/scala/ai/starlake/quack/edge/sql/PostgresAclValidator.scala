@@ -1,8 +1,7 @@
 package ai.starlake.quack.edge.sql
 
 import java.util.Locale
-import ai.starlake.acl.model.{Config, DenyReason}
-import ai.starlake.acl.parser.{SqlParser, StatementResult, TableAccess, TableExtractor, Verb}
+import ai.starlake.acl.parser.{TableAccess, Verb}
 import ai.starlake.quack.ondemand.rbac.EffectiveSet
 import ai.starlake.quack.ondemand.state.RolePermission
 import com.typesafe.scalalogging.LazyLogging
@@ -53,13 +52,6 @@ final class PostgresAclValidator(
 ) extends StatementValidator,
       LazyLogging:
 
-  private def parserConfigFor(context: ValidationContext): Config =
-    val db     = context.defaultDatabase.getOrElse(defaultDatabase)
-    val schema = context.defaultSchema.getOrElse(defaultSchema)
-    if dialect.equalsIgnoreCase("duckdb") then
-      Config.forDuckDB(Some(db), Some(schema), context.attachedCatalogs)
-    else Config.forGeneric(db, schema)
-
   override def validate(context: ValidationContext): ValidationResult =
     context.effectiveSet match
       case None =>
@@ -77,14 +69,26 @@ final class PostgresAclValidator(
         Allowed
 
       case Some(eff) =>
-        // Ahead of every other arm, and never wildcard-coverable: the target of these calls is
-        // a string the parser cannot see, so the wildcard's tenant-catalog scoping cannot apply.
-        CatalogReachingCalls.find(context.statement) match
-          case Some(fn) =>
-            val msg = CatalogReachingCalls.denyReason(fn)
+        val config = AccessGate.parserConfig(context, defaultDatabase, defaultSchema, dialect)
+        val sessionCatalog = context.defaultDatabase.getOrElse(defaultDatabase)
+        AccessGate.evaluate(context.statement, config, sessionCatalog, filteredMetadata) match
+          case GateOutcome.Refuse(msg, true, covered) =>
+            denyUnlessWildcardAll(eff, context.username, covered, msg)
+          case GateOutcome.Refuse(msg, false, _) =>
             logger.warn(s"ACL DENIED: user=${context.username}: $msg")
             Denied(msg)
-          case None => validateForPrincipal(context, eff)
+          case GateOutcome.NothingGated(accesses, catalogFunctions) =>
+            logger.info(
+              s"ACL ALLOWED: user=${context.username} no gated table refs" +
+                (if accesses.isEmpty then ""
+                 else
+                   s" accesses=${accesses.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")}") +
+                (if catalogFunctions.isEmpty then ""
+                 else s" filtered=${catalogFunctions.mkString(",")}")
+            )
+            Allowed
+          case GateOutcome.Gated(gated, accesses) =>
+            matchGrants(context, eff, gated, accesses)
 
   /** Deny `msg` unless the principal holds an unrestricted `*.*.* ALL` grant, which covers
     * statements the parser could not fully resolve (unparseable / unsupported constructs /
@@ -103,184 +107,48 @@ final class PostgresAclValidator(
       logger.warn(s"ACL DENIED: user=$username: $msg")
       Denied(msg)
 
-  private def validateForPrincipal(
+  /** Match every gated access against the principal's role permissions. `accesses` is the full set,
+    * named in the allow log line.
+    */
+  private def matchGrants(
       context: ValidationContext,
-      eff: EffectiveSet
+      eff: EffectiveSet,
+      gated: Set[TableAccess],
+      accesses: Set[TableAccess]
   ): ValidationResult =
-    val extraction = SqlParser.extract(context.statement, parserConfigFor(context))
+    // Pre-compute the catalogs admissible via wildcard for this session.
+    // Used below to scope `*` catalog matches to the user's tenant; an
+    // explicit (non-wildcard) catalog grant still bypasses this check, so
+    // operators can deliberately grant cross-tenant access by naming a
+    // sibling tenant's catalog.
+    val sessionCatalogs: Set[String] =
+      eff.user.tenant.map(tenantCatalogs).getOrElse(Set.empty)
 
-    // Parse errors short-circuit to Denied unless the principal holds an
-    // unrestricted ALL grant (preserves prior behavior).
-    val parseErrors = extraction.statements.collect {
-      case StatementResult.ParseError(_, snippet, msg) => s"parse error: $msg ($snippet)"
+    val unauthorized = gated.filterNot { ta =>
+      eff.permissions.exists(p =>
+        verbCovers(p.verb, ta.verb) &&
+          catalogMatch(p.catalogName, ta.table.database, sessionCatalogs) &&
+          wildcardMatch(p.schemaName, ta.table.schema) &&
+          wildcardMatch(p.tableName, ta.table.table)
+      )
     }
-    // Constructs the walker could not resolve to a grantable table (table
-    // functions like read_parquet, string-literal file refs, unrecognized
-    // FROM-item / node types). Fail closed: these escape the tenant-catalog
-    // boundary or would otherwise be silently dropped, turning the
-    // empty-access fail-open into an allow. Wildcard ALL still covers them.
-    //
-    // Filtered-metadata carve-out (issue #114): the DuckDB catalog functions the
-    // edge rewriter filters are set aside here and admitted below, but only once
-    // the statement is known to be a pure read. The marker is the parser's own
-    // (TableExtractor.tableFunctionName reads it back), and the call must be
-    // exactly `<function>()`: `duckdb_tables('x')`, `main.duckdb_tables()` and the
-    // bare-name marker for `FROM duckdb_tables` are not that shape and stay
-    // unsupported.
-    val allUnsupported = extraction.statements.collect {
-      case StatementResult.Extracted(_, _, _, _, u) if u.nonEmpty => u
-    }.flatten
-    val (catalogFunctions, unsupported) =
-      if filteredMetadata then
-        allUnsupported.partition(u =>
-          TableExtractor.tableFunctionName(u).flatMap(TableExtractor.catalogFunctionCall).isDefined
-        )
-      else (Nil, allUnsupported)
-    // Qualification errors were previously ignored, silently DROPPING the
-    // offending ref from the access set (fail-open). AmbiguousCatalogRef denies
-    // unconditionally: admitting it under the wildcard would reopen the
-    // cross-catalog bypass the attached-catalog check exists to close. Other
-    // qualification errors mirror the unsupported arm (wildcard ALL covers them).
-    val qualErrors = extraction.statements.collect {
-      case StatementResult.Extracted(_, _, _, q, _) if q.nonEmpty => q
-    }.flatten
-    val ambiguous = qualErrors.collect { case a: DenyReason.AmbiguousCatalogRef => a }
-    val otherQual = qualErrors.filterNot(_.isInstanceOf[DenyReason.AmbiguousCatalogRef])
 
-    if parseErrors.nonEmpty then
-      denyUnlessWildcardAll(
-        eff,
-        context.username,
-        "unparseable statement",
-        parseErrors.mkString("; ")
+    if unauthorized.isEmpty then
+      logger.info(
+        s"ACL ALLOWED: user=${context.username} " +
+          s"roles=${eff.roles.map(_.name).mkString(",")} " +
+          s"accesses=${accesses.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")}"
       )
-    else if unsupported.nonEmpty then
-      denyUnlessWildcardAll(
-        eff,
-        context.username,
-        s"unsupported constructs (${unsupported.mkString(", ")})",
-        s"unsupported constructs (deny, fail-closed): ${unsupported.mkString(", ")}"
-      )
-    else if ambiguous.nonEmpty then
-      val msg = ambiguous
-        .map(a =>
-          s"ambiguous two-part name '${a.tableName}': '${a.catalog}' is an attached " +
-            s"catalog; qualify fully as '${a.catalog}.<schema>.<table>'"
-        )
-        .mkString("; ")
-      logger.warn(s"ACL DENIED: user=${context.username}: $msg")
-      Denied(msg)
-    else if otherQual.nonEmpty then
-      denyUnlessWildcardAll(
-        eff,
-        context.username,
-        s"qualification errors (${otherQual.mkString(", ")})",
-        s"unresolvable table references (deny, fail-closed): ${otherQual.mkString("; ")}"
-      )
+      Allowed
     else
-      // Collect all (table, verb) tuples from every Extracted statement.
-      // ControlFlow statements (COMMIT, ROLLBACK, SET, ...) carry no accesses
-      // and contribute nothing.
-      val accesses: Set[TableAccess] = extraction.statements
-        .collect { case StatementResult.Extracted(_, _, a, _, _) =>
-          a
-        }
-        .flatten
-        .toSet
-
-      // Filtered-metadata implicit admit: Read accesses on the session catalog's
-      // filterable information_schema tables are answered by the edge metadata
-      // filter (same flag), so they need no grant here. Everything else about
-      // system schemas (writes, DDL, unlisted tables, cross-catalog refs) still
-      // requires a grant. The flag wires from the SAME AclConfig value that
-      // mounts the rewriter, so admit-without-filter cannot happen.
-      //
-      // SESSION catalog only. Never the tenant catalog set: the rewriter filters
-      // only session-catalog references, so admitting a SIBLING tenant-db's
-      // information_schema here would be admit-without-filter (unfiltered
-      // enumeration of a catalog the principal may hold zero grants on).
-      // `context.defaultDatabase.getOrElse(defaultDatabase)` is the same
-      // expression `parserConfigFor` uses, so the admit and the parser's
-      // qualification of an unqualified `information_schema.tables` agree on the
-      // catalog by construction.
-      val sessionCatalog = context.defaultDatabase.getOrElse(defaultDatabase)
-      // PURE-READ statements only: the metadata rewriter filters Select
-      // statements and passes everything else through untouched, so dropping an
-      // info-schema Read that rides inside an INSERT / CTAS / MERGE would be
-      // admit-without-filter (unfiltered catalog copy into a table the principal
-      // owns).
-      val pureRead                = accesses.forall(_.verb == Verb.Read)
-      val gated: Set[TableAccess] =
-        if !filteredMetadata || !pureRead then accesses
-        else
-          accesses.filterNot { ta =>
-            ta.verb == Verb.Read &&
-            ta.table.schema.equalsIgnoreCase("information_schema") &&
-            ai.starlake.quack.edge.meta.MetadataFilterRewriter.FilterableTables
-              .contains(ta.table.table.toLowerCase(Locale.ROOT)) &&
-            ta.table.database.equalsIgnoreCase(sessionCatalog)
-          }
-
-      if catalogFunctions.nonEmpty && !pureRead then
-        // A catalog function riding inside an INSERT / CTAS / MERGE: the rewriter
-        // does not filter the read half of a write, so admitting it would copy an
-        // unfiltered catalog listing into a table the principal owns.
-        denyUnlessWildcardAll(
-          eff,
-          context.username,
-          s"unsupported constructs (${catalogFunctions.mkString(", ")})",
-          "catalog functions are admitted in read-only statements only (deny, fail-closed): " +
-            catalogFunctions.mkString(", ")
-        )
-      else if gated.isEmpty then
-        // Pure ControlFlow (or every arm yielded zero refs), or an
-        // all-metadata statement whose every access the implicit admit above
-        // dropped. Admit unconditionally -- there is nothing left to
-        // authorize. The log still names the ORIGINAL accesses so the audit
-        // trail shows what was read.
-        logger.info(
-          s"ACL ALLOWED: user=${context.username} no gated table refs" +
-            (if accesses.isEmpty then ""
-             else
-               s" accesses=${accesses.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")}") +
-            (if catalogFunctions.isEmpty then ""
-             else s" filtered=${catalogFunctions.mkString(",")}")
-        )
-        Allowed
-      else
-        // Pre-compute the catalogs admissible via wildcard for this session.
-        // Used below to scope `*` catalog matches to the user's tenant; an
-        // explicit (non-wildcard) catalog grant still bypasses this check, so
-        // operators can deliberately grant cross-tenant access by naming a
-        // sibling tenant's catalog.
-        val sessionCatalogs: Set[String] =
-          eff.user.tenant.map(tenantCatalogs).getOrElse(Set.empty)
-
-        val unauthorized = gated.filterNot { ta =>
-          eff.permissions.exists(p =>
-            verbCovers(p.verb, ta.verb) &&
-              catalogMatch(p.catalogName, ta.table.database, sessionCatalogs) &&
-              wildcardMatch(p.schemaName, ta.table.schema) &&
-              wildcardMatch(p.tableName, ta.table.table)
-          )
-        }
-
-        if unauthorized.isEmpty then
-          logger.info(
-            s"ACL ALLOWED: user=${context.username} " +
-              s"roles=${eff.roles.map(_.name).mkString(",")} " +
-              s"accesses=${accesses.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")}"
-          )
-          Allowed
-        else
-          // Superusers never reach this method (validate() short-circuits
-          // them), so the principal is always the tenant-scoped user.
-          val msg =
-            s"user:${context.username} lacks grants on ${unauthorized
-                .map(a => s"${a.table.canonical}:${a.verb}")
-                .mkString(", ")}"
-          logger.warn(s"ACL DENIED: $msg")
-          Denied(msg, unauthorized)
+      // Superusers never reach this method (validate() short-circuits
+      // them), so the principal is always the tenant-scoped user.
+      val msg =
+        s"user:${context.username} lacks grants on ${unauthorized
+            .map(a => s"${a.table.canonical}:${a.verb}")
+            .mkString(", ")}"
+      logger.warn(s"ACL DENIED: $msg")
+      Denied(msg, unauthorized)
 
   /** Whether a role-permission verb covers a parser-emitted access verb. Grant verbs are the
     * canonical (RO / RW / DDL / ALL) set; the parser emits the collapsed
