@@ -103,6 +103,7 @@ class McpCoverageSpec extends AnyFlatSpec with Matchers:
     "POST /api/statement/kill"               -> "kill_statement",
     "POST /api/tenant/create"                -> "create_tenant",
     "POST /api/tenant/delete"                -> "delete_tenant",
+    "POST /api/tenant/setAcl"                -> "set_tenant_acl",
     "POST /api/tenant/setAuth"               -> "set_tenant_auth",
     "POST /api/tenant/setDisabled"           -> "set_tenant_disabled",
     "POST /api/tenants/{tenant}/tenant-dbs/{tenantDb}/federated-sources" ->
@@ -131,8 +132,9 @@ class McpCoverageSpec extends AnyFlatSpec with Matchers:
     // Branch merge is human-gated by design (Epic 1): the approver must be a different
     // principal than the proposing agent, and no agent tool may perform it.
     "POST /api/branch/merge",
-    "POST /api/fleet/", // fleet servers are operator infrastructure, no agent tool
-    "POST /api/scim/",  // IdP wire protocol
+    "POST /api/tenant/opaTest", // dry-run diagnostic for policy authors; CLI/REST only
+    "POST /api/fleet/",         // fleet servers are operator infrastructure, no agent tool
+    "POST /api/scim/",          // IdP wire protocol
     "PUT /api/scim/",
     "PATCH /api/scim/",
     "DELETE /api/scim/"
