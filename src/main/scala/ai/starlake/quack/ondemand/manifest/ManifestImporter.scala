@@ -50,10 +50,27 @@ object ManifestImporter:
     // Tenants in YAML + tenants already in the DB form the set of valid tenants
     // a user/role/group may reference.
     val tenantsInYaml = m.tenants.map(_.name).toSet
+    val storedTenants = store.listTenants()
     // Both forms, matching tenantIdFor: the exporter writes ids, older manifests may carry the
     // display name.
-    val tenantsInDb  = store.listTenants().flatMap(t => List(t.id, t.displayName)).toSet
+    val tenantsInDb  = storedTenants.flatMap(t => List(t.id, t.displayName)).toSet
     val knownTenants = tenantsInYaml ++ tenantsInDb
+
+    // ACL: pure checks (mode / opaUrl / opaPolicyPath validity, and a redacted opaToken with
+    // nothing on file to reuse) run here, before apply() writes a single row. Moving this out of
+    // the per-tenant apply() loop is what stops an invalid acl on tenant B from being discovered
+    // only after tenant A's pools have already been upserted -- validate() always runs in full,
+    // and apply() only starts writing once validate() returns Right.
+    m.tenants.foreach { t =>
+      t.acl.foreach { incoming =>
+        val existingAcl =
+          storedTenants
+            .find(x => x.id == t.name || x.displayName == t.name)
+            .map(_.acl)
+            .getOrElse(TenantAcl())
+        importAcl(t.name, Some(incoming), existingAcl).left.foreach(err => errs += err)
+      }
+    }
 
     // Dup detection
     def dup[A, K](xs: List[A], key: A => K, label: String): Unit =
@@ -252,19 +269,15 @@ object ManifestImporter:
         // Resolved from the snapshot taken at the top of apply(), i.e. the tenant's acl BEFORE
         // this manifest is applied -- not re-read after the upserts below, so `mt.acl = None`
         // (not present in the manifest) keeps whatever acl the tenant already had rather than
-        // resetting it to TenantAcl() defaults.
+        // resetting it to TenantAcl() defaults. validate() has already rejected every invalid or
+        // unreusable acl before this loop runs at all, so the Left branch here is unreachable in
+        // practice; existingAcl is the safe fallback rather than failing a second time.
         val existingAcl: TenantAcl =
           snap.tenants
             .find(t => t.id == mt.name || t.displayName == mt.name)
             .map(_.acl)
             .getOrElse(TenantAcl())
-        val resolvedAcl: TenantAcl = importAcl(mt.name, mt.acl, existingAcl) match
-          case Left(err) =>
-            errs += err
-            existingAcl
-          case Right((acl, warn)) =>
-            warn.foreach(w => logger.warn(s"manifest import: $w"))
-            acl
+        val resolvedAcl: TenantAcl = importAcl(mt.name, mt.acl, existingAcl).getOrElse(existingAcl)
 
         val tenantId = tenantIdFor(store, mt.name).getOrElse {
           // The tenant id IS the slug name; no opaque surrogate. displayName
@@ -694,7 +707,9 @@ object ManifestImporter:
   private def tenantIdFor(store: ControlPlaneStore, name: String): Option[String] =
     store.listTenants().find(t => t.id == name || t.displayName == name).map(_.id)
 
-  /** Resolve a manifest tenant's `acl` block against the tenant's existing stored acl.
+  /** Resolve a manifest tenant's `acl` block against the tenant's existing stored acl. Pure (no
+    * store access), so it can run unchanged from both `validate()` (before any write) and `apply()`
+    * (to compute the row to persist).
     *
     * `incoming = None` (the field absent from the manifest) keeps `existing` untouched -- this is
     * what stops a manifest re-export/re-import round trip from wiping a tenant's OPA settings,
@@ -703,43 +718,53 @@ object ManifestImporter:
     * `opaToken` is exported redacted (`FederatedSecret.RedactedMarker`), so on import:
     *   - redacted + an existing token is already on file -> keep the existing token (the common
     *     re-import-without-editing-the-token case).
-    *   - redacted + no existing token -> there is nothing to restore; the token is dropped to
-    *     `None` and a warning names the tenant so the operator knows to reset it (`qod tenant
-    *     set-acl`). This is not fatal: every other acl field, and every other part of the manifest,
-    *     still applies.
+    *   - redacted + no existing token -> there is nothing to restore. Same precedent as a federated
+    *     secret's redacted-with-nothing-to-reuse case (see `applyFederatedSources` below): a hard
+    *     import error, not a silent drop, so a manifest can never leave a tenant mid-edit with an
+    *     OPA mode but no token.
     *   - anything else (including blank, folded to `None`) is written verbatim.
     *
+    * `mode` normalizes an empty string to `None` (the manager default), matching
+    * `PoolSupervisor.setTenantAcl`'s own REST normalization; it is not trimmed, so a stray
+    * leading/trailing space is refused rather than silently fixed. `opaUrl` / `opaPolicyPath` are
+    * trimmed, blank folding to `None` the same way.
+    *
     * Returns `Left` for a value that fails the same validation `PoolSupervisor.setTenantAcl`
-    * applies (`TenantAcl.ValidModes` / `validUrl` / `validPolicyPath`): that is a hard error for
-    * the import, reported like any other per-row validation failure.
+    * applies (`TenantAcl.ValidModes` / `validUrl` / `validPolicyPath`), or for the redacted/
+    * nothing-to-reuse case above: both are a hard error for the import, reported like any other
+    * per-row validation failure.
     */
   private def importAcl(
       tenantName: String,
       incoming: Option[ManifestTenantAcl],
       existing: TenantAcl
-  ): Either[String, (TenantAcl, Option[String])] =
+  ): Either[String, TenantAcl] =
     incoming match
-      case None    => Right((existing, None))
+      case None    => Right(existing)
       case Some(a) =>
-        val (token, warn) = a.opaToken match
+        val tokenResult: Either[String, Option[String]] = a.opaToken match
           case Some(FederatedSecret.RedactedMarker) if existing.opaToken.nonEmpty =>
-            (existing.opaToken, None)
+            Right(existing.opaToken)
           case Some(FederatedSecret.RedactedMarker) =>
-            (
-              None,
-              Some(
-                s"tenant '$tenantName': opaToken is redacted in the manifest and not set; set it with qod tenant set-acl"
-              )
+            Left(
+              s"tenant '$tenantName': opaToken is redacted in the manifest and no existing token " +
+                "to reuse; provide the value or set it later with qod tenant set-acl after " +
+                "importing without opaToken"
             )
-          case other => (other.filter(_.nonEmpty), None)
-        val acl = TenantAcl(a.mode, a.opaUrl, a.opaPolicyPath, token, a.sendStatementText)
-        if acl.mode.exists(mode => !TenantAcl.ValidModes.contains(mode)) then
-          Left(s"tenant '$tenantName': invalid acl mode")
-        else if acl.opaUrl.exists(url => !TenantAcl.validUrl(url)) then
-          Left(s"tenant '$tenantName': invalid opaUrl")
-        else if acl.opaPolicyPath.exists(path => !TenantAcl.validPolicyPath(path)) then
-          Left(s"tenant '$tenantName': invalid opaPolicyPath")
-        else Right((acl, warn))
+          case other => Right(other.filter(_.nonEmpty))
+        tokenResult.flatMap { token =>
+          val mode          = a.mode.filter(_.nonEmpty)
+          val opaUrl        = a.opaUrl.map(_.trim).filter(_.nonEmpty)
+          val opaPolicyPath = a.opaPolicyPath.map(_.trim).filter(_.nonEmpty)
+          val acl           = TenantAcl(mode, opaUrl, opaPolicyPath, token, a.sendStatementText)
+          if acl.mode.exists(m => !TenantAcl.ValidModes.contains(m)) then
+            Left(s"tenant '$tenantName': invalid acl mode '${acl.mode.get}'")
+          else if acl.opaUrl.exists(u => !TenantAcl.validUrl(u)) then
+            Left(s"tenant '$tenantName': invalid opaUrl '${acl.opaUrl.get}'")
+          else if acl.opaPolicyPath.exists(p => !TenantAcl.validPolicyPath(p)) then
+            Left(s"tenant '$tenantName': invalid opaPolicyPath '${acl.opaPolicyPath.get}'")
+          else Right(acl)
+        }
 
   /** Apply federated sources from a manifest tenant-db into the federated source store.
     * Replace-by-alias semantics, but only when the manifest declares at least one source: a

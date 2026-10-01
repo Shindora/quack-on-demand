@@ -130,3 +130,12 @@ class ConfigManifestSpec extends AnyFlatSpec with Matchers:
     user.groups shouldBe empty
     user.poolGrants shouldBe empty
   }
+
+  "ManifestTenantAcl.toString" should "redact opaToken the same way TenantAcl does" in {
+    val withToken = ManifestTenantAcl(opaToken = Some("s3cr3t-x"))
+    withToken.toString should not include "s3cr3t-x"
+    withToken.toString should include(
+      s"Some(${ai.starlake.quack.model.FederatedSecret.RedactedMarker})"
+    )
+    ManifestTenantAcl().toString should include("opaToken=None")
+  }

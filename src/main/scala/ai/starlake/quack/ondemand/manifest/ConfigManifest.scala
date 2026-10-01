@@ -136,7 +136,13 @@ final case class ManifestTenantAcl(
     opaPolicyPath: Option[String] = None,
     opaToken: Option[String] = None,
     sendStatementText: Boolean = false
-)
+):
+  /** Redact `opaToken` the same way [[ai.starlake.quack.model.TenantAcl.toString]] does, so a log
+    * line or exception message built from `s"$manifestTenant"` can never print the real value.
+    */
+  override def toString: String =
+    s"ManifestTenantAcl(mode=$mode,opaUrl=$opaUrl,opaPolicyPath=$opaPolicyPath,opaToken=${opaToken
+        .map(_ => ai.starlake.quack.model.FederatedSecret.RedactedMarker)},sendStatementText=$sendStatementText)"
 
 final case class ManifestTenant(
     // The tenant slug key (e.g. "acme").
