@@ -35,7 +35,9 @@ case class ValidationContext(
     // native Quack front door. Mirrors `FlightSqlRouter.executeWith`'s `source` param.
     edge: String = "",
     // Collapsed statement shape the router's classifier derived: "READ" | "WRITE" | "DDL".
-    // A remote validator (OPA) uses this instead of re-parsing the statement.
+    // ADVISORY ONLY: the classifier looks at the first statement, so a multi-statement batch
+    // may carry more than this says. The parsed table-access set (the `accesses` a validator
+    // gates, each with its own verb) is authoritative; never authorize on this field alone.
     statementClass: String = ""
 )
 

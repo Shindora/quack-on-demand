@@ -25,3 +25,7 @@ class OpaConfigSpec extends AnyFlatSpec with Matchers:
     OpaConfig.validate(OpaConfig.default.copy(timeoutMs = 0)).isLeft shouldBe true
     OpaConfig.validate(OpaConfig.default.copy(cacheTtlSec = -1)).isLeft shouldBe true
     OpaConfig.validate(OpaConfig.default) shouldBe Right(OpaConfig.default)
+
+  it should "return the trimmed URL" in:
+    OpaConfig.validate(OpaConfig.default.copy(url = "  http://m:8181 ")) shouldBe
+      Right(OpaConfig.default.copy(url = "http://m:8181"))

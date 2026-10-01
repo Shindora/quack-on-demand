@@ -17,7 +17,10 @@ final case class TenantAcl(
 ):
   def effectiveMode(managerDefault: String): String = mode.getOrElse(managerDefault)
 
-  def isOpa(managerDefault: String): Boolean = effectiveMode(managerDefault) == TenantAcl.Opa
+  /** Fail closed: anything other than exactly `qod` (e.g. a stray `OPA` written by direct SQL)
+    * routes to OPA, which refuses when no OPA is configured, rather than to QoD grants.
+    */
+  def isOpa(managerDefault: String): Boolean = effectiveMode(managerDefault) != TenantAcl.Qod
 
   def effectiveUrl(managerUrl: String): Option[String] =
     opaUrl.orElse(Option(managerUrl).map(_.trim).filter(_.nonEmpty))

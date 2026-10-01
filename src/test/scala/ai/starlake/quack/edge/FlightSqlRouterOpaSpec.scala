@@ -134,3 +134,29 @@ class FlightSqlRouterOpaSpec extends AnyFlatSpec with Matchers:
     fx.journal.drainNow()
     fx.store.events should have size 1
     fx.store.events.head.detail should contain("authz_source" -> "opa")
+
+  it should "keep QoD's own audit keys when a validator's meta collides with them" in:
+    val fx = routerWith((_: ValidationContext) =>
+      Denied(
+        "no grant",
+        Set.empty,
+        Map(
+          "sql"          -> "x",
+          "reason"       -> "y",
+          "durationMs"   -> "z",
+          "denied"       -> "forged",
+          "authz_source" -> "opa"
+        )
+      )
+    )
+    fx.router
+      .executeWith("c-4", "alice", poolKey, "SELECT 42", None, okSend)
+      .unsafeRunSync()
+    fx.journal.drainNow()
+    fx.store.events should have size 1
+    val detail = fx.store.events.head.detail
+    detail should contain("sql" -> "SELECT 42")
+    detail should contain("authz_source" -> "opa")
+    detail.get("reason") should not be Some("y")
+    detail.get("durationMs") should not be Some("z")
+    detail.get("denied") should not be Some("forged")

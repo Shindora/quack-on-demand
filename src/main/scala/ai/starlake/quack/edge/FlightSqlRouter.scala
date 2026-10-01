@@ -203,14 +203,16 @@ final class FlightSqlRouter(
           None,
           "denied",
           source,
-          Map("sql" -> recordedSql.take(500)) ++
+          // QoD's own audit keys always win: a validator-supplied key of a reserved name is
+          // dropped, never allowed to overwrite (or forge) the recorded sql / reason.
+          auditMeta.removedAll(FlightSqlRouter.ReservedAuditKeys) ++
+            Map("sql" -> recordedSql.take(500)) ++
             Option
               .when(deniedRefs.nonEmpty)(
                 "denied" -> deniedRefs.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")
               )
               .toMap ++
-            recordedError.map("reason" -> _.take(500)).toMap ++
-            auditMeta,
+            recordedError.map("reason" -> _.take(500)).toMap,
           patId
         )
       )
@@ -1010,6 +1012,11 @@ final class FlightSqlRouter(
     else RouterFailure.BadRequest(full)
 
 object FlightSqlRouter:
+
+  /** Audit-detail keys QoD writes itself on the routed path; a validator's `Denied.meta` can never
+    * set them.
+    */
+  val ReservedAuditKeys: Set[String] = Set("sql", "denied", "reason", "durationMs")
 
   /** One node call for [[FlightSqlRouter.executeWith]]: `(node, wrappedSql, stampPrelude,
     * recordLoad) => outcome`. Implementations must book load through

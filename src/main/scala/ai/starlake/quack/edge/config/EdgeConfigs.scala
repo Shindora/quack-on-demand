@@ -97,7 +97,7 @@ object OpaConfig:
       Left(s"QOD_OPA_URL is not an absolute http(s) URL: '${c.url}'")
     else if c.timeoutMs <= 0 then Left("QOD_OPA_TIMEOUT_MS must be > 0")
     else if c.cacheTtlSec < 0 then Left("QOD_OPA_CACHE_TTL_SEC must be >= 0")
-    else Right(c)
+    else Right(c.copy(url = c.url.trim))
 
 /** Pre-statement SQL validation knobs. Loaded reflectively by the config-page registry; not wired
   * to runtime today. Kept as a typed class so the configurable env-var contract stays visible in

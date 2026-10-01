@@ -467,6 +467,22 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
     out.swap.toOption.get should include("retry")
   }
 
+  it should "surface an authorization-service outage verbatim, never as a startup hint" in {
+    val reason = "authorization service unavailable: java.net.ConnectException: opa resuming"
+    val opaDown: CatalogPreviewHandlers.PreviewExecutor =
+      (_, _, _) => IO.pure(Left(RouterFailure.Unavailable(reason)))
+    val tools = fixture(opaDown)
+    val out   = call(
+      tools,
+      "run_sql",
+      McpPrincipal.StaticKey,
+      "sql"      -> Json.fromString("SELECT 1"),
+      "database" -> Json.fromString(TenantDb),
+      "tenant"   -> Json.fromString(Tenant)
+    )
+    out.swap.toOption.get shouldBe reason
+  }
+
   // ------------------------------------------------------------------
   // caller attribution (Task 8): callerFor threads the acting token id
   // ------------------------------------------------------------------

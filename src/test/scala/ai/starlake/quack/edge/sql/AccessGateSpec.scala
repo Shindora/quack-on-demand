@@ -38,6 +38,17 @@ class AccessGateSpec extends AnyFlatSpec with Matchers:
       case GateOutcome.Refuse(_, _, _) => succeed
       case other                       => fail(other.toString)
 
+  it should "refuse a query_table call as not wildcard-coverable" in:
+    eval("SELECT * FROM query_table('orders')") match
+      case GateOutcome.Refuse(_, false, _) => succeed
+      case other                           => fail(other.toString)
+
+  it should "refuse an ambiguous two-part name on an attached catalog as not wildcard-coverable" in:
+    val attached = Config.forDuckDB(Some("tpch"), Some("main"), Set("tpch", "fedpg"))
+    AccessGate.evaluate("SELECT * FROM fedpg.orders", attached, "tpch", false) match
+      case GateOutcome.Refuse(_, false, _) => succeed
+      case other                           => fail(other.toString)
+
   it should "admit a pure info-schema read only with filtered metadata on" in:
     eval("SELECT table_name FROM information_schema.tables", fm = true) shouldBe
       a[GateOutcome.NothingGated]

@@ -11,6 +11,14 @@ class TenantAclSpec extends AnyFlatSpec with Matchers:
     TenantAcl(mode = Some("opa")).effectiveMode("qod") shouldBe "opa"
     TenantAcl(mode = Some("qod")).isOpa("opa") shouldBe false
 
+  "TenantAcl.isOpa" should "fail closed: any mode other than exactly qod routes to OPA" in:
+    TenantAcl(mode = Some("OPA")).isOpa("qod") shouldBe true
+    TenantAcl(mode = Some("Qod")).isOpa("qod") shouldBe true
+    TenantAcl(mode = Some("bogus")).isOpa("qod") shouldBe true
+    TenantAcl(mode = Some("opa")).isOpa("qod") shouldBe true
+    TenantAcl().isOpa("qod") shouldBe false
+    TenantAcl().isOpa("opa") shouldBe true
+
   "TenantAcl.effectiveUrl" should "prefer the tenant URL and ignore a blank manager URL" in:
     TenantAcl(opaUrl = Some("http://t:8181")).effectiveUrl("http://m:8181") shouldBe
       Some("http://t:8181")
