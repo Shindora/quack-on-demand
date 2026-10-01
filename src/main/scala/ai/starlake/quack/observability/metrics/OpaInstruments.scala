@@ -9,10 +9,16 @@ import java.time.Duration
 final class OpaInstruments(registry: MeterRegistry):
   private val timers = new java.util.concurrent.ConcurrentHashMap[(String, String), Timer]()
 
-  def record(tenant: String, kind: String, outcome: String, durationNanos: Long): Unit =
+  /** Counter only, no timer sample. Used for outcomes that never reached the network (e.g. no OPA
+    * URL configured for the tenant), so `qod_opa_request_seconds` stays a network-only histogram.
+    */
+  def count(tenant: String, kind: String, outcome: String): Unit =
     registry
       .counter("qod_opa_requests_total", "tenant", tenant, "kind", kind, "outcome", outcome)
       .increment()
+
+  def record(tenant: String, kind: String, outcome: String, durationNanos: Long): Unit =
+    count(tenant, kind, outcome)
     if outcome != "cache" then
       timers
         .computeIfAbsent(

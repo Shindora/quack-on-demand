@@ -6,7 +6,22 @@ import org.scalatest.matchers.should.Matchers
 class OpaDecisionCacheSpec extends AnyFlatSpec with Matchers:
 
   private def key(roles: List[String] = List("r"), acc: List[String] = List("a:read")) =
-    OpaCacheKey("t", "s", "u", roles, Nil, Nil, "t/db/p", "statement", acc)
+    OpaCacheKey(
+      tenantId = "t",
+      settings = "s",
+      userId = "u",
+      userName = "u",
+      roles = roles,
+      groups = Nil,
+      claims = Nil,
+      pool = "t/db/p",
+      kind = "statement",
+      statementClass = "READ",
+      edge = "flightsql",
+      parentPools = Nil,
+      accesses = acc,
+      textHash = ""
+    )
 
   "OpaDecisionCache" should "hit on the same key and miss on any key difference" in:
     val c                   = new OpaDecisionCache(ttlSec = 60)

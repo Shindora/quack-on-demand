@@ -23,8 +23,12 @@ class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
   private val tgt  = OpaTarget("acme", "tpch", "bi", Nil)
   private val usr  = OpaUser("alice", List("analyst"), Nil, Map.empty)
 
-  private def tenant(token: Option[String] = None, text: Boolean = false) =
-    Tenant("acme", acl = TenantAcl(Some("opa"), Some(base), None, token, text))
+  private def tenant(
+      token: Option[String] = None,
+      text: Boolean = false,
+      policyPath: Option[String] = None
+  ) =
+    Tenant("acme", acl = TenantAcl(Some("opa"), Some(base), policyPath, token, text))
 
   private def authorizer(ttl: Int = 0, timeoutMs: Int = 500) =
     val cfg = OpaConfig("qod", "", timeoutMs, ttl)
@@ -99,6 +103,20 @@ class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
     authorizer()
       .statement(refused, tgt, usr, "u1", "flightsql", "READ", acc, "") shouldBe a[Decision.Error]
 
+  it should "return Error quickly when the response body dribbles past the timeout" in:
+    wm.resetAll()
+    wm.stubFor(
+      post(anyUrl()).willReturn(
+        okJson("""{"result":{"allow":true}}""").withChunkedDribbleDelay(5, 3000)
+      )
+    )
+    val started  = System.nanoTime()
+    val decision =
+      authorizer(timeoutMs = 300).statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "")
+    val elapsedMs = (System.nanoTime() - started) / 1000000L
+    decision shouldBe a[Decision.Error]
+    elapsedMs should be < 2000L
+
   it should "return Error when no URL is configured anywhere" in:
     authorizer().statement(
       Tenant("acme", acl = TenantAcl(Some("opa"))),
@@ -119,6 +137,64 @@ class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
     (1 to 3).foreach(_ => a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, ""))
     wm.verify(1, postRequestedFor(anyUrl()))
 
+  it should "make two calls when only the statement class differs" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val a = authorizer(ttl = 60)
+    a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "")
+    a.statement(tenant(), tgt, usr, "u1", "flightsql", "WRITE", acc, "")
+    wm.verify(2, postRequestedFor(anyUrl()))
+
+  it should "make two calls when only the edge differs" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val a = authorizer(ttl = 60)
+    a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "")
+    a.statement(tenant(), tgt, usr, "u1", "native-quack", "READ", acc, "")
+    wm.verify(2, postRequestedFor(anyUrl()))
+
+  it should "make two calls when only the text differs and the tenant sends statement text" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val a = authorizer(ttl = 60)
+    a.statement(tenant(text = true), tgt, usr, "u1", "flightsql", "READ", acc, "SELECT 1")
+    a.statement(tenant(text = true), tgt, usr, "u1", "flightsql", "READ", acc, "SELECT 2")
+    wm.verify(2, postRequestedFor(anyUrl()))
+
+  it should "make one call when only the text differs and the tenant does not send statement text" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val a = authorizer(ttl = 60)
+    a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "SELECT 1")
+    a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "SELECT 2")
+    wm.verify(1, postRequestedFor(anyUrl()))
+
+  it should "miss the cache when the tenant's policy path changes" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val a = authorizer(ttl = 60)
+    a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "")
+    a.statement(
+      tenant(policyPath = Some("other/path")),
+      tgt,
+      usr,
+      "u1",
+      "flightsql",
+      "READ",
+      acc,
+      ""
+    )
+    wm.verify(2, postRequestedFor(anyUrl()))
+
+  it should "return Error when the response body exceeds 1 MiB" in:
+    wm.resetAll()
+    val oneMibPlusTen = "x" * ((1024 * 1024) + 10)
+    wm.stubFor(
+      post(anyUrl()).willReturn(okJson(s"""{"result":{"allow":true},"pad":"$oneMibPlusTen"}"""))
+    )
+    authorizer()
+      .statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "") shouldBe a[Decision.Error]
+
   "OpaAuthorizer.connect" should "POST to the connect rule" in:
     wm.resetAll()
     wm.stubFor(
@@ -127,12 +203,3 @@ class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
     )
     authorizer().connect(tenant(), tgt, usr, "u1", "flightsql") shouldBe
       Decision.Deny("nope", Set.empty, None)
-
-  "OpaAuthorizer.statement" should "return Error when the response body exceeds 1 MiB" in:
-    wm.resetAll()
-    val oneMibPlusTen = "x" * ((1024 * 1024) + 10)
-    wm.stubFor(
-      post(anyUrl()).willReturn(okJson(s"""{"result":{"allow":true},"pad":"$oneMibPlusTen"}"""))
-    )
-    authorizer()
-      .statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "") shouldBe a[Decision.Error]

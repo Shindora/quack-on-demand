@@ -7,6 +7,9 @@ import ai.starlake.quack.observability.metrics.OpaInstruments
 import com.typesafe.scalalogging.LazyLogging
 import io.circe.Json
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+
 /** Composes input building, the decision cache, the HTTP client and metrics. One instance per
   * manager; tenant settings are read from the `Tenant` passed on every call, never cached here.
   */
@@ -26,7 +29,18 @@ final class OpaAuthorizer(
       userId: String,
       edge: String
   ): Decision =
-    run(tenant, "connect", OpaInput.connect(target, user, edge), Set.empty, target, user, userId)
+    run(
+      tenant,
+      "connect",
+      OpaInput.connect(target, user, edge),
+      Set.empty,
+      target,
+      user,
+      userId,
+      edge,
+      statementClass = "",
+      text = None
+    )
 
   def statement(
       tenant: Tenant,
@@ -46,7 +60,18 @@ final class OpaAuthorizer(
       accesses,
       Option.when(tenant.acl.sendStatementText)(text)
     )
-    run(tenant, "statement", input, accesses, target, user, userId)
+    run(
+      tenant,
+      "statement",
+      input,
+      accesses,
+      target,
+      user,
+      userId,
+      edge,
+      statementClass,
+      Some(text)
+    )
 
   /** Admin dry-run: same transport and parsing, never cached, never counted. */
   def dryRun(tenant: Tenant, input: Json, rule: String, accesses: Set[TableAccess]): Decision =
@@ -60,10 +85,12 @@ final class OpaAuthorizer(
           accesses
         )
 
+  private def sha256Hex(s: String): String =
+    val digest = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8))
+    digest.map(b => f"${b & 0xff}%02x").mkString
+
   private def fingerprint(tenant: Tenant, url: String): String =
-    val tokenFp = tenant.acl.opaToken
-      .map(t => java.util.Arrays.hashCode(t.getBytes("UTF-8")).toString)
-      .getOrElse("")
+    val tokenFp = tenant.acl.opaToken.map(t => sha256Hex(t).take(16)).getOrElse("")
     s"$url|${tenant.acl.effectivePolicyPath}|$tokenFp|${tenant.acl.sendStatementText}"
 
   private def run(
@@ -73,24 +100,33 @@ final class OpaAuthorizer(
       accesses: Set[TableAccess],
       target: OpaTarget,
       user: OpaUser,
-      userId: String
+      userId: String,
+      edge: String,
+      statementClass: String,
+      text: Option[String]
   ): Decision =
     tenant.acl.effectiveUrl(cfg.url) match
       case None =>
-        metrics.record(tenant.id, kind, "error", 0L)
+        metrics.count(tenant.id, kind, "error")
         Decision.Error(s"no OPA URL configured for tenant '${tenant.id}'")
       case Some(url) =>
         val key = OpaCacheKey(
           tenantId = tenant.id,
           settings = fingerprint(tenant, url),
           userId = userId,
+          userName = user.name,
           roles = user.roles.sorted,
           groups = user.groups.sorted,
           claims = user.claims.toList.sorted,
           pool = s"${target.tenant}/${target.tenantDb}/${target.pool}",
           kind = kind,
-          accesses =
-            OpaInput.sorted(accesses).map(a => s"${a.table.canonical}:${OpaInput.verbName(a.verb)}")
+          statementClass = statementClass,
+          edge = edge,
+          parentPools = target.parentPools.sorted,
+          accesses = OpaInput
+            .sorted(accesses)
+            .map(a => s"${a.table.canonical}:${OpaInput.verbName(a.verb)}"),
+          textHash = if tenant.acl.sendStatementText then sha256Hex(text.getOrElse("")) else ""
         )
         val started         = System.nanoTime()
         val (decision, hit) = cache.getOrCompute(key) {

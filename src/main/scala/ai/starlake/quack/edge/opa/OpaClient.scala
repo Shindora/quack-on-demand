@@ -3,13 +3,27 @@ package ai.starlake.quack.edge.opa
 import ai.starlake.acl.parser.TableAccess
 import io.circe.Json
 
-import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import java.net.URI
+import java.net.http.HttpResponse.{BodyHandler, BodySubscriber, ResponseInfo}
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
 import java.time.Duration
+import java.util.concurrent.{
+  CompletableFuture,
+  CompletionStage,
+  ExecutionException,
+  Flow,
+  TimeUnit,
+  TimeoutException
+}
 
-/** HTTP transport to an OPA server. `post` is injectable for tests; the default is a JDK
-  * `HttpClient` call bounded by `timeoutMs` (connect and request).
+/** HTTP transport to an OPA server. `post` is injectable for tests; the default (`jdkPost`) is a
+  * JDK `HttpClient` call whose WHOLE exchange (connect, response headers AND response body) is
+  * bounded by `timeoutMs`: `HttpRequest.timeout` alone only bounds the headers, so the body read is
+  * driven through `sendAsync` and a hard `Future.get(timeoutMs, ...)` deadline, with the body
+  * itself read by a bounded `BodySubscriber` that never buffers past the 1 MiB cap.
   */
 final class OpaClient(timeoutMs: Int, post: OpaClient.Post):
 
@@ -34,6 +48,7 @@ object OpaClient:
     val client =
       HttpClient.newBuilder().connectTimeout(Duration.ofMillis(timeoutMs.toLong)).build()
     (url, body, token) =>
+      var pending: Option[CompletableFuture[HttpResponse[Either[String, String]]]] = None
       try
         val b = HttpRequest
           .newBuilder(URI.create(url))
@@ -41,20 +56,60 @@ object OpaClient:
           .header("Content-Type", "application/json")
           .POST(HttpRequest.BodyPublishers.ofString(body))
         token.foreach(t => b.header("Authorization", s"Bearer $t"))
-        val resp = client.send(b.build(), HttpResponse.BodyHandlers.ofInputStream())
-        readBounded(resp.body()) match
+        val future = client.sendAsync(b.build(), boundedBodyHandler(MaxResponseBytes))
+        pending = Some(future)
+        val resp = future.get(timeoutMs.toLong, TimeUnit.MILLISECONDS)
+        resp.body() match
           case Left(err)       => Left(err)
           case Right(bodyText) => Right((resp.statusCode(), bodyText))
       catch
+        case _: TimeoutException =>
+          pending.foreach(_.cancel(true))
+          Left(s"OPA request timed out after $timeoutMs ms")
+        case e: ExecutionException =>
+          val cause = Option(e.getCause).getOrElse(e)
+          Left(s"${cause.getClass.getSimpleName}: ${Option(cause.getMessage).getOrElse("")}")
+        case e: InterruptedException =>
+          Thread.currentThread().interrupt()
+          Left(s"${e.getClass.getSimpleName}: ${Option(e.getMessage).getOrElse("")}")
         case e: Exception =>
           Left(s"${e.getClass.getSimpleName}: ${Option(e.getMessage).getOrElse("")}")
 
-  /** Reads at most `MaxResponseBytes + 1` bytes; if that many were available, the body exceeded the
-    * cap and is rejected rather than buffered in full.
+  private def boundedBodyHandler(cap: Int): BodyHandler[Either[String, String]] =
+    (_: ResponseInfo) => new BoundedBodySubscriber(cap)
+
+  /** Accumulates the response body up to `cap` bytes; beyond that it cancels the upstream
+    * subscription and completes with a `Left` instead of buffering further, so a misbehaving OPA
+    * cannot force unbounded heap growth even though the body is read through the async API.
     */
-  private def readBounded(in: InputStream): Either[String, String] =
-    try
-      val bytes = in.readNBytes(MaxResponseBytes + 1)
-      if bytes.length > MaxResponseBytes then Left("OPA response exceeds 1 MiB")
-      else Right(new String(bytes, java.nio.charset.StandardCharsets.UTF_8))
-    finally in.close()
+  private final class BoundedBodySubscriber(cap: Int)
+      extends BodySubscriber[Either[String, String]]:
+    private val result                          = new CompletableFuture[Either[String, String]]()
+    private val buffer                          = new ByteArrayOutputStream()
+    private var subscription: Flow.Subscription = null
+    private var exceeded                        = false
+
+    override def onSubscribe(s: Flow.Subscription): Unit =
+      subscription = s
+      s.request(Long.MaxValue)
+
+    override def onNext(items: java.util.List[ByteBuffer]): Unit =
+      if !exceeded then
+        items.forEach { bb =>
+          val bytes = new Array[Byte](bb.remaining())
+          bb.get(bytes)
+          buffer.write(bytes)
+        }
+        if buffer.size() > cap then
+          exceeded = true
+          subscription.cancel()
+          result.complete(Left("OPA response exceeds 1 MiB"))
+
+    override def onError(t: Throwable): Unit =
+      if !exceeded then result.completeExceptionally(t)
+
+    override def onComplete(): Unit =
+      if !exceeded then
+        result.complete(Right(new String(buffer.toByteArray, StandardCharsets.UTF_8)))
+
+    override def getBody: CompletionStage[Either[String, String]] = result
