@@ -123,6 +123,7 @@ final class QuackFrontDoor(
                   if m.startsWith("Authentication failed") then m else s"Authentication failed: $m"
                 IO.pure(encodeError(msg))
               case Left(HandshakeFailure.Unauthorized(m)) => IO.pure(encodeError(m))
+              case Left(HandshakeFailure.Unavailable(m))  => IO.pure(encodeError(m))
               case Right(bound)                           =>
                 versionProbe(bound.poolKey, hello).flatMap {
                   case Left(m)              => IO.pure(encodeError(m))

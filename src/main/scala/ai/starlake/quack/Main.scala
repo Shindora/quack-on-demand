@@ -965,6 +965,9 @@ object Main extends IOApp with LazyLogging:
         new ai.starlake.quack.edge.opa.OpaDecisionCache(opaCfg.cacheTtlSec),
         new ai.starlake.quack.observability.metrics.OpaInstruments(metricsReg.composite)
       )
+      // Handshake gate 4 for opa tenants; wired before any edge starts so no handshake ever sees
+      // an unwired supervisor (which would refuse opa tenants as Unavailable).
+      sup.wireOpa(opaAuthorizer)
       val aclValidator: StatementValidator =
         BootFactories.aclValidator(aclCfg, mgrCfg, sup, opaCfg, opaAuthorizer)
       // Runs after sup.restore() (tenants are loaded by then): an OPA-mode tenant with no URL
@@ -1239,20 +1242,12 @@ object Main extends IOApp with LazyLogging:
       // The FlightSQL `tenant` param is the tenant id (case-insensitive).
       val resolveTenantForEdge: String => Option[ai.starlake.quack.model.Tenant] = raw =>
         sup.getTenant(raw)
-      // Handshake authorize; failures bubble up as PERMISSION_DENIED.
-      val authorizeForEdge: (String, String, String, Set[String], Set[String], Boolean) => Either[
-        String,
+      // Handshake authorize; Denied bubbles up as PERMISSION_DENIED, Unavailable (the tenant's
+      // OPA unreachable) as UNAVAILABLE.
+      val authorizeForEdge: ai.starlake.quack.ondemand.rbac.AuthzRequest => Either[
+        ai.starlake.quack.ondemand.rbac.HandshakeDenial,
         ai.starlake.quack.ondemand.rbac.AuthorizedHandshake
-      ] =
-        (tenant, pool, username, jwtRoles, jwtGroups, superuserAdmissible) =>
-          sup.authorizeHandshake(
-            tenant,
-            pool,
-            username,
-            jwtRoles,
-            jwtGroups,
-            superuserAdmissible
-          )
+      ] = sup.authorizeHandshakeDetailed
 
       // Branch targeting seam for the edge (Epic 1). The branch service is built later in this
       // block (it needs the preview executor); the edge only consults the holder at handshake
@@ -1294,7 +1289,8 @@ object Main extends IOApp with LazyLogging:
             authService,
             lookupPoolForEdge,
             resolveTenantForEdge,
-            authorizeForEdge
+            authorizeForEdge,
+            edge = "quack"
           )
           val quackSessions = new ai.starlake.quack.edge.quack.QuackSessionRegistry(
             sessionTtlSec = edgeCfg.sessionTtlSec,
@@ -1440,7 +1436,10 @@ object Main extends IOApp with LazyLogging:
               effectiveSet = eff,
               recordExecution = rec,
               patId = caller.patId,
-              adminDispatch = false
+              adminDispatch = false,
+              // MCP and the REST preview family share this closure and are not distinguishable
+              // here; both report as "mcp" in audit and in the OPA input's client.edge.
+              source = "mcp"
             )
         )(recordExecution)
 

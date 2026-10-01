@@ -337,7 +337,11 @@ final class FlightSqlRouter(
         * path instead of the dialect's authorization, which does not account for PAT attenuation
         * the way the routed ACL path does.
         */
-      adminDispatch: Boolean = true
+      adminDispatch: Boolean = true,
+      /** Audit origin and OPA `client.edge`, forwarded to [[executeWith]]: `"flightsql"` for the
+        * raw wire, `"mcp"` for the routed executor behind MCP and the REST preview family.
+        */
+      source: String = "flightsql"
   ): IO[Either[RouterFailure, QueryResult]] =
     adminExecutor match
       case Some(exec) if adminDispatch && ai.starlake.quack.edge.admin.AdminSqlParser.claims(sql) =>
@@ -368,7 +372,7 @@ final class FlightSqlRouter(
           sql,
           effectiveSet,
           adapterSend,
-          source = "flightsql",
+          source = source,
           preferredNode = preferredNode,
           recordExecution = recordExecution,
           prepareDurationMs = prepareDurationMs,
@@ -396,7 +400,7 @@ final class FlightSqlRouter(
     * through [[execute]].
     *
     * `source` is the audit origin recorded on denial and write events and on the SessionOpened
-    * module event (`"flightsql"` or `"quack"`).
+    * module event (`"flightsql"`, `"quack"` or `"mcp"`).
     */
   def executeWith[A](
       connectionId: String,

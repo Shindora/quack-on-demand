@@ -169,14 +169,8 @@ object FlightEdgeHarness:
 
     val resolveTenant = (raw: String) => sup.getTenant(raw)
 
-    val authorize = (
-        tenant: String,
-        pool: String,
-        username: String,
-        jwtRoles: Set[String],
-        jwtGroups: Set[String],
-        superuserAdmissible: Boolean
-    ) => sup.authorizeHandshake(tenant, pool, username, jwtRoles, jwtGroups, superuserAdmissible)
+    val authorize = (req: ai.starlake.quack.ondemand.rbac.AuthzRequest) =>
+      sup.authorizeHandshakeDetailed(req)
 
     val allocator = new RootAllocator()
 

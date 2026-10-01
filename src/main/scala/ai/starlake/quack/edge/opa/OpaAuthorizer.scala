@@ -2,7 +2,9 @@ package ai.starlake.quack.edge.opa
 
 import ai.starlake.acl.parser.TableAccess
 import ai.starlake.quack.edge.config.OpaConfig
-import ai.starlake.quack.model.Tenant
+import ai.starlake.quack.model.{PoolKey, Tenant}
+import ai.starlake.quack.ondemand.rbac.{EffectiveSet, HandshakeDenial, OpaPoolAccess}
+import ai.starlake.quack.ondemand.state.RbacUser
 import ai.starlake.quack.observability.metrics.OpaInstruments
 import com.typesafe.scalalogging.LazyLogging
 import io.circe.Json
@@ -18,9 +20,29 @@ final class OpaAuthorizer(
     client: OpaClient,
     cache: OpaDecisionCache,
     metrics: OpaInstruments
-) extends LazyLogging:
+) extends LazyLogging,
+      OpaPoolAccess:
 
-  def mode(tenant: Tenant): String = tenant.acl.effectiveMode(cfg.defaultMode)
+  override def isOpa(tenant: Tenant): Boolean = tenant.acl.isOpa(cfg.defaultMode)
+
+  /** Handshake gate 4 for an opa tenant: a Deny is a permission refusal, an Error (OPA unreachable,
+    * malformed answer, no URL) is `Unavailable` so the edges answer a retryable UNAVAILABLE.
+    */
+  override def connect(
+      tenant: Tenant,
+      key: PoolKey,
+      parentPools: List[String],
+      user: RbacUser,
+      eff: EffectiveSet,
+      edge: String
+  ): Either[HandshakeDenial, Unit] =
+    val target = OpaTarget(key.tenant, key.tenantDb, key.pool, parentPools)
+    val u      = OpaUser(user.username, eff.roles.map(_.name), eff.groups.map(_.name), eff.claims)
+    connect(tenant, target, u, user.id, edge) match
+      case Decision.Allow(_)           => Right(())
+      case Decision.Deny(reason, _, _) =>
+        Left(HandshakeDenial.Denied(s"pool access denied by policy: $reason"))
+      case Decision.Error(cause) => Left(HandshakeDenial.Unavailable(cause))
 
   def connect(
       tenant: Tenant,

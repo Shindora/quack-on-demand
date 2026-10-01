@@ -3429,20 +3429,15 @@ final class PoolSupervisor(
 
   // ---------- RBAC: handshake authorization ----------
 
-  /** End-to-end FlightSQL handshake gate, in order:
-    *   1. resolve `(tenant, pool) -> PoolKey` + tenant/pool kill switches
-    *   2. lookup the user via [[ControlPlaneStore.findUserForLogin]]; reject `enabled = false`.
-    *      This query ALSO enforces tenant scope (returns `tenant IS NULL` superusers OR
-    *      `tenant = <tenantId>`), so no app-layer `user.tenant == tenantRow.id` re-check. If
-    *      findUserForLogin ever drops the tenant filter, reinstate the scope check between gates 2
-    *      and 3.
-    *   3. compute the effective set (groups, roles, permissions, pool grants)
-    *   4. pool-access check (skipped for superusers): effective pool grants must cover the
-    *      addressed pool (pool_id NULL = "every pool in this tenant")
-    *
-    * Returns [[ai.starlake.quack.ondemand.rbac.AuthorizedHandshake]] on success; a left-string
-    * names the failed gate.
+  @volatile private var opaAccess: Option[ai.starlake.quack.ondemand.rbac.OpaPoolAccess] = None
+
+  /** Wired once at boot by Main. Unwired + an opa-mode tenant = every handshake refused as
+    * Unavailable (fail closed), never a fallback to grants.
     */
+  def wireOpa(access: ai.starlake.quack.ondemand.rbac.OpaPoolAccess): Unit =
+    opaAccess = Some(access)
+
+  /** Handshake gate with the legacy string-left contract; see [[authorizeHandshakeDetailed]]. */
   def authorizeHandshake(
       tenantName: String,
       poolName: String,
@@ -3451,28 +3446,74 @@ final class PoolSupervisor(
       jwtGroups: Set[String] = Set.empty,
       superuserAdmissible: Boolean = true
   ): Either[String, ai.starlake.quack.ondemand.rbac.AuthorizedHandshake] =
+    authorizeHandshakeDetailed(
+      ai.starlake.quack.ondemand.rbac.AuthzRequest(
+        tenantName,
+        poolName,
+        username,
+        jwtRoles,
+        jwtGroups,
+        Map.empty,
+        superuserAdmissible,
+        ""
+      )
+    ).left.map(_.message)
+
+  /** End-to-end FlightSQL handshake gate, in order:
+    *   1. resolve `(tenant, pool) -> PoolKey` + tenant/pool kill switches
+    *   2. lookup the user via [[ControlPlaneStore.findUserForLogin]]; reject `enabled = false`.
+    *      This query ALSO enforces tenant scope (returns `tenant IS NULL` superusers OR
+    *      `tenant = <tenantId>`), so no app-layer `user.tenant == tenantRow.id` re-check. If
+    *      findUserForLogin ever drops the tenant filter, reinstate the scope check between gates 2
+    *      and 3.
+    *   3. compute the effective set (groups, roles, permissions, pool grants), carrying the
+    *      request's verified token claims
+    *   4. pool-access check (skipped for superusers): QoD pool grants, or the tenant's OPA in opa
+    *      mode (see [[ai.starlake.quack.ondemand.rbac.OpaPoolAccess]])
+    *
+    * Returns [[ai.starlake.quack.ondemand.rbac.AuthorizedHandshake]] on success; a left names the
+    * failed gate, `Unavailable` when the deciding OPA could not be reached (or is not wired).
+    */
+  def authorizeHandshakeDetailed(
+      req: ai.starlake.quack.ondemand.rbac.AuthzRequest
+  ): Either[
+    ai.starlake.quack.ondemand.rbac.HandshakeDenial,
+    ai.starlake.quack.ondemand.rbac.AuthorizedHandshake
+  ] =
+    import ai.starlake.quack.ondemand.rbac.HandshakeDenial
+    val tenantName          = req.tenant
+    val poolName            = req.pool
+    val username            = req.username
+    val superuserAdmissible = req.superuserAdmissible
     // 1. Pool + kill switches.
     findPoolKeyByTenantAndPoolName(tenantName, poolName)
       .toRight(
-        s"pool '$poolName' not found in tenant '$tenantName'"
+        HandshakeDenial.Denied(s"pool '$poolName' not found in tenant '$tenantName'")
       )
       .flatMap { key =>
         getTenant(key.tenant) match
           case Some(t) if t.disabled =>
-            Left(s"tenant '${key.tenant}' is disabled")
+            Left(HandshakeDenial.Denied(s"tenant '${key.tenant}' is disabled"))
           case None =>
-            Left(s"tenant '${key.tenant}' is not registered")
+            Left(HandshakeDenial.Denied(s"tenant '${key.tenant}' is not registered"))
           case Some(tenantRow) =>
             get(key) match
               case Some(s) if s.disabled =>
-                Left(s"pool '${key.pool}' in tenant '${key.tenant}' is disabled")
+                Left(
+                  HandshakeDenial
+                    .Denied(s"pool '${key.pool}' in tenant '${key.tenant}' is disabled")
+                )
               case Some(_) =>
                 val poolId = poolIdByKey.getOrElse(key, "")
                 // 2. User lookup, tenant-scoped at the SQL layer (see scaladoc): any returned user
                 //    is admissible.
                 store.findUserForLogin(tenantRow.id, username) match
                   case None =>
-                    Left(s"user '$username' is not registered in tenant '${key.tenant}'")
+                    Left(
+                      HandshakeDenial.Denied(
+                        s"user '$username' is not registered in tenant '${key.tenant}'"
+                      )
+                    )
                   case Some(user) if user.tenant.isEmpty && !superuserAdmissible =>
                     // The credential was validated by a TENANT-scoped authority (per-tenant
                     // OIDC, or the tenant arm of the auth chain), which can only speak for
@@ -3486,42 +3527,71 @@ final class PoolSupervisor(
                       s"handshake refused: tenant-realm credential for superuser row '$username' " +
                         s"on tenant '${key.tenant}' (possible impersonation attempt)"
                     )
-                    Left(s"user '$username' is not registered in tenant '${key.tenant}'")
+                    Left(
+                      HandshakeDenial.Denied(
+                        s"user '$username' is not registered in tenant '${key.tenant}'"
+                      )
+                    )
                   case Some(user) if !user.enabled =>
-                    Left(s"user '$username' is disabled")
+                    Left(HandshakeDenial.Denied(s"user '$username' is disabled"))
                   case Some(user) =>
                     // 3. Effective set. Superusers get an empty set; the per-statement validator
-                    //    bypasses them.
+                    //    bypasses them. Claims are copied in after the cache lookup (never part
+                    //    of the effective-set cache key).
                     val eff =
                       if user.tenant.isEmpty then
                         ai.starlake.quack.ondemand.rbac.EffectiveSet(user, Nil, Nil, Nil, Nil)
                       else
-                        effectiveSetForUser(user.id, jwtRoles, jwtGroups).getOrElse(
+                        effectiveSetForUser(user.id, req.jwtRoles, req.jwtGroups).getOrElse(
                           ai.starlake.quack.ondemand.rbac.EffectiveSet(user, Nil, Nil, Nil, Nil)
                         )
+                    val effC       = eff.copy(claims = req.jwtClaims)
+                    val authorized = ai.starlake.quack.ondemand.rbac.AuthorizedHandshake(
+                      poolKey = key,
+                      tenantId = tenantRow.id,
+                      poolId = poolId,
+                      user = user,
+                      effectiveSet = effC
+                    )
                     // 4. Pool-access check. A branch pool (Epic 1) is never granted directly:
                     //    it inherits connect permission from ANY pool of its parent tenant-db.
+                    //    An opa tenant ignores grants entirely: its OPA decides.
                     def grantedOn(pid: String): Boolean =
-                      eff.poolPerms
+                      effC.poolPerms
                         .exists(p => p.tenantId == tenantRow.id && p.poolId.forall(_ == pid))
-                    val poolOk =
-                      user.tenant.isEmpty || grantedOn(poolId) ||
+                    // Unwired: fail closed, anything but exactly `qod` counts as opa.
+                    val isOpaTenant = opaAccess
+                      .map(_.isOpa(tenantRow))
+                      .getOrElse(
+                        tenantRow.acl.mode.exists(_ != ai.starlake.quack.model.TenantAcl.Qod)
+                      )
+                    if user.tenant.isEmpty then Right(authorized)
+                    else if isOpaTenant then
+                      opaAccess match
+                        case None =>
+                          Left(
+                            HandshakeDenial.Unavailable(
+                              "OPA authorization is not wired on this manager"
+                            )
+                          )
+                        case Some(o) =>
+                          o.connect(tenantRow, key, parentPoolNamesOf(key), user, effC, req.edge)
+                            .map(_ => authorized)
+                    else
+                      val poolOk = grantedOn(poolId) ||
                         (ai.starlake.quack.ondemand.branch.BranchNames.isBranchPool(key.pool) &&
                           parentPoolIdsOf(tenantRow.id, key.tenantDb).exists(grantedOn))
-                    if !poolOk then
-                      Left(s"user '$username' has no access to pool '${key.tenant}/${key.pool}'")
-                    else
-                      Right(
-                        ai.starlake.quack.ondemand.rbac.AuthorizedHandshake(
-                          poolKey = key,
-                          tenantId = tenantRow.id,
-                          poolId = poolId,
-                          user = user,
-                          effectiveSet = eff
+                      if poolOk then Right(authorized)
+                      else
+                        Left(
+                          HandshakeDenial.Denied(
+                            s"user '$username' has no access to pool '${key.tenant}/${key.pool}'"
+                          )
                         )
-                      )
               case None =>
-                Left(s"pool '${key.pool}' not found in tenant '${key.tenant}'")
+                Left(
+                  HandshakeDenial.Denied(s"pool '${key.pool}' not found in tenant '${key.tenant}'")
+                )
       }
 
   // ---------- RBAC: effective-set closure ----------

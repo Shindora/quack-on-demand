@@ -1,0 +1,40 @@
+package ai.starlake.quack.ondemand.rbac
+
+import ai.starlake.quack.model.{PoolKey, Tenant}
+import ai.starlake.quack.ondemand.state.RbacUser
+
+/** Why a handshake authorization failed. `Unavailable` = the deciding authority (OPA) could not be
+  * reached; edges surface it as retryable UNAVAILABLE instead of a permission error.
+  */
+enum HandshakeDenial(val message: String):
+  case Denied(msg: String)      extends HandshakeDenial(msg)
+  case Unavailable(msg: String) extends HandshakeDenial(msg)
+
+/** Everything an edge knows about a handshake, for gate 4 and the OPA input. `superuserAdmissible`
+  * is false when the credential was validated by a TENANT realm; `edge` names the front door
+  * (`flightsql`, `quack`, `mcp`) and lands in the OPA input's `client.edge`.
+  */
+final case class AuthzRequest(
+    tenant: String,
+    pool: String,
+    username: String,
+    jwtRoles: Set[String] = Set.empty,
+    jwtGroups: Set[String] = Set.empty,
+    jwtClaims: Map[String, String] = Map.empty,
+    superuserAdmissible: Boolean = true,
+    edge: String = ""
+)
+
+/** Gate-4 seam for `opa` tenants. Lives in `ondemand` so PoolSupervisor does not depend on the edge
+  * package; implemented by `edge.opa.OpaAuthorizer`.
+  */
+trait OpaPoolAccess:
+  def isOpa(tenant: Tenant): Boolean
+  def connect(
+      tenant: Tenant,
+      key: PoolKey,
+      parentPools: List[String],
+      user: RbacUser,
+      eff: EffectiveSet,
+      edge: String
+  ): Either[HandshakeDenial, Unit]

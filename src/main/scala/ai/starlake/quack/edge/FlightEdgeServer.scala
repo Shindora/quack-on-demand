@@ -2,7 +2,7 @@ package ai.starlake.quack.edge
 
 import ai.starlake.quack.edge.auth.AuthenticationService
 import ai.starlake.quack.model.{PoolKey, Tenant}
-import ai.starlake.quack.ondemand.rbac.AuthorizedHandshake
+import ai.starlake.quack.ondemand.rbac.{AuthorizedHandshake, AuthzRequest, HandshakeDenial}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.arrow.flight.*
 import org.apache.arrow.flight.auth2.CallHeaderAuthenticator
@@ -33,11 +33,9 @@ final class FlightEdgeServer(
     // (union-merging any JWT-claimed role / group names), and returns
     // an AuthorizedHandshake. The result is pinned onto
     // ConnectionContext so the per-statement ACL gate can read it
-    // without further joins. See EdgeHandshake for the argument contract.
-    authorize: (String, String, String, Set[String], Set[String], Boolean) => Either[
-      String,
-      AuthorizedHandshake
-    ],
+    // without further joins. See EdgeHandshake for the argument contract;
+    // HandshakeDenial.Unavailable (OPA unreachable) surfaces as UNAVAILABLE.
+    authorize: AuthzRequest => Either[HandshakeDenial, AuthorizedHandshake],
     // Branch targeting (Epic 1): (tenant, parent tenantDb, branch name) -> the branch's pool
     // key. Consulted AFTER `authorize` succeeded against the parent pool named by the client, so
     // a branch session carries exactly the parent pool's authorization and EffectiveSet. Left =
@@ -50,7 +48,8 @@ final class FlightEdgeServer(
   private var server: FlightServer = null.asInstanceOf[FlightServer]
 
   /** The transport-agnostic handshake shared with the Quack front door. */
-  private val handshake = new EdgeHandshake(authService, lookupPool, resolveTenant, authorize)
+  private val handshake =
+    new EdgeHandshake(authService, lookupPool, resolveTenant, authorize, edge = "flightsql")
 
   /** Sweeps expired [[ConnectionContext]] entries so a departed client's session state (the context
     * entry and the router's session row) does not linger until the peer id happens to be presented
@@ -222,6 +221,9 @@ final class FlightEdgeServer(
                   // PERMISSION_DENIED) so clients can tell "wrong password"
                   // from "no access to this pool" without parsing strings.
                   throw CallStatus.UNAUTHORIZED.withDescription(msg).toRuntimeException()
+                case Left(HandshakeFailure.Unavailable(msg)) =>
+                  // The tenant's OPA could not be reached: retryable, not a permission error.
+                  throw CallStatus.UNAVAILABLE.withDescription(msg).toRuntimeException()
                 case Right(bound) =>
                   val peerId    = UUID.randomUUID().toString
                   val connId    = UUID.randomUUID().toString
