@@ -27,6 +27,14 @@ final case class TenantAcl(
 
   def effectivePolicyPath: String = opaPolicyPath.getOrElse(TenantAcl.DefaultPolicyPath)
 
+  /** Redact `opaToken` so no `s"$tenant"` / `s"$acl"` log line (or exception message built from
+    * one) can ever print the secret. Case-class equality, `hashCode` and `copy` are untouched --
+    * Scala only synthesizes those from the constructor fields, never from `toString`.
+    */
+  override def toString: String =
+    s"TenantAcl(mode=$mode,opaUrl=$opaUrl,opaPolicyPath=$opaPolicyPath,opaToken=${opaToken
+        .map(_ => FederatedSecret.RedactedMarker)},sendStatementText=$sendStatementText)"
+
 object TenantAcl:
   val Qod                       = "qod"
   val Opa                       = "opa"

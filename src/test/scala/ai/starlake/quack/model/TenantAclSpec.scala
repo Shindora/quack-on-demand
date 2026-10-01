@@ -40,3 +40,20 @@ class TenantAclSpec extends AnyFlatSpec with Matchers:
     TenantAcl.validUrl("https://opa.example.com/") shouldBe true
     Seq("opa:8181", "ftp://opa", "http://", "not a url", "")
       .foreach(u => withClue(u)(TenantAcl.validUrl(u) shouldBe false))
+
+  "TenantAcl.toString" should "redact opaToken so no log line can ever print it" in:
+    val withToken = TenantAcl(opaToken = Some("s3cr3t-x"))
+    withToken.toString should not include "s3cr3t-x"
+    withToken.toString should include(s"Some(${FederatedSecret.RedactedMarker})")
+    TenantAcl().toString should include("opaToken=None")
+    // A tenant-level toString (e.g. an exception message built from "$tenant") must not leak the
+    // token either -- Tenant has no toString override of its own, so this pins that TenantAcl's
+    // override is what protects it.
+    Tenant("t", acl = withToken).toString should not include "s3cr3t-x"
+
+  it should "not change case-class equality, hashCode, or copy" in:
+    val a = TenantAcl(mode = Some("opa"), opaToken = Some("s3cr3t-x"))
+    val b = TenantAcl(mode = Some("opa"), opaToken = Some("s3cr3t-x"))
+    a shouldBe b
+    a.hashCode shouldBe b.hashCode
+    a.copy(sendStatementText = true).opaToken shouldBe Some("s3cr3t-x")

@@ -603,3 +603,106 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
     s.snapshot().tenantDbs shouldBe Nil
     s.snapshot().pools shouldBe Nil
   }
+
+  "ManifestImporter.apply acl" should "keep the existing opaToken when the manifest carries the redacted marker" in {
+    val s = new InMemoryControlPlaneStore()
+    s.upsertTenant(
+      Tenant(
+        id = "acme",
+        displayName = "acme",
+        acl = ai.starlake.quack.model
+          .TenantAcl(Some("opa"), Some("http://opa"), None, Some("real-token"))
+      )
+    )
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(
+            ManifestTenantAcl(
+              mode = Some("opa"),
+              opaUrl = Some("http://opa"),
+              opaToken = Some(ai.starlake.quack.model.FederatedSecret.RedactedMarker)
+            )
+          )
+        )
+      )
+    )
+    ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
+    s.listTenants().find(_.id == "acme").get.acl.opaToken shouldBe Some("real-token")
+  }
+
+  it should "drop the opaToken to None, with no import failure, when a new tenant's manifest carries the redacted marker" in {
+    val s = new InMemoryControlPlaneStore()
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(
+            ManifestTenantAcl(
+              mode = Some("opa"),
+              opaToken = Some(ai.starlake.quack.model.FederatedSecret.RedactedMarker)
+            )
+          )
+        )
+      )
+    )
+    ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
+    s.listTenants().find(_.id == "acme").get.acl.opaToken shouldBe None
+  }
+
+  it should "write a plain opaToken value verbatim" in {
+    val s = new InMemoryControlPlaneStore()
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(ManifestTenantAcl(mode = Some("opa"), opaToken = Some("fresh-token")))
+        )
+      )
+    )
+    ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
+    s.listTenants().find(_.id == "acme").get.acl.opaToken shouldBe Some("fresh-token")
+  }
+
+  it should "leave an existing tenant's acl untouched when the manifest's acl is absent" in {
+    val s           = new InMemoryControlPlaneStore()
+    val existingAcl =
+      ai.starlake.quack.model.TenantAcl(Some("opa"), Some("http://opa"), None, Some("real-token"))
+    s.upsertTenant(Tenant(id = "acme", displayName = "acme", acl = existingAcl))
+    val m = base.copy(tenants = List(ManifestTenant(name = "acme", acl = None)))
+    ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
+    s.listTenants().find(_.id == "acme").get.acl shouldBe existingAcl
+  }
+
+  it should "reject an invalid acl mode" in {
+    val s = new InMemoryControlPlaneStore()
+    val m = base.copy(tenants =
+      List(ManifestTenant(name = "acme", acl = Some(ManifestTenantAcl(mode = Some("bogus")))))
+    )
+    val err = ManifestImporter.apply(m, s, requireEncryption = false).left.toOption.get
+    err.exists(_.contains("acme")) shouldBe true
+  }
+
+  it should "reject an invalid opaUrl" in {
+    val s = new InMemoryControlPlaneStore()
+    val m = base.copy(tenants =
+      List(ManifestTenant(name = "acme", acl = Some(ManifestTenantAcl(opaUrl = Some("not a url")))))
+    )
+    val err = ManifestImporter.apply(m, s, requireEncryption = false).left.toOption.get
+    err.exists(_.contains("acme")) shouldBe true
+  }
+
+  it should "reject an invalid opaPolicyPath" in {
+    val s = new InMemoryControlPlaneStore()
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(ManifestTenantAcl(opaPolicyPath = Some("bad path!")))
+        )
+      )
+    )
+    val err = ManifestImporter.apply(m, s, requireEncryption = false).left.toOption.get
+    err.exists(_.contains("acme")) shouldBe true
+  }
