@@ -13,7 +13,8 @@ import ai.starlake.quack.edge.config.{
   GoogleAuthConfig,
   JwtAuthConfig,
   KeycloakAuthConfig,
-  NodeLockdownConfig
+  NodeLockdownConfig,
+  OpaConfig
 }
 import ai.starlake.quack.boot.{
   BootFactories,
@@ -212,12 +213,15 @@ object Main extends IOApp with LazyLogging:
         }
 
   private def normalManagerRun: IO[ExitCode] =
-    val source      = ConfigSource.default
-    val mgrCfg      = source.at("quack-on-demand").loadOrThrow[ManagerConfig]
-    val edgeCfg     = source.at("quack-flightsql").loadOrThrow[FlightConfig]
-    val quackCfg    = source.at("quack-native").loadOrThrow[QuackNativeConfig]
-    val authCfg     = source.at("quack-flightsql.auth").loadOrThrow[AuthenticationConfig]
-    val aclCfg      = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
+    val source   = ConfigSource.default
+    val mgrCfg   = source.at("quack-on-demand").loadOrThrow[ManagerConfig]
+    val edgeCfg  = source.at("quack-flightsql").loadOrThrow[FlightConfig]
+    val quackCfg = source.at("quack-native").loadOrThrow[QuackNativeConfig]
+    val authCfg  = source.at("quack-flightsql.auth").loadOrThrow[AuthenticationConfig]
+    val aclCfg   = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
+    val opaCfg   = OpaConfig
+      .validate(source.at("quack-flightsql.opa").loadOrThrow[OpaConfig])
+      .fold(err => throw new IllegalArgumentException(err), identity)
     val lockdownCfg = source.at("quack-flightsql.nodeLockdown").loadOrThrow[NodeLockdownConfig]
     val metricsCfg  = source.at("quack-on-demand.metrics").loadOrThrow[MetricsConfig]
     withEmbeddedControlPlane(mgrCfg, authCfg) { (resolved, resolvedAuth) =>
