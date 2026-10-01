@@ -11,6 +11,7 @@ import type {
   SetPoolResourcesRequest,
   SetPoolLockdownRequest,
   SetTenantAuthRequest,
+  SetTenantAclRequest,
   SetTenantDisabledRequest,
   PoolResponse,
   FleetServerListResponse,
@@ -274,6 +275,7 @@ export const api = {
   deleteTenant:     (req: TenantOpRequest)          => post<void>('/tenant/delete', req),
   setTenantDisabled:(req: SetTenantDisabledRequest) => post<TenantResponse>('/tenant/setDisabled', req),
   setTenantAuth:    (req: SetTenantAuthRequest)     => post<TenantResponse>('/tenant/setAuth',     req),
+  setTenantAcl:     (req: SetTenantAclRequest)      => post<TenantResponse>('/tenant/setAcl',      req),
 
   // Tenant databases
   listTenantDbs:  (tenant: string)       =>

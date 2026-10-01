@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type { TenantDbResponse, TenantResponse } from '../api/types';
 import AuthProviderSection from '../components/AuthProviderSection';
+import { AccessControlSection } from '../components/AccessControlSection';
 import DatabaseSection from '../components/DatabaseSection';
 import MaintenancePanel from '../components/MaintenancePanel';
 import BranchPanel from '../components/BranchPanel';
@@ -146,6 +147,7 @@ export default function TenantDetail() {
           { id: 'maintenance',   label: 'Maintenance',   body: <MaintenanceSection tenant={data.name} /> },
           { id: 'branches',      label: 'Branches',      body: <BranchesSection tenant={data.name} /> },
           { id: 'auth-provider', label: 'Auth provider', body: <AuthProviderSection tenantName={data.name} /> },
+          { id: 'access-control', label: 'Access control', body: <AccessControlSection tenant={data} onSaved={refresh} /> },
         ]}
       />
     </>
