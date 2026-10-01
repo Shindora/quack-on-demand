@@ -1,0 +1,138 @@
+package ai.starlake.quack.edge.opa
+
+import ai.starlake.acl.model.TableRef
+import ai.starlake.acl.parser.{TableAccess, Verb}
+import ai.starlake.quack.edge.config.OpaConfig
+import ai.starlake.quack.model.{Tenant, TenantAcl}
+import ai.starlake.quack.observability.metrics.OpaInstruments
+import com.github.tomakehurst.wiremock.WireMockServer
+import com.github.tomakehurst.wiremock.client.WireMock.*
+import com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
+import org.scalatest.BeforeAndAfterAll
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
+
+class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
+
+  private val wm                 = new WireMockServer(options().dynamicPort())
+  override def beforeAll(): Unit = wm.start()
+  override def afterAll(): Unit  = wm.stop()
+
+  private def base = s"http://localhost:${wm.port()}"
+  private val acc  = Set(TableAccess(TableRef("tpch", "main", "orders"), Verb.Read))
+  private val tgt  = OpaTarget("acme", "tpch", "bi", Nil)
+  private val usr  = OpaUser("alice", List("analyst"), Nil, Map.empty)
+
+  private def tenant(token: Option[String] = None, text: Boolean = false) =
+    Tenant("acme", acl = TenantAcl(Some("opa"), Some(base), None, token, text))
+
+  private def authorizer(ttl: Int = 0, timeoutMs: Int = 500) =
+    val cfg = OpaConfig("qod", "", timeoutMs, ttl)
+    new OpaAuthorizer(
+      cfg,
+      new OpaClient(timeoutMs, OpaClient.jdkPost(timeoutMs)),
+      new OpaDecisionCache(ttl),
+      OpaInstruments.noop
+    )
+
+  "OpaAuthorizer.statement" should "POST the statement input with the bearer and allow" in:
+    wm.resetAll()
+    wm.stubFor(
+      post(urlEqualTo("/v1/data/qod/authz/statement"))
+        .withHeader("Authorization", equalTo("Bearer tok"))
+        .willReturn(okJson("""{"result":{"allow":true}}"""))
+    )
+    authorizer().statement(
+      tenant(Some("tok")),
+      tgt,
+      usr,
+      "u1",
+      "flightsql",
+      "READ",
+      acc,
+      "SELECT 1"
+    ) shouldBe
+      Decision.Allow(None)
+    wm.verify(
+      postRequestedFor(urlEqualTo("/v1/data/qod/authz/statement"))
+        .withRequestBody(matchingJsonPath("$.input.accesses[0].table", equalTo("orders")))
+        .withRequestBody(notContaining("SELECT 1"))
+    )
+
+  it should "send the text only when the tenant opted in" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    authorizer().statement(
+      tenant(text = true),
+      tgt,
+      usr,
+      "u1",
+      "flightsql",
+      "READ",
+      acc,
+      "SELECT 1"
+    )
+    wm.verify(postRequestedFor(anyUrl()).withRequestBody(containing("SELECT 1")))
+
+  it should "return Error on 5xx, connection refused and timeout" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(serverError()))
+    authorizer()
+      .statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "") shouldBe a[Decision.Error]
+    wm.resetAll()
+    wm.stubFor(
+      post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""").withFixedDelay(1500))
+    )
+    authorizer(timeoutMs = 200).statement(
+      tenant(),
+      tgt,
+      usr,
+      "u1",
+      "flightsql",
+      "READ",
+      acc,
+      ""
+    ) shouldBe
+      a[Decision.Error]
+    val refused =
+      Tenant("acme", acl = TenantAcl(Some("opa"), Some("http://127.0.0.1:1"), None, None))
+    authorizer()
+      .statement(refused, tgt, usr, "u1", "flightsql", "READ", acc, "") shouldBe a[Decision.Error]
+
+  it should "return Error when no URL is configured anywhere" in:
+    authorizer().statement(
+      Tenant("acme", acl = TenantAcl(Some("opa"))),
+      tgt,
+      usr,
+      "u1",
+      "f",
+      "READ",
+      acc,
+      ""
+    ) shouldBe
+      a[Decision.Error]
+
+  it should "make one call for repeated identical decisions within the TTL" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val a = authorizer(ttl = 60)
+    (1 to 3).foreach(_ => a.statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, ""))
+    wm.verify(1, postRequestedFor(anyUrl()))
+
+  "OpaAuthorizer.connect" should "POST to the connect rule" in:
+    wm.resetAll()
+    wm.stubFor(
+      post(urlEqualTo("/v1/data/qod/authz/connect"))
+        .willReturn(okJson("""{"result":{"allow":false,"reason":"nope"}}"""))
+    )
+    authorizer().connect(tenant(), tgt, usr, "u1", "flightsql") shouldBe
+      Decision.Deny("nope", Set.empty, None)
+
+  "OpaAuthorizer.statement" should "return Error when the response body exceeds 1 MiB" in:
+    wm.resetAll()
+    val oneMibPlusTen = "x" * ((1024 * 1024) + 10)
+    wm.stubFor(
+      post(anyUrl()).willReturn(okJson(s"""{"result":{"allow":true},"pad":"$oneMibPlusTen"}"""))
+    )
+    authorizer()
+      .statement(tenant(), tgt, usr, "u1", "flightsql", "READ", acc, "") shouldBe a[Decision.Error]
