@@ -21,6 +21,7 @@ import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.state.InMemoryControlPlaneStore
 import ai.starlake.quack.ondemand.telemetry.EventJournal
 import ai.starlake.quack.ondemand.telemetry.testkit.RecordingTelemetryStore
+import ai.starlake.quack.spi.{ManagerEvent, ManagerEventSink}
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import org.scalatest.flatspec.AnyFlatSpec
@@ -50,7 +51,10 @@ class FlightSqlRouterOpaSpec extends AnyFlatSpec with Matchers:
       store: RecordingTelemetryStore
   )
 
-  private def routerWith(validator: StatementValidator): Fixture =
+  private def routerWith(
+      validator: StatementValidator,
+      events: ManagerEventSink = ManagerEventSink.noop
+  ): Fixture =
     val backend = new QuackBackend:
       private val n          = TrieMap.empty[String, RunningNode]
       def start(s: NodeSpec) = IO {
@@ -89,7 +93,8 @@ class FlightSqlRouterOpaSpec extends AnyFlatSpec with Matchers:
       tracker,
       new QuackHttpAdapter(client, tracker),
       validator = validator,
-      journal = journal
+      journal = journal,
+      events = events
     )
     Fixture(router, journal, store)
 
@@ -160,3 +165,35 @@ class FlightSqlRouterOpaSpec extends AnyFlatSpec with Matchers:
     detail.get("reason") should not be Some("y")
     detail.get("durationMs") should not be Some("z")
     detail.get("denied") should not be Some("forged")
+
+  it should "keep the audit source and SessionOpened via at 'flightsql' when only the OPA edge differs" in:
+    var seenCtx: Option[ValidationContext] = None
+    val received               = new java.util.concurrent.CopyOnWriteArrayList[ManagerEvent]()
+    val sink: ManagerEventSink = e => { received.add(e); () }
+    val fx                     = routerWith(
+      { (ctx: ValidationContext) => seenCtx = Some(ctx); Allowed },
+      events = sink
+    )
+    val out = fx.router
+      .executeWith(
+        "c-6",
+        "alice",
+        poolKey,
+        "INSERT INTO t VALUES (1)",
+        None,
+        okSend,
+        source = "flightsql",
+        edge = "mcp"
+      )
+      .unsafeRunSync()
+    out shouldBe a[Right[?, ?]]
+    seenCtx.map(_.edge) shouldBe Some("mcp")
+
+    fx.journal.drainNow()
+    fx.store.events should have size 1
+    fx.store.events.head.origin shouldBe "flightsql"
+
+    val seen = received.toArray.toList.map(_.asInstanceOf[ManagerEvent])
+    seen.collectFirst { case ManagerEvent.SessionOpened(_, _, via) => via } shouldBe Some(
+      "flightsql"
+    )

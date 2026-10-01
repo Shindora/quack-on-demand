@@ -338,10 +338,20 @@ final class FlightSqlRouter(
         * the way the routed ACL path does.
         */
       adminDispatch: Boolean = true,
-      /** Audit origin and OPA `client.edge`, forwarded to [[executeWith]]: `"flightsql"` for the
-        * raw wire, `"mcp"` for the routed executor behind MCP and the REST preview family.
+      /** Audit origin recorded on denial and write events and on the SessionOpened module event:
+        * `"flightsql"` for the raw wire, `"quack"` for the native Quack front door. Independent of
+        * `edge` below: metering and audit must not move when a caller only wants to tag the OPA
+        * input differently.
         */
-      source: String = "flightsql"
+      source: String = "flightsql",
+      /** OPA `client.edge`, forwarded to [[executeWith]]'s `ValidationContext.edge` ONLY. Empty
+        * (the default) means "same as `source`" -- resolved in [[executeWith]], not here: a
+        * parameter default cannot reference a sibling parameter of the same list in Scala. Main's
+        * routed executor passes `edge = "mcp"` while leaving `source` at its own default so REST
+        * preview / data diff / restore / undrop / branch counts keep reporting "flightsql" for
+        * metering and audit.
+        */
+      edge: String = ""
   ): IO[Either[RouterFailure, QueryResult]] =
     adminExecutor match
       case Some(exec) if adminDispatch && ai.starlake.quack.edge.admin.AdminSqlParser.claims(sql) =>
@@ -373,6 +383,7 @@ final class FlightSqlRouter(
           effectiveSet,
           adapterSend,
           source = source,
+          edge = edge,
           preferredNode = preferredNode,
           recordExecution = recordExecution,
           prepareDurationMs = prepareDurationMs,
@@ -400,7 +411,9 @@ final class FlightSqlRouter(
     * through [[execute]].
     *
     * `source` is the audit origin recorded on denial and write events and on the SessionOpened
-    * module event (`"flightsql"`, `"quack"` or `"mcp"`).
+    * module event (`"flightsql"` or `"quack"`). `edge` is the OPA `client.edge` value used ONLY for
+    * `ValidationContext.edge`; empty (the default) means "same as `source`" and is otherwise
+    * independent of it (see `execute`'s scaladoc).
     */
   def executeWith[A](
       connectionId: String,
@@ -413,9 +426,11 @@ final class FlightSqlRouter(
       preferredNode: Option[String] = None,
       recordExecution: Boolean = true,
       prepareDurationMs: Option[Long] = None,
-      patId: Option[String] = None
+      patId: Option[String] = None,
+      edge: String = ""
   ): IO[Either[RouterFailure, Routed[A]]] =
-    val s = sessions.get(connectionId).getOrElse {
+    val resolvedEdge = if edge.isEmpty then source else edge
+    val s            = sessions.get(connectionId).getOrElse {
       val opened = sessions.open(connectionId, user, poolKey)
       // Probes (recordExecution=false) must not emit, matching every other telemetry surface.
       if recordExecution then events.emit(ManagerEvent.SessionOpened(poolKey.tenant, user, source))
@@ -449,7 +464,7 @@ final class FlightSqlRouter(
       effectiveSet = effectiveSet,
       attachedCatalogs = attachedCatalogsOf(poolKey),
       poolKey = Some(poolKey),
-      edge = source,
+      edge = resolvedEdge,
       statementClass = kind match
         case StatementKind.Ddl => "DDL"
         case StatementKind.Dml => "WRITE"

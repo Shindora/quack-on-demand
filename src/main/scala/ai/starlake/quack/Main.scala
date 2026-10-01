@@ -1437,9 +1437,11 @@ object Main extends IOApp with LazyLogging:
               recordExecution = rec,
               patId = caller.patId,
               adminDispatch = false,
-              // MCP and the REST preview family share this closure and are not distinguishable
-              // here; both report as "mcp" in audit and in the OPA input's client.edge.
-              source = "mcp"
+              // Audit origin and SessionOpened.via stay "flightsql" (the pre-OPA default): MCP
+              // and the REST preview family share this closure and are not distinguishable from
+              // each other, but metering and audit must not move just because OPA needs a tag.
+              // Only the OPA input's client.edge is set to "mcp" here.
+              edge = "mcp"
             )
         )(recordExecution)
 

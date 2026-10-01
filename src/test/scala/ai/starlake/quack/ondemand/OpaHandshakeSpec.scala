@@ -23,6 +23,9 @@ class OpaHandshakeSpec extends AnyFlatSpec with Matchers:
 
   /** Tenant `acme` (opa mode) with pool `bi` and two users holding NO pool grant: `alice` (enabled)
     * and `dave` (disabled). Tenant `globex` (default qod mode) with pool `bi` and `bob`, granted.
+    * Tenant `weird` carries an unknown mode (`"foo"`, neither `"qod"` nor `"opa"`) with user
+    * `carol`, no grant: the fail-closed rule treats anything but exactly `qod` as opa, wired or
+    * not. A superuser row `root` (tenant = None) exists for every tenant.
     */
   private def freshSup(): PoolSupervisor =
     val s                                            = new InMemoryControlPlaneStore()
@@ -52,8 +55,11 @@ class OpaHandshakeSpec extends AnyFlatSpec with Matchers:
       )
     seedTenant("acme", TenantAcl(Some("opa"), Some("http://opa")))
     seedTenant("globex", TenantAcl())
+    seedTenant("weird", TenantAcl(Some("foo")))
     s.upsertUserWithHash(Some("acme"), "alice", "x", "user")
     s.upsertUserWithHash(Some("acme"), "dave", "x", "user", enabled = false)
+    s.upsertUserWithHash(Some("weird"), "carol", "x", "user")
+    s.upsertUserWithHash(None, "root", "x", "admin")
     val bobId = s.upsertUserWithHash(Some("globex"), "bob", "x", "user")
     s.insertPoolPermission(
       PoolPermission(
@@ -107,6 +113,20 @@ class OpaHandshakeSpec extends AnyFlatSpec with Matchers:
     freshSup().authorizeHandshakeDetailed(req("acme", "alice")) match
       case Left(HandshakeDenial.Unavailable(m)) => m should include("not wired")
       case other                                => fail(other.toString)
+
+  it should "refuse an unwired tenant with an unknown mode as Unavailable (fail closed)" in:
+    // "foo" is neither "qod" nor "opa": the unwired fallback cannot ask a manager default (it has
+    // no access to one, see PoolSupervisor's gate-4 comment) so it treats anything but exactly
+    // "qod" as opa, same as the wired isOpa check would.
+    freshSup().authorizeHandshakeDetailed(req("weird", "carol")) match
+      case Left(HandshakeDenial.Unavailable(m)) => m should include("not wired")
+      case other                                => fail(other.toString)
+
+  it should "admit a superuser on an opa tenant without ever calling OPA" in:
+    val stub = StubAccess(Left(HandshakeDenial.Denied("must not be called")))
+    sup.wireOpa(stub)
+    sup.authorizeHandshakeDetailed(req("acme", "root")).isRight shouldBe true
+    stub.seen shouldBe Nil
 
   it should "keep grant-based access for qod tenants and never call OPA" in:
     val stub = StubAccess(Left(HandshakeDenial.Denied("must not be called")))

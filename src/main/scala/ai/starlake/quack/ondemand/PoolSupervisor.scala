@@ -3559,7 +3559,13 @@ final class PoolSupervisor(
                     def grantedOn(pid: String): Boolean =
                       effC.poolPerms
                         .exists(p => p.tenantId == tenantRow.id && p.poolId.forall(_ == pid))
-                    // Unwired: fail closed, anything but exactly `qod` counts as opa.
+                    // Unwired: fail closed, anything but exactly `qod` counts as opa. This
+                    // fallback only ever sees the TENANT's own explicit mode -- it has no access
+                    // to the manager-wide ACL default (QOD_ACL_MODE), so a tenant with mode=None
+                    // on a manager whose default is opa reads as qod here while unwired. Main
+                    // always calls wireOpa(...) before either edge starts accepting connections,
+                    // so in production this branch is unreachable; it only fires for a bare
+                    // PoolSupervisor built directly in a test.
                     val isOpaTenant = opaAccess
                       .map(_.isOpa(tenantRow))
                       .getOrElse(

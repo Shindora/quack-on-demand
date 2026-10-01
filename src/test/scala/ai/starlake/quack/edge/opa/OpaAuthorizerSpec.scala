@@ -3,8 +3,10 @@ package ai.starlake.quack.edge.opa
 import ai.starlake.acl.model.TableRef
 import ai.starlake.acl.parser.{TableAccess, Verb}
 import ai.starlake.quack.edge.config.OpaConfig
-import ai.starlake.quack.model.{Tenant, TenantAcl}
+import ai.starlake.quack.model.{PoolKey, Tenant, TenantAcl}
 import ai.starlake.quack.observability.metrics.OpaInstruments
+import ai.starlake.quack.ondemand.rbac.{EffectiveSet, HandshakeDenial}
+import ai.starlake.quack.ondemand.state.{RbacRole, RbacUser}
 import com.github.tomakehurst.wiremock.WireMockServer
 import com.github.tomakehurst.wiremock.client.WireMock.*
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
@@ -203,3 +205,69 @@ class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
     )
     authorizer().connect(tenant(), tgt, usr, "u1", "flightsql") shouldBe
       Decision.Deny("nope", Set.empty, None)
+
+  // ---------- OpaPoolAccess.connect: the 6-arg RBAC overload the handshake calls ----------
+
+  private def rbacUser(name: String) =
+    RbacUser(id = s"u-$name", tenant = Some("acme"), username = name, role = "user")
+
+  "OpaAuthorizer.connect (RBAC overload)" should "map Allow to Right(())" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val user = rbacUser("alice")
+    val eff  = EffectiveSet(user, Nil, Nil, Nil, Nil)
+    authorizer().connect(
+      tenant(),
+      PoolKey("acme", "tpch", "bi"),
+      Nil,
+      user,
+      eff,
+      "flightsql"
+    ) shouldBe
+      Right(())
+
+  it should "map Deny to Left(HandshakeDenial.Denied) prefixed with 'pool access denied by policy'" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":false,"reason":"nope"}}""")))
+    val user = rbacUser("alice")
+    val eff  = EffectiveSet(user, Nil, Nil, Nil, Nil)
+    authorizer().connect(tenant(), PoolKey("acme", "tpch", "bi"), Nil, user, eff, "flightsql") match
+      case Left(HandshakeDenial.Denied(msg)) => msg should startWith("pool access denied by policy")
+      case other                             => fail(other.toString)
+
+  it should "map Error to Left(HandshakeDenial.Unavailable)" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(serverError()))
+    val user = rbacUser("alice")
+    val eff  = EffectiveSet(user, Nil, Nil, Nil, Nil)
+    authorizer().connect(tenant(), PoolKey("acme", "tpch", "bi"), Nil, user, eff, "flightsql") match
+      case Left(HandshakeDenial.Unavailable(_)) => succeed
+      case other                                => fail(other.toString)
+
+  it should "carry parentPool, roles and claims from the EffectiveSet into the request body" in:
+    wm.resetAll()
+    wm.stubFor(post(anyUrl()).willReturn(okJson("""{"result":{"allow":true}}""")))
+    val user = rbacUser("alice")
+    val eff  = EffectiveSet(
+      user,
+      roles = List(RbacRole(id = "r1", tenantId = "acme", name = "analyst")),
+      groups = Nil,
+      permissions = Nil,
+      poolPerms = Nil,
+      claims = Map("dept" -> "fin")
+    )
+    authorizer().connect(
+      tenant(),
+      PoolKey("acme", "tpch", "bi"),
+      List("writer", "reader"),
+      user,
+      eff,
+      "flightsql"
+    )
+    wm.verify(
+      postRequestedFor(anyUrl())
+        .withRequestBody(matchingJsonPath("$.input.parentPool[0]", equalTo("reader")))
+        .withRequestBody(matchingJsonPath("$.input.parentPool[1]", equalTo("writer")))
+        .withRequestBody(matchingJsonPath("$.input.user.roles[0]", equalTo("analyst")))
+        .withRequestBody(matchingJsonPath("$.input.user.claims.dept", equalTo("fin")))
+    )
