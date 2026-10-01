@@ -419,7 +419,14 @@ final case class TenantResponse(
     pools: List[String],
     disabled: Boolean = false,
     authProvider: String = "db",
-    authConfig: Map[String, String] = Map.empty
+    authConfig: Map[String, String] = Map.empty,
+    // Data-access authorization (per-tenant OPA). aclMode None = the manager default
+    // (QOD_ACL_MODE). The OPA bearer token is write-only: only whether one is set is exposed.
+    aclMode: Option[String] = None,
+    opaUrl: Option[String] = None,
+    opaPolicyPath: Option[String] = None,
+    opaTokenSet: Boolean = false,
+    opaSendStatementText: Boolean = false
 )
 final case class TenantListResponse(tenants: List[TenantResponse])
 final case class TenantOpRequest(name: String)
@@ -429,6 +436,39 @@ final case class SetTenantAuthRequest(
     name: String,
     authProvider: String,
     authConfig: Map[String, String] = Map.empty
+)
+
+/** Patch of a tenant's data-access authorization. An omitted field keeps the stored value; `""`
+  * clears it (mode `""` = the manager default, opaToken `""` = no token). `mode` must be exactly
+  * `qod` or `opa`. `opaToken` is write-only: no response ever carries it back.
+  */
+final case class SetTenantAclRequest(
+    name: String,
+    mode: Option[String] = None,
+    opaUrl: Option[String] = None,
+    opaPolicyPath: Option[String] = None,
+    opaToken: Option[String] = None,
+    sendStatementText: Option[Boolean] = None
+)
+
+/** OPA dry run: builds the exact input the edge would send for `user` on `pool` (a `connect`
+  * decision without `sql`, a `statement` decision with it) and evaluates it against the tenant's
+  * OPA. Nothing is executed and the decision cache is not touched.
+  */
+final case class OpaTestRequest(
+    tenant: String,
+    pool: String,
+    user: String,
+    sql: Option[String] = None
+)
+
+/** `outcome` is one of allow | deny | error; `input` is the full `{"input": ...}` document sent. */
+final case class OpaTestResponse(
+    rule: String,
+    input: Json,
+    outcome: String,
+    reason: Option[String],
+    decisionId: Option[String]
 )
 final case class SetPoolDisabledRequest(
     tenant: String,
@@ -1579,6 +1619,9 @@ object Dtos:
   given Codec[TenantOpRequest]          = deriveCodec
   given Codec[SetTenantDisabledRequest] = deriveCodec
   given Codec[SetTenantAuthRequest]     = ConfiguredCodec.derived
+  given Codec[SetTenantAclRequest]      = ConfiguredCodec.derived
+  given Codec[OpaTestRequest]           = ConfiguredCodec.derived
+  given Codec[OpaTestResponse]          = deriveCodec
   given Codec[SetPoolDisabledRequest]   = deriveCodec
   given Codec[ClientConfigResponse]     = deriveCodec
   given Codec[ConfigEntryView]          = deriveCodec

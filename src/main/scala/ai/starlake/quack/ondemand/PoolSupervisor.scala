@@ -1510,6 +1510,70 @@ final class PoolSupervisor(
     }
   }
 
+  /** Patch a tenant's data-access authorization settings. Omitted field = keep, "" = clear. The
+    * mode must be exactly `qod` or `opa` (or "" for the manager default); opa mode with no
+    * effective URL (tenant's or `managerUrl`) is refused. A refusal is an `InvalidArgument` whose
+    * message is `<code>: <text>`. Fires topologyChanged so HA replicas reload the row (the OPA
+    * decision cache keys on the settings fingerprint, so no explicit flush is needed).
+    */
+  def setTenantAcl(
+      name: String,
+      patch: ai.starlake.quack.model.TenantAclPatch,
+      managerUrl: String,
+      managerMode: String
+  ): IO[Either[SupervisorError, Tenant]] = IO.blocking {
+    import ai.starlake.quack.model.TenantAcl
+    withCacheRecovery("setTenantAcl") {
+      getTenant(name) match
+        case None    => Left(SupervisorError.NotFound(s"tenant not found: $name"))
+        case Some(t) =>
+          def trimmed(v: Option[String], cur: Option[String]): Option[String] =
+            v.fold(cur)(s => Option(s).map(_.trim).filter(_.nonEmpty))
+          val acl = t.acl.copy(
+            // Not trimmed: the mode is matched exactly, so " opa" is refused, not normalized.
+            mode = patch.mode.fold(t.acl.mode)(s => Option(s).filter(_.nonEmpty)),
+            opaUrl = trimmed(patch.opaUrl, t.acl.opaUrl),
+            opaPolicyPath = trimmed(patch.opaPolicyPath, t.acl.opaPolicyPath),
+            opaToken = patch.opaToken.fold(t.acl.opaToken)(s => Option(s).filter(_.nonEmpty)),
+            sendStatementText = patch.sendStatementText.getOrElse(t.acl.sendStatementText)
+          )
+          val invalid: Option[(String, String)] =
+            if acl.mode.exists(m => !TenantAcl.ValidModes.contains(m)) then
+              Some(
+                "invalid_acl_mode" ->
+                  "mode must be one of qod, opa (or empty for the manager default)"
+              )
+            else if acl.opaUrl.exists(u => !TenantAcl.validUrl(u)) then
+              Some("invalid_opa_url" -> "opaUrl must be an absolute http(s) URL")
+            else if acl.opaPolicyPath.exists(p => !TenantAcl.validPolicyPath(p)) then
+              Some(
+                "invalid_opa_policy_path" ->
+                  "opaPolicyPath must be slash-separated identifiers, e.g. qod/authz"
+              )
+            else if acl.isOpa(managerMode) && acl.effectiveUrl(managerUrl).isEmpty then
+              Some(
+                "opa_url_required" ->
+                  "opa mode needs an opaUrl on the tenant or QOD_OPA_URL on the manager"
+              )
+            else None
+          invalid match
+            case Some((code, msg)) => Left(SupervisorError.InvalidArgument(s"$code: $msg"))
+            case None              =>
+              val updated = t.copy(acl = acl)
+              store.upsertTenant(updated)
+              tenants.put(updated.id, updated)
+              publish.topologyChanged()
+              Right(updated)
+    }
+  }
+
+  /** Tenant-scoped user lookup, same query as handshake gate 2 (superuser rows included). */
+  def findUserForLogin(
+      tenantId: String,
+      username: String
+  ): Option[ai.starlake.quack.ondemand.state.RbacUser] =
+    store.findUserForLogin(tenantId, username)
+
   def deleteTenant(name: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("deleteTenant") {
       getTenant(name) match

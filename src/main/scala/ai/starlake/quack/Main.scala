@@ -617,12 +617,7 @@ object Main extends IOApp with LazyLogging:
             )
           )
     )
-    val nodes   = new NodeHandlers(sup, tracker, store, publisher, audit = auditRecorder)
-    val tenants = new TenantHandlers(
-      sup,
-      onAuthChanged = tenantOidcRegistry.invalidate,
-      audit = auditRecorder
-    )
+    val nodes = new NodeHandlers(sup, tracker, store, publisher, audit = auditRecorder)
     val tagHandlers: Option[ai.starlake.quack.ondemand.api.TagHandlers] = Some(
       new ai.starlake.quack.ondemand.api.TagHandlers(
         sup,
@@ -968,6 +963,14 @@ object Main extends IOApp with LazyLogging:
       // Handshake gate 4 for opa tenants; wired before any edge starts so no handshake ever sees
       // an unwired supervisor (which would refuse opa tenants as Unavailable).
       sup.wireOpa(opaAuthorizer)
+      // Built here, not with the other handlers, so the admin dry-run shares the one authorizer.
+      val tenants = new TenantHandlers(
+        sup,
+        onAuthChanged = tenantOidcRegistry.invalidate,
+        audit = auditRecorder,
+        opa = Some(opaAuthorizer),
+        opaCfg = opaCfg
+      )
       val aclValidator: StatementValidator =
         BootFactories.aclValidator(aclCfg, mgrCfg, sup, opaCfg, opaAuthorizer)
       // Runs after sup.restore() (tenants are loaded by then): an OPA-mode tenant with no URL

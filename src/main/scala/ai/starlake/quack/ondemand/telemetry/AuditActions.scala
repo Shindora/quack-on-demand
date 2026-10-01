@@ -33,6 +33,8 @@ object AuditActions:
   val TenantDelete      = "tenant.delete"
   val TenantSetDisabled = "tenant.setDisabled"
   val TenantAuthUpdate  = "tenant.auth.update"
+  val TenantAclUpdate   = "tenant.acl.update"
+  val TenantOpaTest     = "tenant.opa.test"
   val DatabaseCreate    = "database.create"
   val DatabaseDelete    = "database.delete"
   val DatabaseUpdate    = "database.update"
@@ -148,6 +150,8 @@ object AuditActions:
     TenantDelete,
     TenantSetDisabled,
     TenantAuthUpdate,
+    TenantAclUpdate,
+    TenantOpaTest,
     DatabaseCreate,
     DatabaseDelete,
     DatabaseUpdate,

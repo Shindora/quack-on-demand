@@ -1,0 +1,165 @@
+package ai.starlake.quack.ondemand.api
+
+import ai.starlake.quack.security.{ManagerServerHarness, SecurityFixtures, SecurityHttpHelpers}
+import io.circe.parser.parse
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
+
+import java.net.http.HttpResponse
+
+/** REST surface of per-tenant OPA authorization: `tenant/setAcl` (token write-only) and the
+  * `tenant/opaTest` dry run.
+  */
+class TenantAclApiSpec extends AnyFlatSpec with Matchers with SecurityHttpHelpers:
+
+  private val ApiKey = "k"
+  private val t      = SecurityFixtures.TenantId
+  private val pool   = SecurityFixtures.PoolName
+  private val user   = SecurityFixtures.BobUsername
+
+  private def withHarness(addTenantB: Boolean = false)(
+      body: ManagerServerHarness.Harness => Unit
+  ): Unit =
+    val fix = SecurityFixtures.freshStore()
+    if addTenantB then SecurityFixtures.addTenantB(fix)
+    val h = ManagerServerHarness.boot(fix.store, staticApiKey = Some(ApiKey))
+    try body(h)
+    finally h.shutdown()
+
+  private def postJson(h: ManagerServerHarness.Harness, path: String, json: String) =
+    post(h.httpClient, s"${h.baseUrl}$path", json, apiKey = Some(ApiKey))
+
+  private def code(r: HttpResponse[String]): String =
+    withClue(s"body: ${r.body()}")(errorCode(r.body()).getOrElse(""))
+
+  private def cursor(r: HttpResponse[String]) =
+    withClue(s"status ${r.statusCode()} body: ${r.body()}") {
+      r.statusCode() shouldBe 200
+      parse(r.body()).toOption.get.hcursor
+    }
+
+  "POST /api/tenant/setAcl" should
+    "set opa mode, never echo the token, preserve on omit, clear on empty" in withHarness() { h =>
+      val r1 = postJson(
+        h,
+        "/api/tenant/setAcl",
+        s"""{"name":"$t","mode":"opa","opaUrl":"http://opa:8181","opaToken":"s3cr3t-tok"}"""
+      )
+      val j1 = cursor(r1)
+      r1.body() should not include "s3cr3t-tok"
+      j1.get[String]("aclMode") shouldBe Right("opa")
+      j1.get[String]("opaUrl") shouldBe Right("http://opa:8181")
+      j1.get[Boolean]("opaTokenSet") shouldBe Right(true)
+      j1.downField("opaToken").succeeded shouldBe false
+
+      val r2 = postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaPolicyPath":"acme/authz"}""")
+      val j2 = cursor(r2)
+      j2.get[Boolean]("opaTokenSet") shouldBe Right(true)
+      j2.get[String]("opaPolicyPath") shouldBe Right("acme/authz")
+      j2.get[String]("aclMode") shouldBe Right("opa")
+
+      val r3 = postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaToken":""}""")
+      cursor(r3).get[Boolean]("opaTokenSet") shouldBe Right(false)
+
+      // The listing carries the same write-only shape.
+      val list = get(h.httpClient, s"${h.baseUrl}/api/tenant/list", apiKey = Some(ApiKey))
+      list.body() should not include "s3cr3t-tok"
+
+      // mode "" clears back to the manager default (qod in the harness).
+      val r4 = postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":""}""")
+      cursor(r4).get[Option[String]]("aclMode") shouldBe Right(None)
+    }
+
+  it should "400 on bad mode, bad URL, bad policy path, and opa without any URL" in withHarness() {
+    h =>
+      code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":"x"}""")) shouldBe
+        "invalid_acl_mode"
+      code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":"OPA"}""")) shouldBe
+        "invalid_acl_mode"
+      code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaUrl":"opa:1"}""")) shouldBe
+        "invalid_opa_url"
+      code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaPolicyPath":"../x"}""")) shouldBe
+        "invalid_opa_policy_path"
+      code(
+        postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":"opa","opaUrl":""}""")
+      ) shouldBe "opa_url_required"
+      postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":"x"}""").statusCode() shouldBe 400
+  }
+
+  it should "403 a foreign-tenant admin and 404 an unknown tenant" in withHarness(addTenantB =
+    true
+  ) { h =>
+    val aliceToken = h.mintToken(
+      SecurityFixtures.AliceUsername,
+      SecurityFixtures.AlicePassword,
+      Some(SecurityFixtures.TenantId)
+    )
+    val foreign = post(
+      h.httpClient,
+      s"${h.baseUrl}/api/tenant/setAcl",
+      s"""{"name":"${SecurityFixtures.GlobexTenantId}","mode":"qod"}""",
+      apiKey = Some(aliceToken)
+    )
+    foreign.statusCode() shouldBe 403
+    code(foreign) shouldBe "tenant_forbidden"
+    val foreignTest = post(
+      h.httpClient,
+      s"${h.baseUrl}/api/tenant/opaTest",
+      s"""{"tenant":"${SecurityFixtures.GlobexTenantId}","pool":"bi","user":"dave"}""",
+      apiKey = Some(aliceToken)
+    )
+    foreignTest.statusCode() shouldBe 403
+    postJson(h, "/api/tenant/setAcl", """{"name":"nope","mode":"qod"}""").statusCode() shouldBe 404
+  }
+
+  "POST /api/tenant/opaTest" should
+    "return the exact input and an error outcome when OPA is unreachable" in withHarness() { h =>
+      cursor(
+        postJson(
+          h,
+          "/api/tenant/setAcl",
+          s"""{"name":"$t","mode":"opa","opaUrl":"http://127.0.0.1:1"}"""
+        )
+      )
+      val r = postJson(
+        h,
+        "/api/tenant/opaTest",
+        s"""{"tenant":"$t","pool":"$pool","user":"$user","sql":"SELECT * FROM orders"}"""
+      )
+      val c = cursor(r)
+      c.get[String]("rule") shouldBe Right("statement")
+      c.get[String]("outcome") shouldBe Right("error")
+      val in = c.downField("input").downField("input")
+      in.get[String]("kind") shouldBe Right("statement")
+      in.get[String]("tenant") shouldBe Right(t)
+      in.get[String]("pool") shouldBe Right(pool)
+      in.downField("user").get[String]("name") shouldBe Right(user)
+      in.downField("statement").get[String]("class") shouldBe Right("READ")
+      // sendStatementText is off by default: the text never leaves the manager.
+      in.downField("statement").downField("text").succeeded shouldBe false
+      in.downField("accesses").downArray.get[String]("table") shouldBe Right("orders")
+    }
+
+  it should "build a connect input when no SQL is given" in withHarness() { h =>
+    cursor(
+      postJson(
+        h,
+        "/api/tenant/setAcl",
+        s"""{"name":"$t","mode":"opa","opaUrl":"http://127.0.0.1:1"}"""
+      )
+    )
+    val c = cursor(
+      postJson(h, "/api/tenant/opaTest", s"""{"tenant":"$t","pool":"$pool","user":"$user"}""")
+    )
+    c.get[String]("rule") shouldBe Right("connect")
+    c.downField("input").downField("input").get[String]("kind") shouldBe Right("connect")
+  }
+
+  it should "400 an unknown pool or user" in withHarness() { h =>
+    code(
+      postJson(h, "/api/tenant/opaTest", s"""{"tenant":"$t","pool":"nope","user":"$user"}""")
+    ) shouldBe "not_found"
+    code(
+      postJson(h, "/api/tenant/opaTest", s"""{"tenant":"$t","pool":"$pool","user":"nobody"}""")
+    ) shouldBe "not_found"
+  }

@@ -1,6 +1,8 @@
 package ai.starlake.quack.ondemand.api
 
 import ai.starlake.quack.edge.auth.TenantOidcRegistry
+import ai.starlake.quack.edge.config.OpaConfig
+import ai.starlake.quack.edge.opa.OpaAuthorizer
 import ai.starlake.quack.model.Tenant
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
 import ai.starlake.quack.ondemand.auth.SessionScope
@@ -12,11 +14,17 @@ import sttp.model.StatusCode
   * [[TenantOidcRegistry]] can drop its cached per-tenant authenticator and rebuild from the updated
   * `qodstate_tenant.authConfig` on the next handshake. Optional so unit tests that don't need the
   * registry can pass a no-op.
+  *
+  * `opa` is the manager's single [[OpaAuthorizer]] (used only by the `opaTest` dry run; None
+  * answers `opa_not_wired`), `opaCfg` the manager-wide OPA defaults `setTenantAcl` validates
+  * against.
   */
 final class TenantHandlers(
     sup: PoolSupervisor,
     onAuthChanged: String => Unit = _ => (),
-    audit: AuditRecorder = AuditRecorder.noop
+    audit: AuditRecorder = AuditRecorder.noop,
+    opa: Option[OpaAuthorizer] = None,
+    opaCfg: OpaConfig = OpaConfig.default
 ):
 
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
@@ -29,7 +37,12 @@ final class TenantHandlers(
       pools = sup.listPoolsOfTenant(t.id),
       disabled = t.disabled,
       authProvider = t.authProvider,
-      authConfig = t.authConfig
+      authConfig = t.authConfig,
+      aclMode = t.acl.mode,
+      opaUrl = t.acl.opaUrl,
+      opaPolicyPath = t.acl.opaPolicyPath,
+      opaTokenSet = t.acl.opaToken.nonEmpty,
+      opaSendStatementText = t.acl.sendStatementText
     )
 
   /** Tenant creation is an inherently cross-tenant action (it mints a brand-new isolation scope),
@@ -223,4 +236,84 @@ final class TenantHandlers(
             Left((StatusCode.BadRequest, ErrorResponse("invalid_auth_provider", err.message)))
           case Left(err) =>
             Left((StatusCode.Conflict, ErrorResponse("update_failed", err.message)))
+        }
+
+  /** Patch the tenant's data-access authorization. The OPA token is write-only: never returned,
+    * never logged, and the audit row only records that it changed.
+    */
+  def setTenantAcl(req: SetTenantAclRequest, apiKey: Option[String])(
+      scopeOf: String => Option[SessionScope]
+  ): Out[TenantResponse] =
+    TenantScopeCheck.reject(apiKey, req.name)(scopeOf) match
+      case Some(err) =>
+        audit.rest(
+          apiKey,
+          "control-plane",
+          AuditActions.TenantAclUpdate,
+          "denied",
+          tenant = Some(req.name)
+        )
+        IO.pure(Left(err))
+      case None =>
+        val patch = ai.starlake.quack.model.TenantAclPatch(
+          mode = req.mode,
+          opaUrl = req.opaUrl,
+          opaPolicyPath = req.opaPolicyPath,
+          opaToken = req.opaToken,
+          sendStatementText = req.sendStatementText
+        )
+        sup.setTenantAcl(req.name, patch, opaCfg.url, opaCfg.defaultMode).map {
+          case Right(t) =>
+            audit.rest(
+              apiKey,
+              "control-plane",
+              AuditActions.TenantAclUpdate,
+              "ok",
+              tenant = Some(t.id),
+              target = Some(t.id),
+              detail = Map("mode" -> t.acl.effectiveMode(opaCfg.defaultMode)) ++
+                req.opaToken.map(_ => "opaToken" -> "changed")
+            )
+            Right(toResponse(t))
+          case Left(err: SupervisorError.NotFound) =>
+            Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+          case Left(err: SupervisorError.InvalidArgument) =>
+            val (code, msg) = err.message.split(": ", 2) match
+              case Array(c, m) => (c, m)
+              case _           => ("invalid_acl", err.message)
+            Left((StatusCode.BadRequest, ErrorResponse(code, msg)))
+          case Left(err) =>
+            Left((StatusCode.Conflict, ErrorResponse("update_failed", err.message)))
+        }
+
+  /** OPA dry run (see [[OpaDryRun]]): returns the exact input and the tenant OPA's answer. */
+  def opaTest(req: OpaTestRequest, apiKey: Option[String])(
+      scopeOf: String => Option[SessionScope]
+  ): Out[OpaTestResponse] =
+    TenantScopeCheck.reject(apiKey, req.tenant)(scopeOf) match
+      case Some(err) =>
+        audit.rest(
+          apiKey,
+          "control-plane",
+          AuditActions.TenantOpaTest,
+          "denied",
+          tenant = Some(req.tenant)
+        )
+        IO.pure(Left(err))
+      case None =>
+        IO.blocking(OpaDryRun.run(sup, opa, req)).map {
+          case Left(("not_found", msg)) =>
+            Left((StatusCode.NotFound, ErrorResponse("not_found", msg)))
+          case Left((code, msg)) => Left((StatusCode.BadRequest, ErrorResponse(code, msg)))
+          case Right(resp)       =>
+            audit.rest(
+              apiKey,
+              "control-plane",
+              AuditActions.TenantOpaTest,
+              "ok",
+              tenant = Some(req.tenant),
+              target = Some(req.pool),
+              detail = Map("rule" -> resp.rule, "outcome" -> resp.outcome)
+            )
+            Right(resp)
         }

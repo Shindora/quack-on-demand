@@ -43,3 +43,14 @@ object TenantAcl:
       val scheme = Option(uri.getScheme).map(_.toLowerCase)
       (scheme.contains("http") || scheme.contains("https")) && Option(uri.getHost).nonEmpty
     }
+
+/** A partial update of [[TenantAcl]]: an omitted field (None) keeps the stored value, `Some("")`
+  * clears it (mode `""` = the manager default, opaToken `""` = no token).
+  */
+final case class TenantAclPatch(
+    mode: Option[String] = None,
+    opaUrl: Option[String] = None,
+    opaPolicyPath: Option[String] = None,
+    opaToken: Option[String] = None,
+    sendStatementText: Option[Boolean] = None
+)
