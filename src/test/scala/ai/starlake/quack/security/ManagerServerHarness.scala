@@ -45,7 +45,7 @@ object ManagerServerHarness:
   // Minimal ManagerConfig for the harness. Port 0 = OS-assigned.
   // All fields that affect boot must be set to safe no-op values.
   // ------------------------------------------------------------------
-  private def minimalManagerConfig(port: Int = 0): ManagerConfig = ManagerConfig(
+  private[security] def minimalManagerConfig(port: Int = 0): ManagerConfig = ManagerConfig(
     host = "127.0.0.1",
     port = port,
     apiKey = None, // open REST namespace
