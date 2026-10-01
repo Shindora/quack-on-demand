@@ -152,6 +152,13 @@ object DemoRunner:
         password = ms.pgPassword
       )
     )
+    val opaCfg = ai.starlake.quack.edge.config.OpaConfig
+      .validate(
+        ConfigSource.default
+          .at("quack-flightsql.opa")
+          .loadOrThrow[ai.starlake.quack.edge.config.OpaConfig]
+      )
+      .fold(err => throw new IllegalArgumentException(err), identity)
     val metricsCfg =
       ConfigSource.default
         .at("quack-on-demand.metrics")
@@ -171,4 +178,4 @@ object DemoRunner:
       println(banner)
     }
     printWhenReady.start *>
-      Main.bootManager(configs.manager, configs.flight, authCfg, configs.acl, metricsCfg)
+      Main.bootManager(configs.manager, configs.flight, authCfg, configs.acl, metricsCfg, opaCfg)

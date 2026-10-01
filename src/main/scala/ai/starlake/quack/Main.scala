@@ -231,6 +231,7 @@ object Main extends IOApp with LazyLogging:
         resolvedAuth,
         aclCfg,
         metricsCfg,
+        opaCfg,
         lockdownCfg = lockdownCfg,
         modules = ai.starlake.quack.ondemand.module.ModuleLoader.discover(),
         quackCfg = Some(quackCfg)
@@ -243,6 +244,10 @@ object Main extends IOApp with LazyLogging:
       authCfg: AuthenticationConfig,
       aclCfg: AclConfig,
       metricsCfg: MetricsConfig,
+      /** Validated `quack-flightsql.opa` block (`OpaConfig.validate`). No default: every caller
+        * must load and validate it, so a bad QOD_ACL_MODE / QOD_OPA_URL fails boot everywhere.
+        */
+      opaCfg: OpaConfig,
       lockdownCfg: NodeLockdownConfig = NodeLockdownConfig(enabled = false),
       modules: List[ai.starlake.quack.spi.ManagerModule] = Nil,
       /** The native Quack front door block; loaded from `quack-native` when the caller does not
@@ -830,8 +835,7 @@ object Main extends IOApp with LazyLogging:
         .effectiveNativeClient(mgrCfg.nativeClient),
       nodeDisableSsl = mgrCfg.nodeDisableSsl
     )
-    val adapter                          = new QuackHttpAdapter(client, tracker)
-    val aclValidator: StatementValidator = BootFactories.aclValidator(aclCfg, mgrCfg, sup)
+    val adapter = new QuackHttpAdapter(client, tracker)
     logger.info(
       s"node lockdown: ${if lockdownCfg.enabled then "enabled" else "disabled"}"
     )
@@ -950,6 +954,31 @@ object Main extends IOApp with LazyLogging:
         stmtInstruments: StatementInstruments
     ): IO[Unit] =
       val classifier = EdgeRewriters.statementClassifier()
+      // ONE OPA authorizer per manager (one HttpClient, one decision cache), shared by the
+      // statement validator below, the handshake and the admin dry-run.
+      val opaAuthorizer = new ai.starlake.quack.edge.opa.OpaAuthorizer(
+        opaCfg,
+        new ai.starlake.quack.edge.opa.OpaClient(
+          opaCfg.timeoutMs,
+          ai.starlake.quack.edge.opa.OpaClient.jdkPost(opaCfg.timeoutMs)
+        ),
+        new ai.starlake.quack.edge.opa.OpaDecisionCache(opaCfg.cacheTtlSec),
+        new ai.starlake.quack.observability.metrics.OpaInstruments(metricsReg.composite)
+      )
+      val aclValidator: StatementValidator =
+        BootFactories.aclValidator(aclCfg, mgrCfg, sup, opaCfg, opaAuthorizer)
+      // Runs after sup.restore() (tenants are loaded by then): an OPA-mode tenant with no URL
+      // anywhere has every decision refused, which is fail-closed but worth shouting about.
+      def warnOpaTenantsWithoutUrl(): Unit =
+        sup
+          .listTenants()
+          .filter(t => t.acl.isOpa(opaCfg.defaultMode) && t.acl.effectiveUrl(opaCfg.url).isEmpty)
+          .foreach(t =>
+            logger.warn(
+              s"tenant '${t.id}' is in OPA mode but has no OPA URL (set QOD_OPA_URL or the " +
+                "tenant's opaUrl); every decision for it will be refused"
+            )
+          )
       // ONE catalog instance (hence one cache) shared by the SELECT-path rewriter and the
       // write-path guard, so both resolve a table's columns identically AND the metastore fetch
       // is not doubled on cold misses.
@@ -1763,6 +1792,7 @@ object Main extends IOApp with LazyLogging:
         // One-shot purge at boot: single-manager mode never runs the HA leader's
         // periodic purge of expired denylist rows.
         IO.delay(store.purgeExpiredRevokedJti(java.time.Instant.now())) *>
+        IO.delay(warnOpaTenantsWithoutUrl()) *>
         // Managed object store reachability probe. Advisory only: an unreachable or
         // mis-credentialed bucket must never stop the manager from booting. It does
         // not gate managed tenant-db creates either - those still succeed at the

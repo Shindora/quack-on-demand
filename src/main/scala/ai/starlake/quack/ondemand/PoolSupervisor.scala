@@ -912,6 +912,18 @@ final class PoolSupervisor(
       .map(parentId => poolRows.values.filter(_.tenantDbId == parentId).map(_.id).toSet)
       .getOrElse(Set.empty)
 
+  /** Pool names of a branch pool's parent tenant-db (empty for a non-branch pool). Feeds the OPA
+    * input's `parentPool`, mirroring the pool-grant inheritance in authorizeHandshake.
+    */
+  def parentPoolNamesOf(key: PoolKey): List[String] =
+    if !ai.starlake.quack.ondemand.branch.BranchNames.isBranchPool(key.pool) then Nil
+    else
+      tenantDbs.values
+        .find(td => td.tenantId == key.tenant && td.name == key.tenantDb)
+        .flatMap(_.branchOf)
+        .map(parentId => poolRows.values.filter(_.tenantDbId == parentId).map(_.name).toList.sorted)
+        .getOrElse(Nil)
+
   /** NodeSpec for the ephemeral merge node (design section 4.5): the parent's maintenance-node
     * shape (same catalog ATTACH, secrets, lockdown) plus the branch catalog attached read-only as
     * [[ai.starlake.quack.ondemand.branch.BranchMergeSql.BranchAlias]]. The object-store secret is
