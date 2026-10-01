@@ -76,7 +76,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     val eff = effectiveWith(permissions = Nil)
     val ctx = mkCtx("SELECT * FROM fedpg.public.orders", eff)
     validator.validate(ctx) match
-      case Denied(msg, _) => msg should include("fedpg")
+      case Denied(msg, _, _) => msg should include("fedpg")
       case other          => fail(s"expected Denied, got $other")
   }
 
@@ -101,7 +101,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
       eff
     )
     validator.validate(ctx) match
-      case Denied(msg, _) => msg should (include("fedpg") or include("orders"))
+      case Denied(msg, _, _) => msg should (include("fedpg") or include("orders"))
       case other          => fail(s"expected Denied, got $other")
   }
 
@@ -128,7 +128,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
       effectiveSet = None
     )
     validator.validate(ctx) match
-      case Denied(msg, _) => msg should include("no RBAC")
+      case Denied(msg, _, _) => msg should include("no RBAC")
       case other          => fail(s"expected Denied, got $other")
   }
 
@@ -176,7 +176,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     val eff = effectiveWith(permissions = Nil)
     val ctx = mkAcmeCtx("SELECT * FROM tpch1.customer", eff)
     catalogAware.validate(ctx) match
-      case Denied(msg, _) => msg should include("acme_tpch.tpch1.customer")
+      case Denied(msg, _, _) => msg should include("acme_tpch.tpch1.customer")
       case other          => fail(s"expected Denied, got $other")
   }
 
@@ -288,7 +288,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
         ungranted
       )
     ) match
-      case Denied(msg, _) =>
+      case Denied(msg, _, _) =>
         msg should include("tpch1.customer")
         msg should not include "information_schema"
       case other => fail(s"expected Denied, got $other")
@@ -335,7 +335,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     filteredMeta.validate(
       mkAcmeCtx("INSERT INTO tpch1.mine SELECT table_name FROM information_schema.tables", eff)
     ) match
-      case Denied(msg, _) => msg should include("information_schema")
+      case Denied(msg, _, _) => msg should include("information_schema")
       case other          => fail(s"expected Denied, got $other")
 
     filteredMeta.validate(
@@ -344,14 +344,14 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
         eff
       )
     ) match
-      case Denied(msg, _) => msg should include("information_schema")
+      case Denied(msg, _, _) => msg should include("information_schema")
       case other          => fail(s"expected Denied, got $other")
   }
 
   it should "keep requiring the grant when the flag is off" in {
     val eff = effectiveWith(permissions = Nil)
     catalogAware.validate(mkAcmeCtx("SELECT * FROM information_schema.tables", eff)) match
-      case Denied(msg, _) => msg should include("information_schema")
+      case Denied(msg, _, _) => msg should include("information_schema")
       case other          => fail(s"expected Denied, got $other")
   }
 
@@ -393,7 +393,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
         ungranted
       )
     ) match
-      case Denied(msg, _) =>
+      case Denied(msg, _, _) =>
         msg should include("tpch1.customer")
         msg should not include "duckdb_tables"
       case other => fail(s"expected Denied, got $other")
@@ -404,12 +404,12 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     filteredMeta.validate(
       mkAcmeCtx("SELECT * FROM read_parquet('/data/secret.parquet')", eff)
     ) match
-      case Denied(msg, _) => msg should include("read_parquet")
+      case Denied(msg, _, _) => msg should include("read_parquet")
       case other          => fail(s"expected Denied, got $other")
     // A qualified call and an argument-carrying call are not the shape the rewriter filters.
     filteredMeta.validate(mkAcmeCtx("SELECT * FROM main.duckdb_tables()", eff)) shouldBe a[Denied]
     filteredMeta.validate(mkAcmeCtx("SELECT * FROM duckdb_tables('x')", eff)) match
-      case Denied(msg, _) => msg should include("duckdb_tables")
+      case Denied(msg, _, _) => msg should include("duckdb_tables")
       case other          => fail(s"expected Denied, got $other")
   }
 
@@ -419,7 +419,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     // unfiltered dump of every catalog's DDL.
     val eff = effectiveWith(List(perm("acme_tpch", "*", "*", "RO")))
     filteredMeta.validate(mkAcmeCtx("SELECT sql FROM duckdb_tables", eff)) match
-      case Denied(msg, _) => msg should include("duckdb_tables")
+      case Denied(msg, _, _) => msg should include("duckdb_tables")
       case other          => fail(s"expected Denied, got $other")
     catalogAware.validate(mkAcmeCtx("SELECT sql FROM duckdb_tables", eff)) shouldBe a[Denied]
     filteredMeta
@@ -433,19 +433,19 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     filteredMeta.validate(
       mkAcmeCtx("INSERT INTO tpch1.mine SELECT table_name FROM duckdb_tables()", eff)
     ) match
-      case Denied(msg, _) => msg should include("duckdb_tables")
+      case Denied(msg, _, _) => msg should include("duckdb_tables")
       case other          => fail(s"expected Denied, got $other")
     filteredMeta.validate(
       mkAcmeCtx("CREATE TABLE tpch1.mine2 AS SELECT table_name FROM duckdb_tables()", eff)
     ) match
-      case Denied(msg, _) => msg should include("duckdb_tables")
+      case Denied(msg, _, _) => msg should include("duckdb_tables")
       case other          => fail(s"expected Denied, got $other")
   }
 
   it should "keep requiring wildcard ALL for catalog functions when the flag is off" in {
     val eff = effectiveWith(permissions = Nil)
     catalogAware.validate(mkAcmeCtx(ClientSync, eff)) match
-      case Denied(msg, _) => msg should include("duckdb_tables")
+      case Denied(msg, _, _) => msg should include("duckdb_tables")
       case other          => fail(s"expected Denied, got $other")
     val wildcard = effectiveWith(List(perm("*", "*", "*", "ALL")))
     catalogAware.validate(mkAcmeCtx(ClientSync, wildcard)) shouldBe Allowed
@@ -499,7 +499,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
       ).foreach { sql =>
         withClue(sql) {
           catalogAware.validate(mkAcmeCtx(sql, wildcard)) match
-            case Denied(msg, _) => msg should include("resolves its target at run time")
+            case Denied(msg, _, _) => msg should include("resolves its target at run time")
             case other          => fail(s"expected Denied, got $other")
         }
       }

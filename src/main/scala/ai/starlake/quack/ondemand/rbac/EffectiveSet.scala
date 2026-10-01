@@ -23,5 +23,8 @@ final case class EffectiveSet(
     permissions: List[RolePermission],
     poolPerms: List[PoolPermission],
     columnPolicies: List[RoleColumnPolicy] = Nil,
-    rowPolicies: List[RoleRowPolicy] = Nil
+    rowPolicies: List[RoleRowPolicy] = Nil,
+    // Verified token claims of the session that pinned this set; never part of the
+    // effective-set cache key (copied in after the cache lookup).
+    claims: Map[String, String] = Map.empty
 )

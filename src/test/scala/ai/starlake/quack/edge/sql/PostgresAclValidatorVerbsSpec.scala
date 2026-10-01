@@ -101,7 +101,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
     val e = eff("u1", Some("t1"), Nil)
     val result = validator.validate(ctx("SELECT * FROM acme.public.t", "u1", e))
     result match
-      case Denied(msg, _) => msg should include("acme")
+      case Denied(msg, _, _) => msg should include("acme")
       case Allowed        => fail("expected Denied for user with no grants, got Allowed")
   }
 
@@ -119,7 +119,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
     val e = eff("u1", Some("t1"), List(perm("acme", "public", "t", "RO")))
     val result = validator.validate(ctx("INSERT INTO acme.public.t VALUES (1)", "u1", e))
     result match
-      case Denied(msg, _) => msg should (include("acme") or include("Write"))
+      case Denied(msg, _, _) => msg should (include("acme") or include("Write"))
       case Allowed        => fail("expected Denied for INSERT with RO-only grant, got Allowed")
   }
 
@@ -136,7 +136,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
       ctx("UPDATE acme.public.t SET col = 1 WHERE id = 1", "u1", e)
     )
     result match
-      case Denied(_, _) => succeed
+      case Denied(_, _, _) => succeed
       case Allowed      => fail("expected Denied for UPDATE with RO-only grant, got Allowed")
   }
 
@@ -153,7 +153,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
       ctx("CREATE TABLE acme.public.newtable (id INT)", "u1", e)
     )
     result match
-      case Denied(_, _) => succeed
+      case Denied(_, _, _) => succeed
       case Allowed      => fail("expected Denied for CREATE without DDL/ALL grant, got Allowed")
   }
 
@@ -194,7 +194,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
       effectiveSet    = None
     )
     validator.validate(noEffCtx) match
-      case Denied(msg, _) => msg should include("no RBAC")
+      case Denied(msg, _, _) => msg should include("no RBAC")
       case Allowed        => fail("expected Denied when no EffectiveSet bound, got Allowed")
   }
 
@@ -212,7 +212,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
       ctx("INSERT INTO acme.public.target SELECT * FROM acme.public.source", "u1", e)
     )
     result match
-      case Denied(_, _) => succeed
+      case Denied(_, _, _) => succeed
       case Allowed      =>
         fail(
           "expected Denied for INSERT...SELECT when only RW grant on target exists (no Read on source)"
@@ -231,7 +231,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
       ctx("SELECT * FROM other.public.t", "u1", e)
     )
     result match
-      case Denied(_, _) => succeed
+      case Denied(_, _, _) => succeed
       case Allowed      =>
         fail("expected Denied for cross-tenant catalog wildcard, got Allowed")
   }
@@ -256,7 +256,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
       ctx("SELECT * FROM acme.public.t", "u1", e)
     )
     result match
-      case Denied(_, _) => succeed
+      case Denied(_, _, _) => succeed
       case Allowed      =>
         fail("expected Denied when session tenant has no catalogs, got Allowed")
   }

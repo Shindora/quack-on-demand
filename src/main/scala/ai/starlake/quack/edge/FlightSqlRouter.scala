@@ -9,7 +9,8 @@ import ai.starlake.quack.edge.sql.{
   Denied,
   LockdownScreen,
   StatementValidator,
-  ValidationContext
+  ValidationContext,
+  ValidatorUnavailable
 }
 import ai.starlake.quack.model.{PoolKey, SqlLiterals, StatementKind, TenantDb}
 import ai.starlake.quack.ondemand.PoolSupervisor
@@ -136,7 +137,11 @@ final class FlightSqlRouter(
       /** Audit origin of the statement: `"flightsql"` for the Arrow edge, `"quack"` for the native
         * Quack front door. Recorded on the denial and write audit events.
         */
-      source: String = "flightsql"
+      source: String = "flightsql",
+      /** Extra denial-audit details merged into the "data-denial" event, e.g. the OPA validator's
+        * `authz_source` / `opa_decision_id`. Ignored on every other status.
+        */
+      auditMeta: Map[String, String] = Map.empty
   ): Unit =
     // A claim-shaped statement is redacted before it reaches ANY sink below, whether it was
     // ultimately admitted, denied, or (with the dialect off or adminDispatch=false) simply
@@ -204,7 +209,8 @@ final class FlightSqlRouter(
                 "denied" -> deniedRefs.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")
               )
               .toMap ++
-            recordedError.map("reason" -> _.take(500)).toMap,
+            recordedError.map("reason" -> _.take(500)).toMap ++
+            auditMeta,
           patId
         )
       )
@@ -435,7 +441,13 @@ final class FlightSqlRouter(
       defaultDatabase = maybeState.flatMap(_.defaultDatabase).orElse(perKindDb),
       defaultSchema = maybeState.flatMap(_.defaultSchema).orElse(perKindSchema),
       effectiveSet = effectiveSet,
-      attachedCatalogs = attachedCatalogsOf(poolKey)
+      attachedCatalogs = attachedCatalogsOf(poolKey),
+      poolKey = Some(poolKey),
+      edge = source,
+      statementClass = kind match
+        case StatementKind.Ddl => "DDL"
+        case StatementKind.Dml => "WRITE"
+        case _                 => "READ"
     )
     // No-op for probes. deniedRefs is non-empty only on the ACL denial arm and
     // feeds the journal event's "denied" key.
@@ -445,7 +457,8 @@ final class FlightSqlRouter(
         status: String,
         error: Option[String],
         deniedRefs: Set[TableAccess] = Set.empty,
-        prepMs: Option[Long] = prepareDurationMs
+        prepMs: Option[Long] = prepareDurationMs,
+        auditMeta: Map[String, String] = Map.empty
     ): Unit =
       if recordExecution then
         val realm = if effectiveSet.exists(_.user.tenant.isEmpty) then "system" else "tenant"
@@ -462,7 +475,8 @@ final class FlightSqlRouter(
           realm,
           prepMs,
           patId,
-          source
+          source,
+          auditMeta
         )
 
     // Node lockdown, resolved per pool (tri-state: pool override else global default).
@@ -484,15 +498,19 @@ final class FlightSqlRouter(
         Left(RouterFailure.AccessDenied(s"access denied: lockdown: $reason"))
       case None =>
         validator.validate(ctx) match
-          case Denied(reason, deniedRefs) =>
+          case Denied(reason, deniedRefs, meta) =>
             maybeRecord(
               nodeId = "-",
               durationMs = 0,
               status = "denied",
               error = Some(reason),
-              deniedRefs = deniedRefs
+              deniedRefs = deniedRefs,
+              auditMeta = meta
             )
             Left(RouterFailure.AccessDenied(s"access denied: $reason"))
+          case ValidatorUnavailable(reason) =>
+            maybeRecord(nodeId = "-", durationMs = 0, status = "transient", error = Some(reason))
+            Left(RouterFailure.Unavailable(s"authorization service unavailable: $reason"))
           case Allowed => Right(())
 
     // Per-catalog read-only screen. Runs AFTER the ACL gate so a principal that lacks the grant
