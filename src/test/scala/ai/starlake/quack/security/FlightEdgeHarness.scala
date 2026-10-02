@@ -129,7 +129,9 @@ object FlightEdgeHarness:
       lockdownFor: PoolSupervisor => PoolKey => Boolean = _ => _ => false,
       deniedBuckets: PoolSupervisor => () => Set[String] = _ => () => Set.empty,
       journal: EventJournal = EventJournal.noop,
-      spawnNodes: Boolean = false
+      spawnNodes: Boolean = false,
+      metadataFilterRewriter: ai.starlake.quack.edge.meta.MetadataFilterRewriter =
+        new ai.starlake.quack.edge.meta.MetadataFilterRewriter(enabled = false)
   )
 
   /** Boot a [[FlightEdgeServer]] on an ephemeral loopback port.
@@ -193,7 +195,8 @@ object FlightEdgeHarness:
       journal = wiring.journal,
       lockdownFor = wiring.lockdownFor(sup),
       deniedBuckets = wiring.deniedBuckets(sup),
-      protectedWriteGuard = wiring.protectedWriteGuard
+      protectedWriteGuard = wiring.protectedWriteGuard,
+      metadataFilterRewriter = wiring.metadataFilterRewriter
     )
 
     val authSvc = new InMemoryAuthService.Service(store, providersEnabled = enableProviders)

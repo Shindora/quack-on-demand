@@ -116,11 +116,12 @@ object OpaEdgeFixtures:
   /** The production `TenantRoutingValidator` (QoD arm + OPA arm) for a supervisor. */
   def validator(
       opa: OpaAuthorizer,
-      aclEnabled: Boolean = true
+      aclEnabled: Boolean = true,
+      filteredMetadata: Boolean = true
   ): PoolSupervisor => StatementValidator =
     sup =>
       BootFactories.aclValidator(
-        AclConfig(enabled = aclEnabled, dialect = "duckdb"),
+        AclConfig(enabled = aclEnabled, dialect = "duckdb", filteredMetadata = filteredMetadata),
         ManagerServerHarness.minimalManagerConfig(),
         sup,
         OpaConfig.default,

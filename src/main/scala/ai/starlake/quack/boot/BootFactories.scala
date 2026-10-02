@@ -119,6 +119,20 @@ object BootFactories extends LazyLogging:
         )
       case other => sys.error(s"unknown federation.secretStore: '$other'")
 
+  /** Whether the edge's system-catalog filter is mounted. ONE value decides both the filter mount
+    * (Main) and every validator arm's implicit metadata admit: an admit is only safe while the
+    * filter that narrows those rows is mounted, so the two must never be able to disagree. With ACL
+    * off nothing is filtered (there is no principal to filter for), so the conjunction.
+    */
+  def metadataFilterMounted(aclCfg: AclConfig): Boolean =
+    aclCfg.enabled && aclCfg.filteredMetadata
+
+  /** The edge's system-catalog filter, mounted from [[metadataFilterMounted]]. */
+  def metadataFilterRewriter(
+      aclCfg: AclConfig
+  ): ai.starlake.quack.edge.meta.MetadataFilterRewriter =
+    new ai.starlake.quack.edge.meta.MetadataFilterRewriter(enabled = metadataFilterMounted(aclCfg))
+
   /** SQL ACL validator, routed per tenant. A `qod`-mode tenant goes to the RBAC-backed
     * PostgresAclValidator (reading the cached EffectiveSet pinned on ConnectionContext at handshake
     * time), or to allow-all when acl.enabled=false (local-dev workflows). An `opa`-mode tenant goes
@@ -136,6 +150,8 @@ object BootFactories extends LazyLogging:
     val defaultSchema =
       if mgrCfg.defaultMetastore.schemaName.nonEmpty then mgrCfg.defaultMetastore.schemaName
       else "main"
+    // ONE value for every arm's implicit metadata admit and the filter mount (Main).
+    val filterMounted              = metadataFilterMounted(aclCfg)
     val qodArm: StatementValidator =
       if !aclCfg.enabled then
         logger.warn("SQL ACL disabled (set quack-flightsql.acl.enabled=true to enforce).")
@@ -160,10 +176,9 @@ object BootFactories extends LazyLogging:
               .getTenantById(tenantId)
               .map(t => sup.listTenantDbsByTenant(t.id).map(_.name).toSet)
               .getOrElse(Set.empty),
-          // Same AclConfig value that mounts the edge metadata rewriter, so the
-          // validator can never admit an information_schema read the rewriter
-          // would then leave unfiltered.
-          filteredMetadata = aclCfg.filteredMetadata
+          // Same value that mounts the edge metadata rewriter, so the validator can never
+          // admit an information_schema read the rewriter would then leave unfiltered.
+          filteredMetadata = filterMounted
         )
     val opaArm = new OpaValidator(
       opa,
@@ -172,7 +187,9 @@ object BootFactories extends LazyLogging:
       defaultDatabase = defaultDb,
       defaultSchema = defaultSchema,
       dialect = aclCfg.dialect,
-      filteredMetadata = aclCfg.filteredMetadata
+      // NOT aclCfg.filteredMetadata: on acl.enabled=false the filter is not mounted, and an
+      // implicit admit there would let an opa tenant read the whole catalog with no decision.
+      filteredMetadata = filterMounted
     )
     new TenantRoutingValidator(
       qodArm,

@@ -1213,13 +1213,9 @@ object Main extends IOApp with LazyLogging:
         placement = placementDirectory,
         cacheAwareRouting = mgrCfg.routing.cacheAware,
         loadCapFactor = mgrCfg.routing.loadCapFactor,
-        // Same AclConfig value BootFactories hands the validator's implicit admit: the
-        // admit is only safe while the filter that narrows those rows is mounted, so the
-        // two must never be able to disagree. With ACL off nothing is admitted implicitly
-        // and there is no principal to filter for, hence the conjunction.
-        metadataFilterRewriter = new ai.starlake.quack.edge.meta.MetadataFilterRewriter(
-          enabled = aclCfg.enabled && aclCfg.filteredMetadata
-        ),
+        // Same value BootFactories hands every validator arm's implicit admit (QoD and OPA):
+        // see BootFactories.metadataFilterMounted.
+        metadataFilterRewriter = BootFactories.metadataFilterRewriter(aclCfg),
         protectedWriteGuard = protectedWriteGuard,
         adminExecutor = adminExecutor
       )
