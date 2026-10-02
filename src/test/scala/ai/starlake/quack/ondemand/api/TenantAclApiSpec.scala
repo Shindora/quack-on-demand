@@ -70,6 +70,19 @@ class TenantAclApiSpec extends AnyFlatSpec with Matchers with SecurityHttpHelper
       cursor(r4).get[Option[String]]("aclMode") shouldBe Right(None)
     }
 
+  it should "persist the acl, and keep it through a later setAuth of the same tenant" in {
+    val fix = SecurityFixtures.freshStore()
+    val h   = ManagerServerHarness.boot(fix.store, staticApiKey = Some(ApiKey))
+    try
+      cursor(
+        postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":"opa","opaUrl":"http://opa"}""")
+      )
+      fix.store.listTenants().find(_.id == t).map(_.acl.mode) shouldBe Some(Some("opa"))
+      cursor(postJson(h, "/api/tenant/setAuth", s"""{"name":"$t","authProvider":"db"}"""))
+      fix.store.listTenants().find(_.id == t).map(_.acl.opaUrl) shouldBe Some(Some("http://opa"))
+    finally h.shutdown()
+  }
+
   it should "clear the stored token when opaUrl changes without a new token" in withHarness() { h =>
     cursor(
       postJson(

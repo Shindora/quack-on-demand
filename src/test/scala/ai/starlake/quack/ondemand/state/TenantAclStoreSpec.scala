@@ -39,3 +39,53 @@ class TenantAclStoreSpec extends AnyFlatSpec with Matchers:
     store.upsertTenant(Tenant("globex"))
     store.listTenants().find(_.id == "globex").map(_.acl) shouldBe Some(TenantAcl())
   }
+
+  private val opaAcl = TenantAcl(
+    mode = Some("opa"),
+    opaUrl = Some("http://opa:8181"),
+    opaPolicyPath = Some("acme/authz"),
+    opaToken = Some("s3cret"),
+    sendStatementText = true
+  )
+
+  it should "never let a full-row upsert of an existing tenant change its acl" in withStore {
+    store =>
+      store.upsertTenant(Tenant("acme", "Acme"))
+      store.updateTenantAcl("acme", opaAcl)
+      // A concurrent setTenantAuth / setTenantDisabled read the row BEFORE the acl write and
+      // upserts its stale copy: the acl must survive, the other columns must land.
+      store.upsertTenant(Tenant("acme", "Acme Corp", disabled = true, acl = TenantAcl()))
+      val row = store.listTenants().find(_.id == "acme").get
+      row.acl shouldBe opaAcl
+      row.displayName shouldBe "Acme Corp"
+      row.disabled shouldBe true
+  }
+
+  it should "write the acl of a NEW tenant on insert" in withStore { store =>
+    store.upsertTenant(Tenant("initech", acl = opaAcl))
+    store.listTenants().find(_.id == "initech").map(_.acl) shouldBe Some(opaAcl)
+  }
+
+  it should "change only the acl columns with updateTenantAcl" in withStore { store =>
+    store.upsertTenant(
+      Tenant(
+        "acme",
+        "Acme",
+        disabled = true,
+        authProvider = "keycloak",
+        authConfig = Map("k" -> "v")
+      )
+    )
+    store.updateTenantAcl("acme", opaAcl)
+    val row = store.listTenants().find(_.id == "acme").get
+    row shouldBe Tenant(
+      "acme",
+      "Acme",
+      disabled = true,
+      authProvider = "keycloak",
+      authConfig = Map("k" -> "v"),
+      acl = opaAcl
+    )
+    store.updateTenantAcl("acme", TenantAcl())
+    store.listTenants().find(_.id == "acme").get.acl shouldBe TenantAcl()
+  }

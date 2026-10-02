@@ -92,13 +92,10 @@ final class PostgresControlPlaneStore(
         |  display_name            = EXCLUDED.display_name,
         |  disabled                = EXCLUDED.disabled,
         |  auth_provider           = EXCLUDED.auth_provider,
-        |  auth_config             = EXCLUDED.auth_config,
-        |  acl_mode                = EXCLUDED.acl_mode,
-        |  opa_url                 = EXCLUDED.opa_url,
-        |  opa_policy_path         = EXCLUDED.opa_policy_path,
-        |  opa_token               = EXCLUDED.opa_token,
-        |  opa_send_statement_text = EXCLUDED.opa_send_statement_text""".stripMargin
+        |  auth_config             = EXCLUDED.auth_config""".stripMargin
     )
+    // The acl columns are bound for the INSERT arm only: the conflict arm deliberately leaves
+    // them alone (see ControlPlaneStore.upsertTenant), so a stale full row cannot revert them.
     try
       ps.setString(1, t.id)
       ps.setString(2, if t.displayName.nonEmpty then t.displayName else t.id)
@@ -106,6 +103,20 @@ final class PostgresControlPlaneStore(
       ps.setString(4, t.authProvider)
       ps.setString(5, mapToJson(t.authConfig))
       bindAcl(ps, 6, t.acl)
+      ps.executeUpdate()
+    finally ps.close()
+  }
+
+  def updateTenantAcl(tenantId: String, acl: TenantAcl): Unit = withConn { c =>
+    val ps = c.prepareStatement(
+      """UPDATE qodstate_tenant SET
+        |  acl_mode = ?, opa_url = ?, opa_policy_path = ?, opa_token = ?,
+        |  opa_send_statement_text = ?
+        |WHERE id = ?""".stripMargin
+    )
+    try
+      bindAcl(ps, 1, acl)
+      ps.setString(6, tenantId)
       ps.executeUpdate()
     finally ps.close()
   }

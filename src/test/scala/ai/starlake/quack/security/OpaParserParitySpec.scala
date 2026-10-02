@@ -3,7 +3,7 @@ package ai.starlake.quack.security
 import ai.starlake.quack.edge.adapter.NodeLoadTracker
 import ai.starlake.quack.edge.opa.OpaInput
 import ai.starlake.quack.edge.sql.{Denied, StatementValidator, ValidationContext}
-import ai.starlake.quack.model.{PoolKey, StatementKind, Tenant, TenantAcl}
+import ai.starlake.quack.model.{PoolKey, StatementKind, TenantAcl}
 import ai.starlake.quack.ondemand.PoolSupervisor
 import ai.starlake.quack.ondemand.rbac.EffectiveSet
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
@@ -115,14 +115,7 @@ class OpaParserParitySpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     }.toMap
 
     // 2. Same tenant flipped to qod mode: the QoD arm's unauthorized set for the same contexts.
-    fix.store.upsertTenant(
-      Tenant(
-        id = SecurityFixtures.TenantId,
-        displayName = SecurityFixtures.TenantName,
-        authProvider = "db",
-        acl = TenantAcl(Some("qod"))
-      )
-    )
+    fix.store.updateTenantAcl(SecurityFixtures.TenantId, TenantAcl(Some("qod")))
     sup.restore()
     wm.resetAll()
     val qodSide: Map[String, Set[Access]] = corpus.map { (name, sql) =>

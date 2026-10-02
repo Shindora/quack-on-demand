@@ -1564,7 +1564,9 @@ final class PoolSupervisor(
             case Some((code, msg)) => Left(SupervisorError.InvalidArgument(s"$code: $msg"))
             case None              =>
               val updated = t.copy(acl = acl)
-              store.upsertTenant(updated)
+              // Column-scoped: the acl write and a concurrent full-row tenant write
+              // (setTenantAuth / setTenantDisabled) can never revert each other.
+              store.updateTenantAcl(updated.id, acl)
               tenants.put(updated.id, updated)
               publish.topologyChanged()
               Right(updated)

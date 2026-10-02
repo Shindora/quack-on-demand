@@ -632,6 +632,22 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
     s.listTenants().find(_.id == "acme").get.acl.opaToken shouldBe Some("real-token")
   }
 
+  it should "switch an existing tenant's acl to the manifest's" in {
+    val s = new InMemoryControlPlaneStore()
+    s.upsertTenant(Tenant(id = "acme", displayName = "acme"))
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(ManifestTenantAcl(mode = Some("opa"), opaUrl = Some("http://opa")))
+        )
+      )
+    )
+    ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
+    s.listTenants().find(_.id == "acme").get.acl shouldBe
+      ai.starlake.quack.model.TenantAcl(Some("opa"), Some("http://opa"))
+  }
+
   it should "refuse to carry a redacted opaToken over to a changed opaUrl" in {
     val s           = new InMemoryControlPlaneStore()
     val existingAcl =

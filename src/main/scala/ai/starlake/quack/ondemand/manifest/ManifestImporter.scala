@@ -296,7 +296,9 @@ object ManifestImporter:
           newId
         }
 
-        // Existing tenant: refresh top-level fields.
+        // Existing tenant: refresh top-level fields. upsertTenant never touches an existing
+        // row's acl, so a manifest that carries one writes it explicitly (column-scoped); an
+        // absent acl leaves the stored one as it is.
         if tenantIdFor(store, mt.name).contains(tenantId) then
           store.upsertTenant(
             Tenant(
@@ -308,6 +310,7 @@ object ManifestImporter:
               acl = resolvedAcl
             )
           )
+          if mt.acl.isDefined then store.updateTenantAcl(tenantId, resolvedAcl)
 
         // ---- TenantDbs: delete-then-upsert.
         val keepDbNames = mt.tenantDbs.map(_.name).toSet

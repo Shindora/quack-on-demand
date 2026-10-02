@@ -5,7 +5,7 @@ import ai.starlake.quack.edge.adapter.{QuackResponse, TestArrow}
 import ai.starlake.quack.edge.config.{AclConfig, OpaConfig}
 import ai.starlake.quack.edge.opa.{OpaAuthorizer, OpaClient, OpaDecisionCache}
 import ai.starlake.quack.edge.sql.StatementValidator
-import ai.starlake.quack.model.{Pool, RoleDistribution, Tenant, TenantAcl}
+import ai.starlake.quack.model.{Pool, RoleDistribution, TenantAcl}
 import ai.starlake.quack.observability.metrics.OpaInstruments
 import ai.starlake.quack.ondemand.PoolSupervisor
 import ai.starlake.quack.ondemand.state.PoolPermission
@@ -61,14 +61,8 @@ object OpaEdgeFixtures:
   def seed(opaUrl: String): SecurityFixtures.Fixture =
     val fix = SecurityFixtures.freshStore()
     val s   = fix.store
-    s.upsertTenant(
-      Tenant(
-        id = SecurityFixtures.TenantId,
-        displayName = SecurityFixtures.TenantName,
-        authProvider = "db",
-        acl = TenantAcl(Some("opa"), Some(opaUrl))
-      )
-    )
+    // The tenant row already exists: its acl changes only through updateTenantAcl.
+    s.updateTenantAcl(SecurityFixtures.TenantId, TenantAcl(Some("opa"), Some(opaUrl)))
     SecurityFixtures.addTenantB(fix)
     s.upsertPool(
       Pool(
