@@ -90,3 +90,27 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
     mtd.metastore.keySet should not contain "encryptionKey"
     mtd.metastore.get("dbName") shouldBe Some("tpch_secure")
   }
+
+  it should "export tenant acl with the OPA token redacted" in {
+    import ai.starlake.quack.model.TenantAcl
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(
+      Tenant(
+        id = "acme",
+        displayName = "acme",
+        acl = TenantAcl(Some("opa"), Some("http://opa"), None, Some("tok"))
+      )
+    )
+    val m   = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")
+    val acl = m.tenants.find(_.name == "acme").flatMap(_.acl).get
+    acl.mode shouldBe Some("opa")
+    acl.opaUrl shouldBe Some("http://opa")
+    acl.opaToken shouldBe Some(ai.starlake.quack.model.FederatedSecret.RedactedMarker)
+  }
+
+  it should "omit acl entirely for a tenant with no ACL override" in {
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(Tenant(id = "acme", displayName = "acme"))
+    val m = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")
+    m.tenants.find(_.name == "acme").flatMap(_.acl) shouldBe None
+  }

@@ -125,6 +125,25 @@ final case class ManifestPool(
     maxNodes: Option[Int] = None
 )
 
+/** Round-tripped from [[ai.starlake.quack.model.TenantAcl]]. `opaToken` is exported redacted
+  * (`FederatedSecret.RedactedMarker`) when set, never in the clear: it is a secret that never
+  * leaves the control plane. Defaulted so a pre-OPA manifest decodes unchanged with no ACL
+  * override.
+  */
+final case class ManifestTenantAcl(
+    mode: Option[String] = None,
+    opaUrl: Option[String] = None,
+    opaPolicyPath: Option[String] = None,
+    opaToken: Option[String] = None,
+    sendStatementText: Boolean = false
+):
+  /** Redact `opaToken` the same way [[ai.starlake.quack.model.TenantAcl.toString]] does, so a log
+    * line or exception message built from `s"$manifestTenant"` can never print the real value.
+    */
+  override def toString: String =
+    s"ManifestTenantAcl(mode=$mode,opaUrl=$opaUrl,opaPolicyPath=$opaPolicyPath,opaToken=${opaToken
+        .map(_ => ai.starlake.quack.model.FederatedSecret.RedactedMarker)},sendStatementText=$sendStatementText)"
+
 final case class ManifestTenant(
     // The tenant slug key (e.g. "acme").
     name: String,
@@ -134,7 +153,11 @@ final case class ManifestTenant(
     authProvider: String = "db",
     authConfig: Map[String, String] = Map.empty,
     tenantDbs: List[ManifestTenantDb] = Nil,
-    pools: List[ManifestPool] = Nil
+    pools: List[ManifestPool] = Nil,
+    // None means "not present in the manifest" and leaves an existing tenant's stored ACL
+    // untouched on import (see ManifestImporter.importAcl); it is NOT the same as an explicit
+    // default-valued ManifestTenantAcl, which would reset the ACL to manager defaults.
+    acl: Option[ManifestTenantAcl] = None
 )
 
 final case class ManifestTablePermission(
@@ -250,6 +273,7 @@ object ConfigManifest:
   given Codec[ManifestFederatedSource]  = ConfiguredCodec.derived
   given Codec[ManifestTenantDb]         = ConfiguredCodec.derived
   given Codec[ManifestPool]             = ConfiguredCodec.derived
+  given Codec[ManifestTenantAcl]        = ConfiguredCodec.derived
   given Codec[ManifestTenant]           = ConfiguredCodec.derived
   given Codec[ManifestRole]             = ConfiguredCodec.derived
   given Codec[ManifestGroup]            = ConfiguredCodec.derived

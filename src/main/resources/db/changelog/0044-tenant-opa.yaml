@@ -1,0 +1,28 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0044-tenant-opa
+      author: qod
+      changes:
+        # Per-tenant OPA authorization (docs/superpowers/specs/2026-10-01-opa-authorization-design.md).
+        # acl_mode NULL = manager default (QOD_ACL_MODE). Values validated in the app layer.
+        - addColumn:
+            tableName: qodstate_tenant
+            columns:
+              - column:
+                  name: acl_mode
+                  type: text
+              - column:
+                  name: opa_url
+                  type: text
+              - column:
+                  name: opa_policy_path
+                  type: text
+              - column:
+                  name: opa_token
+                  type: text
+              - column:
+                  name: opa_send_statement_text
+                  type: boolean
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false

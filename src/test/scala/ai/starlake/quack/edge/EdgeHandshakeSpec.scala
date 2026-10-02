@@ -3,7 +3,12 @@ package ai.starlake.quack.edge
 import ai.starlake.quack.edge.auth.AuthenticationService
 import ai.starlake.quack.edge.config.AuthenticationConfig
 import ai.starlake.quack.model.{PoolKey, Tenant}
-import ai.starlake.quack.ondemand.rbac.{AuthorizedHandshake, EffectiveSet}
+import ai.starlake.quack.ondemand.rbac.{
+  AuthorizedHandshake,
+  AuthzRequest,
+  EffectiveSet,
+  HandshakeDenial
+}
 import ai.starlake.quack.ondemand.state.RbacUser
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -29,7 +34,7 @@ class EdgeHandshakeSpec extends AnyFlatSpec with Matchers:
         if t == "acme" && p == "bi" then Right("acme_db") else Left(s"pool '$p' not found"),
       resolveTenant = raw =>
         if raw == "acme" then Some(Tenant("acme", "Acme Corporation")) else None,
-      authorize = (_, _, _, _, _, _) => authorizeResult
+      authorize = _ => authorizeResult.left.map(HandshakeDenial.Denied(_))
     )
 
   "authenticate" should "bind a basic credential to its pool in trust mode" in:
@@ -71,6 +76,22 @@ class EdgeHandshakeSpec extends AnyFlatSpec with Matchers:
       false
     )
     out shouldBe Left(HandshakeFailure.Unauthorized("permission denied: no grant on pool"))
+
+  it should "surface an OPA outage as Unavailable and pass the edge name to authorize" in:
+    var seen: Option[AuthzRequest] = None
+    val hs                         = new EdgeHandshake(
+      trustMode,
+      lookupPool = (_, _) => Right("acme_db"),
+      resolveTenant = _ => Some(Tenant("acme")),
+      authorize = { r =>
+        seen = Some(r)
+        Left(HandshakeDenial.Unavailable("connection refused"))
+      },
+      edge = "quack"
+    )
+    hs.authenticate(None, Some(("alice", "pw")), Some("bi"), Some("acme"), false) shouldBe
+      Left(HandshakeFailure.Unavailable("authorization service unavailable: connection refused"))
+    seen.map(_.edge) shouldBe Some("quack")
 
   it should "tell a stale bearer apart from a missing credential" in:
     val out = handshake().authenticate(Some("stale-peer-id"), None, Some("bi"), Some("acme"), false)

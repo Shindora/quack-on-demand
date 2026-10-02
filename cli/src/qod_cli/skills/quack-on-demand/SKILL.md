@@ -673,6 +673,40 @@ current and new passwords):
 qod auth change-password --username alice --tenant acme
 ```
 
+### Delegate authorization to OPA (per tenant)
+
+A tenant can hand its data-access decisions to its own Open Policy Agent: pool access at
+handshake (rule `connect`) and table access per statement (rule `statement`), at
+`POST <opaUrl>/v1/data/<policyPath>/{connect,statement}`. QoD grants are then ignored for
+that tenant (memberships are still sent as roles/groups); superusers never reach OPA.
+
+```bash
+# Switch a tenant to OPA (token is write-only; '' clears a field; omitted keeps it)
+qod tenant set-acl acme --mode opa --opa-url https://opa.acme.internal:8181 \
+  --opa-policy-path qod/authz --opa-token "$OPA_TOKEN"
+
+# Dry run: prints the exact input and OPA's answer, executes nothing
+qod tenant opa-test acme --pool bi --user alice                              # connect
+qod tenant opa-test acme --pool bi --user alice --sql "SELECT * FROM orders" # statement
+
+# Back to QoD grants
+qod tenant set-acl acme --mode qod
+```
+
+Manager envs: `QOD_ACL_MODE` (default mode, `qod`), `QOD_OPA_URL` (fallback URL),
+`QOD_OPA_TIMEOUT_MS` (2000), `QOD_OPA_CACHE_TTL_SEC` (5, 0 disables). Behaviour to know:
+
+- Fail closed: only `{"result": {"allow": true}}` allows; an undefined rule, a non-boolean
+  `allow`, or `row_filter` / `masks` in the result deny with "policy error".
+- OPA unreachable, slow, non-2xx or a body over 1 MiB = `UNAVAILABLE` "authorization service
+  unavailable" (retryable), never a permission error. Check the OPA server, not the grants.
+- `400 opa_url_required`: set `--opa-url` or `QOD_OPA_URL` before `--mode opa`.
+- Policy changes apply within the cache TTL and never kill running sessions.
+- Catalog listings (`information_schema`, `duckdb_*`) are still filtered by QoD grants, so an
+  OPA tenant with no QoD grants sees empty listings in BI tools; queries OPA allows still run.
+- Manifest export redacts the token; importing where no token is stored is an error: put the
+  value in the manifest or set it afterwards with `qod tenant set-acl`.
+
 ## SQL administration (FlightSQL)
 
 An admin SQL dialect is answered directly at the FlightSQL edge: GRANT/REVOKE,

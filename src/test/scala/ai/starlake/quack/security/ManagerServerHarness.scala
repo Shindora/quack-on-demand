@@ -45,7 +45,7 @@ object ManagerServerHarness:
   // Minimal ManagerConfig for the harness. Port 0 = OS-assigned.
   // All fields that affect boot must be set to safe no-op values.
   // ------------------------------------------------------------------
-  private def minimalManagerConfig(port: Int = 0): ManagerConfig = ManagerConfig(
+  private[security] def minimalManagerConfig(port: Int = 0): ManagerConfig = ManagerConfig(
     host = "127.0.0.1",
     port = port,
     apiKey = None, // open REST namespace
@@ -112,6 +112,18 @@ object ManagerServerHarness:
   // Stub QuackBackend: no real child processes.
   // ------------------------------------------------------------------
   private def stubBackend: QuackBackend = StubQuackBackend.noop()
+
+  private def defaultOpaAuthorizer: ai.starlake.quack.edge.opa.OpaAuthorizer =
+    val cfg = ai.starlake.quack.edge.config.OpaConfig.default.copy(timeoutMs = 500, cacheTtlSec = 0)
+    new ai.starlake.quack.edge.opa.OpaAuthorizer(
+      cfg,
+      new ai.starlake.quack.edge.opa.OpaClient(
+        cfg.timeoutMs,
+        ai.starlake.quack.edge.opa.OpaClient.jdkPost(cfg.timeoutMs)
+      ),
+      new ai.starlake.quack.edge.opa.OpaDecisionCache(0),
+      ai.starlake.quack.observability.metrics.OpaInstruments.noop
+    )
 
   // Private alias so the existing `new InMemoryAuthSvc(...)` call site
   // below compiles without renaming everything.
@@ -288,7 +300,10 @@ object ManagerServerHarness:
       // Iceberg catalog views (tenant-db id -> federated sources). None leaves the six
       // /iceberg routes unmounted, like a Main boot without a federation store. When set, the
       // metadata runner has no read pool, so a resolved alias answers 404 no_pool.
-      icebergSourcesOf: Option[String => List[ai.starlake.quack.model.FederatedSource]] = None
+      icebergSourcesOf: Option[String => List[ai.starlake.quack.model.FederatedSource]] = None,
+      // The OPA authorizer behind POST /api/tenant/opaTest. Defaults to a real one with a short
+      // timeout and no decision cache, so a dry run against an unreachable OPA fails fast.
+      opa: Option[ai.starlake.quack.edge.opa.OpaAuthorizer] = Some(defaultOpaAuthorizer)
   ): Harness =
     val mgrCfg =
       minimalManagerConfig(port = 0).copy(apiKey = staticApiKey)
@@ -378,7 +393,7 @@ object ManagerServerHarness:
     val pools = new PoolHandlers(sup, tracker)
     val nodes =
       new NodeHandlers(sup, tracker, store, ai.starlake.quack.ondemand.ha.StateChangePublisher.noop)
-    val tenants   = new TenantHandlers(sup)
+    val tenants   = new TenantHandlers(sup, opa = opa)
     val tenantDbs =
       new TenantDbHandlers(sup, federatedStore = None, catalog = None, requireEncryption = false)
     val health = new HealthHandler(sup)

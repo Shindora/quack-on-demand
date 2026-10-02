@@ -11,6 +11,7 @@ import ai.starlake.quack.model.{
   RunningNode,
   SnapshotTag,
   Tenant,
+  TenantAcl,
   TenantDb
 }
 
@@ -24,7 +25,17 @@ import ai.starlake.quack.model.{
   */
 trait ControlPlaneStore:
 
+  /** Insert a tenant, or update an existing one's non-acl columns. The five acl columns are written
+    * on INSERT only: an existing row's acl changes ONLY through [[updateTenantAcl]], so a full-row
+    * upsert built from a stale read (setTenantAuth, setTenantDisabled, manifest import) can never
+    * revert a concurrent acl change.
+    */
   def upsertTenant(t: Tenant): Unit
+
+  /** Column-scoped write of an existing tenant's acl (mode, opaUrl, opaPolicyPath, opaToken,
+    * sendStatementText); every other column is untouched. A missing id is a no-op.
+    */
+  def updateTenantAcl(tenantId: String, acl: TenantAcl): Unit
   def listTenants(): List[Tenant]
   def deleteTenant(id: String): Unit
 

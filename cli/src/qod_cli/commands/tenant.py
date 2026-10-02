@@ -78,3 +78,62 @@ def set_auth(
         "/api/tenant/setAuth",
         body={"name": name, "authProvider": auth_provider, "authConfig": kv_pairs(auth_config)},
     )
+
+
+@app.command("set-acl")
+@covers(
+    "POST",
+    "/api/tenant/setAcl",
+    {
+        "name": "NAME",
+        "mode": "--mode",
+        "opaUrl": "--opa-url",
+        "opaPolicyPath": "--opa-policy-path",
+        "opaToken": "--opa-token",
+        "sendStatementText": "--send-statement-text",
+    },
+)
+def set_acl(
+    ctx: typer.Context,
+    name: str = typer.Argument(...),
+    mode: str = typer.Option(None, "--mode", help="qod | opa | '' (manager default)."),
+    opa_url: str = typer.Option(None, "--opa-url", help="OPA base URL; '' clears (falls back to QOD_OPA_URL)."),
+    opa_policy_path: str = typer.Option(None, "--opa-policy-path", help="Default qod/authz; '' clears."),
+    opa_token: str = typer.Option(None, "--opa-token", help="Bearer for OPA; write-only; '' clears."),
+    send_statement_text: bool = typer.Option(
+        None, "--send-statement-text/--no-send-statement-text", help="Include SQL text in the OPA input."
+    ),
+):
+    """Set the tenant's data-access authorization (QoD grants or the tenant's OPA). Omitted options keep their value."""
+    body: dict = {"name": name}
+    if mode is not None:
+        body["mode"] = mode
+    if opa_url is not None:
+        body["opaUrl"] = opa_url
+    if opa_policy_path is not None:
+        body["opaPolicyPath"] = opa_policy_path
+    if opa_token is not None:
+        body["opaToken"] = opa_token
+    if send_statement_text is not None:
+        body["sendStatementText"] = send_statement_text
+    call(ctx, "POST", "/api/tenant/setAcl", body=body)
+
+
+@app.command("opa-test")
+@covers(
+    "POST",
+    "/api/tenant/opaTest",
+    {"tenant": "TENANT", "pool": "--pool", "user": "--user", "sql": "--sql"},
+)
+def opa_test(
+    ctx: typer.Context,
+    tenant: str = typer.Argument(..., metavar="TENANT"),
+    pool: str = typer.Option(..., "--pool"),
+    user: str = typer.Option(..., "--user"),
+    sql: str = typer.Option(None, "--sql", help="Omit to test pool access (connect); unqualified tables resolve to <database>.main."),
+):
+    """Dry-run an OPA decision: prints the exact input and the decision. Executes nothing."""
+    body: dict = {"tenant": tenant, "pool": pool, "user": user}
+    if sql is not None:
+        body["sql"] = sql
+    call(ctx, "POST", "/api/tenant/opaTest", body=body)

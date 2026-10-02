@@ -10,6 +10,7 @@ import ai.starlake.quack.model.{
   PoolKey,
   RoleDistribution,
   Tenant,
+  TenantAcl,
   TenantDb,
   TenantDbKind
 }
@@ -50,7 +51,8 @@ class BranchServiceSpec extends AnyFlatSpec with Matchers:
 
   private final class Fixture(
       cfg: BranchingConfig = BranchingConfig(),
-      parentEncrypted: Boolean = false
+      parentEncrypted: Boolean = false,
+      tenantAcl: TenantAcl = TenantAcl()
   ):
     val store   = new InMemoryControlPlaneStore()
     val created = mutable.ListBuffer.empty[String]
@@ -60,7 +62,7 @@ class BranchServiceSpec extends AnyFlatSpec with Matchers:
       def dropDatabase(name: String): Either[String, Unit]   = { dropped += name; Right(()) }
     val backend = new StubQuackBackend()
     val sup     = new PoolSupervisor(backend, new NodeLoadTracker, store, dbAdmin = admin)
-    val tenant  = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
+    val tenant  = sup.createTenant(Tenant("acme", acl = tenantAcl)).unsafeRunSync().toOption.get
     val parent  = sup
       .createTenantDb(
         "acme",
@@ -203,6 +205,18 @@ class BranchServiceSpec extends AnyFlatSpec with Matchers:
     f.create("x", actor = f.alice).left.map(_.code) shouldBe Left("acl_denied")
     f.grantConnect("alice")
     f.create("x", actor = f.alice).map(_.ownerUser) shouldBe Right("alice")
+  }
+
+  it should "surface an unwired OPA tenant's outage as retryable, not a permission denial" in {
+    // The parent tenant is opa-mode but no OpaPoolAccess is ever wired on this bare supervisor
+    // (mirrors a manager that has not finished boot): PoolSupervisor.authorizeHandshakeDetailed
+    // fails closed with Unavailable rather than falling back to grants, and mayUse must not
+    // collapse that into the same "acl_denied" a real policy refusal gets.
+    val f = new Fixture(tenantAcl = TenantAcl(Some("opa"), Some("http://opa")))
+    f.grantConnect("alice")
+    val err = f.create("x", actor = f.alice).left.toOption.get
+    err.code shouldBe "authz_unavailable"
+    err.status shouldBe 503
   }
 
   it should "roll back the database when the clone fails and leave no rows behind" in {

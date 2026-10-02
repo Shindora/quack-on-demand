@@ -17,6 +17,7 @@ import ai.starlake.quack.model.{
 }
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
 import ai.starlake.quack.ondemand.catalog.DuckLakeCatalogReader
+import ai.starlake.quack.ondemand.rbac.{AuthzRequest, HandshakeDenial}
 import ai.starlake.quack.ondemand.state.ControlPlaneStore
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import ai.starlake.quack.spi.{ManagerEvent, ManagerEventSink}
@@ -48,6 +49,9 @@ object BranchFailure:
   def conflict(code: String, msg: String)      = BranchFailure(409, code, msg)
   def unprocessable(code: String, msg: String) = BranchFailure(422, code, msg)
   def upstream(code: String, msg: String)      = BranchFailure(502, code, msg)
+
+  /** A deciding authority (OPA) could not be reached: retryable, never a permission verdict. */
+  def unavailable(code: String, msg: String) = BranchFailure(503, code, msg)
 
 /** Runs the merge batch on an ephemeral node built from `spec`. `Right(())` once the batch
   * committed; `Left(reason)` otherwise (a reason containing "conflict" is the engine's optimistic
@@ -147,14 +151,31 @@ final class BranchService(
     }
 
   /** A non-admin may act on a parent iff it can connect to at least one of its pools: exactly the
-    * FlightSQL handshake gate, so "may query" and "may branch" are the same permission.
+    * FlightSQL handshake gate, so "may query" and "may branch" are the same permission. Uses
+    * `authorizeHandshakeDetailed` (not the legacy string-left delegate) so an OPA outage on an
+    * opa-mode parent is distinguishable from an ordinary grant refusal: `Res` has its own error
+    * channel (`BranchFailure`), so `Unavailable` is surfaced as a retryable 503 rather than
+    * collapsed into the same "acl_denied" a real policy Deny gets.
     */
   private def mayUse(tenant: String, parent: TenantDb, actor: BranchActor): Res[Unit] =
     if actor.isAdmin then Right(())
     else
       val pools = sup.list().map(_.key).filter(k => k.tenant == tenant && k.tenantDb == parent.name)
-      val ok    = pools.exists(k => sup.authorizeHandshake(tenant, k.pool, actor.identity).isRight)
-      if ok then Right(())
+      val outcomes = pools.map { k =>
+        sup.authorizeHandshakeDetailed(AuthzRequest(tenant, k.pool, actor.identity, edge = "rest"))
+      }
+      if outcomes.exists(_.isRight) then Right(())
+      else if outcomes.exists {
+          case Left(_: HandshakeDenial.Unavailable) => true
+          case _                                    => false
+        }
+      then
+        Left(
+          BranchFailure.unavailable(
+            "authz_unavailable",
+            s"authorization service unavailable for '${actor.identity}' on '${parent.name}'"
+          )
+        )
       else
         Left(
           BranchFailure.forbidden(

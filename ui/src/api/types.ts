@@ -319,6 +319,13 @@ export interface TenantResponse {
   disabled: boolean;
   authProvider: AuthProvider;
   authConfig: Record<string, string>;
+  // Data-access authorization (per-tenant OPA). aclMode null/undefined = the manager default
+  // (QOD_ACL_MODE). The OPA bearer token is write-only: only whether one is set is exposed.
+  aclMode?: 'qod' | 'opa' | null;
+  opaUrl?: string | null;
+  opaPolicyPath?: string | null;
+  opaTokenSet?: boolean;
+  opaSendStatementText?: boolean;
 }
 
 export interface SetTenantDisabledRequest {
@@ -330,6 +337,18 @@ export interface SetTenantAuthRequest {
   name: string;
   authProvider: AuthProvider;
   authConfig: Record<string, string>;
+}
+
+/** Patch of a tenant's data-access authorization. An omitted field keeps the stored value; `""`
+  * clears it (mode `""` = the manager default, opaToken `""` = no token). `opaToken` is
+  * write-only: no response ever carries it back. */
+export interface SetTenantAclRequest {
+  name: string;
+  mode?: string;
+  opaUrl?: string;
+  opaPolicyPath?: string;
+  opaToken?: string;
+  sendStatementText?: boolean;
 }
 
 export interface TenantListResponse {

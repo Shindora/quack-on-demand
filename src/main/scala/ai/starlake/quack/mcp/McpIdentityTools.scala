@@ -9,6 +9,7 @@ import ai.starlake.quack.ondemand.api.{
   RoleCreateRequest,
   RoleDeleteRequest,
   RoleHandlers,
+  SetTenantAclRequest,
   SetTenantAuthRequest,
   SetTenantDisabledRequest,
   TenantHandlers,
@@ -47,6 +48,7 @@ final class McpIdentityTools(
     listTenantsTool,
     createTenantTool,
     deleteTenantTool,
+    setTenantAclTool,
     setTenantAuthTool,
     setTenantDisabledTool,
     listUsersTool,
@@ -125,6 +127,47 @@ final class McpIdentityTools(
           tenants
             .deleteTenant(TenantOpRequest(name), keyOf(principal))(scopeOf)
             .map(res => bridge(res).map(_ => Json.obj("deleted" -> Json.fromString(name))))
+  )
+
+  /** `str` trims and drops a blank string to None, so it cannot express "clear this field" for an
+    * Option[String] patch field where "" is meaningful (see [[SetTenantAclRequest]]). Read the raw
+    * JSON value instead: absent -> None (keep), "" -> Some("") (clear), non-empty -> Some(value).
+    */
+  private def rawStr(args: JsonObject, name: String): Option[String] =
+    args(name).flatMap(_.asString)
+
+  private val setTenantAclTool = McpToolDef(
+    name = "set_tenant_acl",
+    description =
+      "Set a tenant's data-access authorization: mode qod (QoD grants) or opa (the tenant's " +
+        "Open Policy Agent decides). Omitted fields keep their value; empty string clears.",
+    inputSchema = objectSchema(
+      required = List("name"),
+      props = "name" -> strProp("Tenant id."),
+      "mode"                -> strProp("qod | opa | empty for the manager default."),
+      "opa_url"             -> strProp("OPA base URL."),
+      "opa_policy_path"     -> strProp("Policy package path, default qod/authz."),
+      "opa_token"           -> strProp("Bearer token for OPA (write-only)."),
+      "send_statement_text" -> boolProp("Include SQL text in the OPA input.")
+    ),
+    adminOnly = true,
+    run = (principal, args) =>
+      required(args, "name") match
+        case Left(err)   => IO.pure(Left(err))
+        case Right(name) =>
+          tenants
+            .setTenantAcl(
+              SetTenantAclRequest(
+                name,
+                rawStr(args, "mode"),
+                rawStr(args, "opa_url"),
+                rawStr(args, "opa_policy_path"),
+                rawStr(args, "opa_token"),
+                bool(args, "send_statement_text")
+              ),
+              keyOf(principal)
+            )(scopeOf)
+            .map(res => bridge(res).map(_.asJson))
   )
 
   private val setTenantAuthTool = McpToolDef(

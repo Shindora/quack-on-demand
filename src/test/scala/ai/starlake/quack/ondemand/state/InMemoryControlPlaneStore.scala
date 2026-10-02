@@ -11,6 +11,7 @@ import ai.starlake.quack.model.{
   RunningNode,
   SnapshotTag,
   Tenant,
+  TenantAcl,
   TenantDb
 }
 
@@ -33,7 +34,15 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
   private val pools     = TrieMap.empty[String, Pool]
   private val nodes     = TrieMap.empty[String, RunningNode]
 
-  def upsertTenant(t: Tenant): Unit = tenants.put(t.id, t)
+  // Mirrors Postgres: an existing row's acl changes only through updateTenantAcl.
+  def upsertTenant(t: Tenant): Unit =
+    tenants.updateWith(t.id) {
+      case Some(old) => Some(t.copy(acl = old.acl))
+      case None      => Some(t)
+    }
+
+  def updateTenantAcl(tenantId: String, acl: TenantAcl): Unit =
+    tenants.updateWith(tenantId)(_.map(_.copy(acl = acl)))
 
   def createTenantWithAdminRole(
       tenant: Tenant,

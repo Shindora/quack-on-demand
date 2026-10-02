@@ -148,6 +148,22 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     out.toOption.get.hcursor.get[Boolean]("disabled").toOption.get shouldBe true
   }
 
+  "set_tenant_acl" should "set opaTokenSet without ever echoing the token" in {
+    val f   = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val out = f.call(
+      "set_tenant_acl",
+      McpPrincipal.StaticKey,
+      "name"      -> Json.fromString("acme"),
+      "mode"      -> Json.fromString("opa"),
+      "opa_url"   -> Json.fromString("http://opa.local:8181"),
+      "opa_token" -> Json.fromString("tok")
+    )
+    out.isRight shouldBe true
+    out.toOption.get.hcursor.get[Boolean]("opaTokenSet").toOption.get shouldBe true
+    out.toOption.get.noSpaces should not include "tok"
+  }
+
   "create_user" should "create a tenant user and list it" in {
     val f       = new Fixture
     f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))

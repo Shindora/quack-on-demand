@@ -9,7 +9,8 @@ import ai.starlake.quack.edge.sql.{
   Denied,
   LockdownScreen,
   StatementValidator,
-  ValidationContext
+  ValidationContext,
+  ValidatorUnavailable
 }
 import ai.starlake.quack.model.{PoolKey, SqlLiterals, StatementKind, TenantDb}
 import ai.starlake.quack.ondemand.PoolSupervisor
@@ -136,7 +137,11 @@ final class FlightSqlRouter(
       /** Audit origin of the statement: `"flightsql"` for the Arrow edge, `"quack"` for the native
         * Quack front door. Recorded on the denial and write audit events.
         */
-      source: String = "flightsql"
+      source: String = "flightsql",
+      /** Extra denial-audit details merged into the "data-denial" event, e.g. the OPA validator's
+        * `authz_source` / `opa_decision_id`. Ignored on every other status.
+        */
+      auditMeta: Map[String, String] = Map.empty
   ): Unit =
     // A claim-shaped statement is redacted before it reaches ANY sink below, whether it was
     // ultimately admitted, denied, or (with the dialect off or adminDispatch=false) simply
@@ -198,7 +203,10 @@ final class FlightSqlRouter(
           None,
           "denied",
           source,
-          Map("sql" -> recordedSql.take(500)) ++
+          // QoD's own audit keys always win: a validator-supplied key of a reserved name is
+          // dropped, never allowed to overwrite (or forge) the recorded sql / reason.
+          auditMeta.removedAll(FlightSqlRouter.ReservedAuditKeys) ++
+            Map("sql" -> recordedSql.take(500)) ++
             Option
               .when(deniedRefs.nonEmpty)(
                 "denied" -> deniedRefs.map(a => s"${a.table.canonical}:${a.verb}").mkString(",")
@@ -329,7 +337,21 @@ final class FlightSqlRouter(
         * path instead of the dialect's authorization, which does not account for PAT attenuation
         * the way the routed ACL path does.
         */
-      adminDispatch: Boolean = true
+      adminDispatch: Boolean = true,
+      /** Audit origin recorded on denial and write events and on the SessionOpened module event:
+        * `"flightsql"` for the raw wire, `"quack"` for the native Quack front door. Independent of
+        * `edge` below: metering and audit must not move when a caller only wants to tag the OPA
+        * input differently.
+        */
+      source: String = "flightsql",
+      /** OPA `client.edge`, forwarded to [[executeWith]]'s `ValidationContext.edge` ONLY. Empty
+        * (the default) means "same as `source`" -- resolved in [[executeWith]], not here: a
+        * parameter default cannot reference a sibling parameter of the same list in Scala. Main's
+        * routed executor passes `edge = "mcp"` while leaving `source` at its own default so REST
+        * preview / data diff / restore / undrop / branch counts keep reporting "flightsql" for
+        * metering and audit.
+        */
+      edge: String = ""
   ): IO[Either[RouterFailure, QueryResult]] =
     adminExecutor match
       case Some(exec) if adminDispatch && ai.starlake.quack.edge.admin.AdminSqlParser.claims(sql) =>
@@ -360,7 +382,8 @@ final class FlightSqlRouter(
           sql,
           effectiveSet,
           adapterSend,
-          source = "flightsql",
+          source = source,
+          edge = edge,
           preferredNode = preferredNode,
           recordExecution = recordExecution,
           prepareDurationMs = prepareDurationMs,
@@ -388,7 +411,9 @@ final class FlightSqlRouter(
     * through [[execute]].
     *
     * `source` is the audit origin recorded on denial and write events and on the SessionOpened
-    * module event (`"flightsql"` or `"quack"`).
+    * module event (`"flightsql"` or `"quack"`). `edge` is the OPA `client.edge` value used ONLY for
+    * `ValidationContext.edge`; empty (the default) means "same as `source`" and is otherwise
+    * independent of it (see `execute`'s scaladoc).
     */
   def executeWith[A](
       connectionId: String,
@@ -401,9 +426,11 @@ final class FlightSqlRouter(
       preferredNode: Option[String] = None,
       recordExecution: Boolean = true,
       prepareDurationMs: Option[Long] = None,
-      patId: Option[String] = None
+      patId: Option[String] = None,
+      edge: String = ""
   ): IO[Either[RouterFailure, Routed[A]]] =
-    val s = sessions.get(connectionId).getOrElse {
+    val resolvedEdge = if edge.isEmpty then source else edge
+    val s            = sessions.get(connectionId).getOrElse {
       val opened = sessions.open(connectionId, user, poolKey)
       // Probes (recordExecution=false) must not emit, matching every other telemetry surface.
       if recordExecution then events.emit(ManagerEvent.SessionOpened(poolKey.tenant, user, source))
@@ -435,7 +462,13 @@ final class FlightSqlRouter(
       defaultDatabase = maybeState.flatMap(_.defaultDatabase).orElse(perKindDb),
       defaultSchema = maybeState.flatMap(_.defaultSchema).orElse(perKindSchema),
       effectiveSet = effectiveSet,
-      attachedCatalogs = attachedCatalogsOf(poolKey)
+      attachedCatalogs = attachedCatalogsOf(poolKey),
+      poolKey = Some(poolKey),
+      edge = resolvedEdge,
+      statementClass = kind match
+        case StatementKind.Ddl => "DDL"
+        case StatementKind.Dml => "WRITE"
+        case _                 => "READ"
     )
     // No-op for probes. deniedRefs is non-empty only on the ACL denial arm and
     // feeds the journal event's "denied" key.
@@ -445,7 +478,8 @@ final class FlightSqlRouter(
         status: String,
         error: Option[String],
         deniedRefs: Set[TableAccess] = Set.empty,
-        prepMs: Option[Long] = prepareDurationMs
+        prepMs: Option[Long] = prepareDurationMs,
+        auditMeta: Map[String, String] = Map.empty
     ): Unit =
       if recordExecution then
         val realm = if effectiveSet.exists(_.user.tenant.isEmpty) then "system" else "tenant"
@@ -462,7 +496,8 @@ final class FlightSqlRouter(
           realm,
           prepMs,
           patId,
-          source
+          source,
+          auditMeta
         )
 
     // Node lockdown, resolved per pool (tri-state: pool override else global default).
@@ -484,15 +519,19 @@ final class FlightSqlRouter(
         Left(RouterFailure.AccessDenied(s"access denied: lockdown: $reason"))
       case None =>
         validator.validate(ctx) match
-          case Denied(reason, deniedRefs) =>
+          case Denied(reason, deniedRefs, meta) =>
             maybeRecord(
               nodeId = "-",
               durationMs = 0,
               status = "denied",
               error = Some(reason),
-              deniedRefs = deniedRefs
+              deniedRefs = deniedRefs,
+              auditMeta = meta
             )
             Left(RouterFailure.AccessDenied(s"access denied: $reason"))
+          case ValidatorUnavailable(reason) =>
+            maybeRecord(nodeId = "-", durationMs = 0, status = "transient", error = Some(reason))
+            Left(RouterFailure.Unavailable(s"authorization service unavailable: $reason"))
           case Allowed => Right(())
 
     // Per-catalog read-only screen. Runs AFTER the ACL gate so a principal that lacks the grant
@@ -992,6 +1031,11 @@ final class FlightSqlRouter(
     else RouterFailure.BadRequest(full)
 
 object FlightSqlRouter:
+
+  /** Audit-detail keys QoD writes itself on the routed path; a validator's `Denied.meta` can never
+    * set them.
+    */
+  val ReservedAuditKeys: Set[String] = Set("sql", "denied", "reason", "durationMs")
 
   /** One node call for [[FlightSqlRouter.executeWith]]: `(node, wrappedSql, stampPrelude,
     * recordLoad) => outcome`. Implementations must book load through

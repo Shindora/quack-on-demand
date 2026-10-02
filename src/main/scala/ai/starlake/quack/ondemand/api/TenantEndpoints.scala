@@ -74,6 +74,30 @@ object TenantEndpoints:
       .in(authToken)
       .out(jsonBody[TenantResponse])
 
+  val setTenantAcl: PublicEndpoint[
+    (SetTenantAclRequest, Option[String]),
+    (sttp.model.StatusCode, ErrorResponse),
+    TenantResponse,
+    Any
+  ] =
+    base.post
+      .in("tenant" / "setAcl")
+      .in(jsonBody[SetTenantAclRequest])
+      .in(authToken)
+      .out(jsonBody[TenantResponse])
+
+  val opaTest: PublicEndpoint[
+    (OpaTestRequest, Option[String]),
+    (sttp.model.StatusCode, ErrorResponse),
+    OpaTestResponse,
+    Any
+  ] =
+    base.post
+      .in("tenant" / "opaTest")
+      .in(jsonBody[OpaTestRequest])
+      .in(authToken)
+      .out(jsonBody[OpaTestResponse])
+
   // ----- Tenant databases -----
   val createTenantDb: PublicEndpoint[
     (TenantDbRequest, Option[String]),

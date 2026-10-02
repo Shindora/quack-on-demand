@@ -1,5 +1,6 @@
 package ai.starlake.quack.ondemand.rbac
 
+import ai.starlake.acl.parser.Verb
 import ai.starlake.quack.ondemand.auth.TokenRestriction
 
 /** Narrows an [[EffectiveSet]] to what one token may use.
@@ -47,11 +48,21 @@ object Attenuation:
       // `Main.routedExecutor` (`caller.restriction.allowsPool(poolKey.pool)`) -- one choke
       // point every current and future caller of the executor routes through, rather than a
       // filter here that a store-less function could not make correct or meaningful anyway.
+      // The ceiling also rides the set as collapsed verbs: the OPA arm never reads
+      // `permissions`, so it refuses any access outside this set itself. Repeated
+      // attenuation intersects, so it only ever narrows.
+      val tokenCeiling: Option[Set[Verb]] =
+        r.verbCeiling.map(c => TokenRestriction.covers(c).map(Verb.valueOf))
+      val ceiling = (eff.verbCeiling, tokenCeiling) match
+        case (Some(prior), Some(now)) => Some(prior.intersect(now))
+        case (prior, now)             => prior.orElse(now)
+
       eff.copy(
         roles = keptRoles,
         groups = keptGroups,
         permissions = clipped,
         poolPerms = eff.poolPerms,
         columnPolicies = eff.columnPolicies,
-        rowPolicies = eff.rowPolicies
+        rowPolicies = eff.rowPolicies,
+        verbCeiling = ceiling
       )

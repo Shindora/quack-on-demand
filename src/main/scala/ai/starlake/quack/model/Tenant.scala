@@ -27,7 +27,8 @@ final case class Tenant(
     displayName: String = "",
     disabled: Boolean = false,
     authProvider: String = "db",
-    authConfig: Map[String, String] = Map.empty
+    authConfig: Map[String, String] = Map.empty,
+    acl: TenantAcl = TenantAcl()
 )
 
 object Tenant:

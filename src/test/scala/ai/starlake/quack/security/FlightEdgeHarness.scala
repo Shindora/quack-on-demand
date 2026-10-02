@@ -3,9 +3,14 @@ package ai.starlake.quack.security
 
 import ai.starlake.quack.edge._
 import ai.starlake.quack.edge.adapter._
+import ai.starlake.quack.edge.cls.{ColumnCatalog, ColumnPolicyRewriter}
+import ai.starlake.quack.edge.policy.ProtectedWriteGuard
 import ai.starlake.quack.edge.sql.StatementValidator
+import ai.starlake.quack.model.PoolKey
 import ai.starlake.quack.observability.metrics.StatementInstruments
 import ai.starlake.quack.ondemand.PoolSupervisor
+import ai.starlake.quack.ondemand.rbac.OpaPoolAccess
+import ai.starlake.quack.ondemand.telemetry.EventJournal
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
 import ai.starlake.quack.ondemand.state.InMemoryControlPlaneStore
@@ -36,7 +41,10 @@ object FlightEdgeHarness:
   // Returns a static ok response so the router has a valid path when
   // statement tests are eventually added.
   // ------------------------------------------------------------------
-  private def stubAdapter(tracker: NodeLoadTracker): QuackHttpAdapter =
+  private def stubAdapter(
+      tracker: NodeLoadTracker,
+      nodeQuery: String => QuackResponse
+  ): QuackHttpAdapter =
     val client = new QuackHttpClient(
       // Use the test-shared allocator (never closed) so we don't fight
       // over allocator lifetimes with the harness's own RootAllocator.
@@ -50,7 +58,7 @@ object FlightEdgeHarness:
           sql: String,
           session: Option[String]
       ): IO[QuackResponse] =
-        IO.pure(TestArrow.okResponse())
+        IO(nodeQuery(sql))
     new QuackHttpAdapter(client, tracker)
 
   // ------------------------------------------------------------------
@@ -84,7 +92,9 @@ object FlightEdgeHarness:
       host: String,
       port: Int,
       allocator: RootAllocator,
-      shutdown: () => Unit
+      shutdown: () => Unit,
+      supervisor: PoolSupervisor,
+      router: FlightSqlRouter
   ):
     /** Build a fresh [[FlightClient]] pointed at this harness.
       *
@@ -93,6 +103,36 @@ object FlightEdgeHarness:
     def newClient(): FlightClient =
       val loc = Location.forGrpcInsecure(host, port)
       FlightClient.builder(allocator, loc).build()
+
+  /** Optional statement-pipeline wiring for specs that run statements through the edge. Every
+    * default is the harness's historical behavior (allow-all validator, no OPA, inert guards, a
+    * one-row stub node, no spawned nodes), so callers that only exercise the handshake are
+    * unaffected.
+    *
+    * @param validator
+    *   built from the harness's supervisor, e.g. `BootFactories.aclValidator(...)`.
+    * @param opa
+    *   wired into the supervisor through `wireOpa` before the server starts.
+    * @param nodeQuery
+    *   what the stub node answers for the SQL the router forwards to it.
+    * @param spawnNodes
+    *   run one reconcile pass after `restore()` so seeded pools get routable (stub) nodes.
+    */
+  final case class RouterWiring(
+      validator: PoolSupervisor => StatementValidator = _ => StatementValidator.allowAll,
+      opa: Option[OpaPoolAccess] = None,
+      nodeQuery: String => QuackResponse = _ => TestArrow.okResponse(),
+      columnPolicyRewriter: ColumnPolicyRewriter = new ColumnPolicyRewriter(
+        new ColumnCatalog.MapCatalog(Map.empty)
+      ),
+      protectedWriteGuard: ProtectedWriteGuard = ProtectedWriteGuard.disabled,
+      lockdownFor: PoolSupervisor => PoolKey => Boolean = _ => _ => false,
+      deniedBuckets: PoolSupervisor => () => Set[String] = _ => () => Set.empty,
+      journal: EventJournal = EventJournal.noop,
+      spawnNodes: Boolean = false,
+      metadataFilterRewriter: ai.starlake.quack.edge.meta.MetadataFilterRewriter =
+        new ai.starlake.quack.edge.meta.MetadataFilterRewriter(enabled = false)
+  )
 
   /** Boot a [[FlightEdgeServer]] on an ephemeral loopback port.
     *
@@ -110,7 +150,8 @@ object FlightEdgeHarness:
   def boot(
       store: InMemoryControlPlaneStore,
       enableProviders: Boolean = true,
-      tls: Boolean = false
+      tls: Boolean = false,
+      wiring: RouterWiring = RouterWiring()
   ): Harness =
     val port = ephemeralPort()
     val host = "127.0.0.1"
@@ -134,8 +175,10 @@ object FlightEdgeHarness:
     val backend = stubBackend
     val sup     = new PoolSupervisor(backend, tracker, store)
     sup.restore()
+    wiring.opa.foreach(sup.wireOpa)
+    if wiring.spawnNodes then sup.reconcile().unsafeRunSync()
 
-    val adapter  = stubAdapter(tracker)
+    val adapter  = stubAdapter(tracker, wiring.nodeQuery)
     val sessions = new SessionRegistry
     val history  = new StatementHistoryStore()
     val si       = StatementInstruments.noop
@@ -145,9 +188,15 @@ object FlightEdgeHarness:
       sessions = sessions,
       tracker = tracker,
       adapter = adapter,
-      validator = StatementValidator.allowAll,
+      validator = wiring.validator(sup),
       history = history,
-      stmtInstruments = si
+      stmtInstruments = si,
+      columnPolicyRewriter = wiring.columnPolicyRewriter,
+      journal = wiring.journal,
+      lockdownFor = wiring.lockdownFor(sup),
+      deniedBuckets = wiring.deniedBuckets(sup),
+      protectedWriteGuard = wiring.protectedWriteGuard,
+      metadataFilterRewriter = wiring.metadataFilterRewriter
     )
 
     val authSvc = new InMemoryAuthService.Service(store, providersEnabled = enableProviders)
@@ -169,14 +218,8 @@ object FlightEdgeHarness:
 
     val resolveTenant = (raw: String) => sup.getTenant(raw)
 
-    val authorize = (
-        tenant: String,
-        pool: String,
-        username: String,
-        jwtRoles: Set[String],
-        jwtGroups: Set[String],
-        superuserAdmissible: Boolean
-    ) => sup.authorizeHandshake(tenant, pool, username, jwtRoles, jwtGroups, superuserAdmissible)
+    val authorize = (req: ai.starlake.quack.ondemand.rbac.AuthzRequest) =>
+      sup.authorizeHandshakeDetailed(req)
 
     val allocator = new RootAllocator()
 
@@ -197,5 +240,7 @@ object FlightEdgeHarness:
       shutdown = () => {
         srv.stop()
         allocator.close()
-      }
+      },
+      supervisor = sup,
+      router = router
     )

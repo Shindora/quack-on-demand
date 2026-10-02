@@ -4,7 +4,7 @@ import ai.starlake.quack.edge.{QueryResult, RouterFailure}
 import ai.starlake.quack.model.PoolKey
 import ai.starlake.quack.ondemand.PoolSupervisor
 import ai.starlake.quack.ondemand.api.{CatalogPreviewHandlers, ExecCaller}
-import ai.starlake.quack.ondemand.rbac.EffectiveSet
+import ai.starlake.quack.ondemand.rbac.{AuthzRequest, EffectiveSet, HandshakeDenial}
 import ai.starlake.quack.route.StatementClassifier
 import cats.effect.IO
 
@@ -27,8 +27,9 @@ object RoutedExecutor:
   // synthetic superuser EffectiveSet (NOT None, which PostgresAclValidator
   // denies fail-safe) and is never attenuated -- a system caller is definitionally
   // TokenRestriction.Unrestricted; real sessions resolve through
-  // sup.authorizeHandshake (same gate + 60s cache as the handshake), a Left
-  // short-circuiting to AccessDenied before fsRouter.execute.
+  // sup.authorizeHandshakeDetailed (same gate + 60s cache as the handshake, edge "mcp"), a
+  // Denied short-circuiting to AccessDenied and an Unavailable (the tenant's OPA unreachable)
+  // to RouterFailure.Unavailable before fsRouter.execute.
   // recordExecution = false for read-only probes (preview, data diff, restore
   // dry-run); true for undrop's CTAS and restore's CREATE OR REPLACE so the
   // snapshot carries the author stamp.
@@ -125,9 +126,25 @@ object RoutedExecutor:
             )
           )
         else
-          IO.delay(sup.authorizeHandshake(poolKey.tenant, poolKey.pool, caller.identity)).map {
-            case Left(reason) =>
-              Left(ai.starlake.quack.edge.RouterFailure.AccessDenied(reason))
+          IO.delay(
+            sup.authorizeHandshakeDetailed(
+              AuthzRequest(
+                poolKey.tenant,
+                poolKey.pool,
+                caller.identity,
+                edge = "mcp",
+                // Attenuate before gate 4: an opa tenant's connect sees only the token's roles.
+                restriction = caller.restriction
+              )
+            )
+          ).map {
+            case Left(HandshakeDenial.Unavailable(reason)) =>
+              Left(
+                ai.starlake.quack.edge.RouterFailure
+                  .Unavailable(s"authorization service unavailable: $reason")
+              )
+            case Left(denial) =>
+              Left(ai.starlake.quack.edge.RouterFailure.AccessDenied(denial.message))
             case Right(authorized) => Right(Some(authorized.effectiveSet))
           }
       effectiveSetIO.flatMap {

@@ -256,7 +256,16 @@ object ManifestExporter:
           authProvider = t.authProvider,
           authConfig = t.authConfig,
           tenantDbs = manifestDbs,
-          pools = manifestPools
+          pools = manifestPools,
+          acl = Option.when(t.acl != ai.starlake.quack.model.TenantAcl())(
+            ManifestTenantAcl(
+              mode = t.acl.mode,
+              opaUrl = t.acl.opaUrl,
+              opaPolicyPath = t.acl.opaPolicyPath,
+              opaToken = t.acl.opaToken.map(_ => Redacted),
+              sendStatementText = t.acl.sendStatementText
+            )
+          )
         ),
         manifestRoles,
         manifestGroups,

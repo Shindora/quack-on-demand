@@ -84,8 +84,11 @@ final class McpDataTools(
     case McpPrincipal.Pat(p)    => s"mcp-${p.patId}"
 
   private def routerFailureText(f: RouterFailure): String = f match
-    case RouterFailure.AccessDenied(reason)                               => reason
-    case RouterFailure.Unavailable(reason) if reason.contains("resuming") =>
+    // FIRST: an authorization-service outage (OPA down) is never rewritten into the
+    // startup / resuming hints below, even when its cause text mentions them.
+    case other if other.reason.startsWith("authorization service unavailable") => other.reason
+    case RouterFailure.AccessDenied(reason)                                    => reason
+    case RouterFailure.Unavailable(reason) if reason.contains("resuming")      =>
       "the pool is waking from suspend; retry in a few seconds"
     case other if other.reason.contains("ConnectException") =>
       // A statement can race a freshly (re)spawned node's startup: the resume hold

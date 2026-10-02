@@ -13,7 +13,8 @@ import ai.starlake.quack.edge.config.{
   GoogleAuthConfig,
   JwtAuthConfig,
   KeycloakAuthConfig,
-  NodeLockdownConfig
+  NodeLockdownConfig,
+  OpaConfig
 }
 import ai.starlake.quack.boot.{
   BootFactories,
@@ -212,12 +213,15 @@ object Main extends IOApp with LazyLogging:
         }
 
   private def normalManagerRun: IO[ExitCode] =
-    val source      = ConfigSource.default
-    val mgrCfg      = source.at("quack-on-demand").loadOrThrow[ManagerConfig]
-    val edgeCfg     = source.at("quack-flightsql").loadOrThrow[FlightConfig]
-    val quackCfg    = source.at("quack-native").loadOrThrow[QuackNativeConfig]
-    val authCfg     = source.at("quack-flightsql.auth").loadOrThrow[AuthenticationConfig]
-    val aclCfg      = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
+    val source   = ConfigSource.default
+    val mgrCfg   = source.at("quack-on-demand").loadOrThrow[ManagerConfig]
+    val edgeCfg  = source.at("quack-flightsql").loadOrThrow[FlightConfig]
+    val quackCfg = source.at("quack-native").loadOrThrow[QuackNativeConfig]
+    val authCfg  = source.at("quack-flightsql.auth").loadOrThrow[AuthenticationConfig]
+    val aclCfg   = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
+    val opaCfg   = OpaConfig
+      .validate(source.at("quack-flightsql.opa").loadOrThrow[OpaConfig])
+      .fold(err => throw new IllegalArgumentException(err), identity)
     val lockdownCfg = source.at("quack-flightsql.nodeLockdown").loadOrThrow[NodeLockdownConfig]
     val metricsCfg  = source.at("quack-on-demand.metrics").loadOrThrow[MetricsConfig]
     withEmbeddedControlPlane(mgrCfg, authCfg) { (resolved, resolvedAuth) =>
@@ -227,6 +231,7 @@ object Main extends IOApp with LazyLogging:
         resolvedAuth,
         aclCfg,
         metricsCfg,
+        opaCfg,
         lockdownCfg = lockdownCfg,
         modules = ai.starlake.quack.ondemand.module.ModuleLoader.discover(),
         quackCfg = Some(quackCfg)
@@ -239,6 +244,10 @@ object Main extends IOApp with LazyLogging:
       authCfg: AuthenticationConfig,
       aclCfg: AclConfig,
       metricsCfg: MetricsConfig,
+      /** Validated `quack-flightsql.opa` block (`OpaConfig.validate`). No default: every caller
+        * must load and validate it, so a bad QOD_ACL_MODE / QOD_OPA_URL fails boot everywhere.
+        */
+      opaCfg: OpaConfig,
       lockdownCfg: NodeLockdownConfig = NodeLockdownConfig(enabled = false),
       modules: List[ai.starlake.quack.spi.ManagerModule] = Nil,
       /** The native Quack front door block; loaded from `quack-native` when the caller does not
@@ -608,12 +617,7 @@ object Main extends IOApp with LazyLogging:
             )
           )
     )
-    val nodes   = new NodeHandlers(sup, tracker, store, publisher, audit = auditRecorder)
-    val tenants = new TenantHandlers(
-      sup,
-      onAuthChanged = tenantOidcRegistry.invalidate,
-      audit = auditRecorder
-    )
+    val nodes = new NodeHandlers(sup, tracker, store, publisher, audit = auditRecorder)
     val tagHandlers: Option[ai.starlake.quack.ondemand.api.TagHandlers] = Some(
       new ai.starlake.quack.ondemand.api.TagHandlers(
         sup,
@@ -826,8 +830,7 @@ object Main extends IOApp with LazyLogging:
         .effectiveNativeClient(mgrCfg.nativeClient),
       nodeDisableSsl = mgrCfg.nodeDisableSsl
     )
-    val adapter                          = new QuackHttpAdapter(client, tracker)
-    val aclValidator: StatementValidator = BootFactories.aclValidator(aclCfg, mgrCfg, sup)
+    val adapter = new QuackHttpAdapter(client, tracker)
     logger.info(
       s"node lockdown: ${if lockdownCfg.enabled then "enabled" else "disabled"}"
     )
@@ -946,6 +949,42 @@ object Main extends IOApp with LazyLogging:
         stmtInstruments: StatementInstruments
     ): IO[Unit] =
       val classifier = EdgeRewriters.statementClassifier()
+      // ONE OPA authorizer per manager (one HttpClient, one decision cache), shared by the
+      // statement validator below, the handshake and the admin dry-run.
+      val opaAuthorizer = new ai.starlake.quack.edge.opa.OpaAuthorizer(
+        opaCfg,
+        new ai.starlake.quack.edge.opa.OpaClient(
+          opaCfg.timeoutMs,
+          ai.starlake.quack.edge.opa.OpaClient.jdkPost(opaCfg.timeoutMs)
+        ),
+        new ai.starlake.quack.edge.opa.OpaDecisionCache(opaCfg.cacheTtlSec),
+        new ai.starlake.quack.observability.metrics.OpaInstruments(metricsReg.composite)
+      )
+      // Handshake gate 4 for opa tenants; wired before any edge starts so no handshake ever sees
+      // an unwired supervisor (which would refuse opa tenants as Unavailable).
+      sup.wireOpa(opaAuthorizer)
+      // Built here, not with the other handlers, so the admin dry-run shares the one authorizer.
+      val tenants = new TenantHandlers(
+        sup,
+        onAuthChanged = tenantOidcRegistry.invalidate,
+        audit = auditRecorder,
+        opa = Some(opaAuthorizer),
+        opaCfg = opaCfg
+      )
+      val aclValidator: StatementValidator =
+        BootFactories.aclValidator(aclCfg, mgrCfg, sup, opaCfg, opaAuthorizer)
+      // Runs after sup.restore() (tenants are loaded by then): an OPA-mode tenant with no URL
+      // anywhere has every decision refused, which is fail-closed but worth shouting about.
+      def warnOpaTenantsWithoutUrl(): Unit =
+        sup
+          .listTenants()
+          .filter(t => t.acl.isOpa(opaCfg.defaultMode) && t.acl.effectiveUrl(opaCfg.url).isEmpty)
+          .foreach(t =>
+            logger.warn(
+              s"tenant '${t.id}' is in OPA mode but has no OPA URL (set QOD_OPA_URL or the " +
+                "tenant's opaUrl); every decision for it will be refused"
+            )
+          )
       // ONE catalog instance (hence one cache) shared by the SELECT-path rewriter and the
       // write-path guard, so both resolve a table's columns identically AND the metastore fetch
       // is not doubled on cold misses.
@@ -1174,13 +1213,9 @@ object Main extends IOApp with LazyLogging:
         placement = placementDirectory,
         cacheAwareRouting = mgrCfg.routing.cacheAware,
         loadCapFactor = mgrCfg.routing.loadCapFactor,
-        // Same AclConfig value BootFactories hands the validator's implicit admit: the
-        // admit is only safe while the filter that narrows those rows is mounted, so the
-        // two must never be able to disagree. With ACL off nothing is admitted implicitly
-        // and there is no principal to filter for, hence the conjunction.
-        metadataFilterRewriter = new ai.starlake.quack.edge.meta.MetadataFilterRewriter(
-          enabled = aclCfg.enabled && aclCfg.filteredMetadata
-        ),
+        // Same value BootFactories hands every validator arm's implicit admit (QoD and OPA):
+        // see BootFactories.metadataFilterMounted.
+        metadataFilterRewriter = BootFactories.metadataFilterRewriter(aclCfg),
         protectedWriteGuard = protectedWriteGuard,
         adminExecutor = adminExecutor
       )
@@ -1206,20 +1241,12 @@ object Main extends IOApp with LazyLogging:
       // The FlightSQL `tenant` param is the tenant id (case-insensitive).
       val resolveTenantForEdge: String => Option[ai.starlake.quack.model.Tenant] = raw =>
         sup.getTenant(raw)
-      // Handshake authorize; failures bubble up as PERMISSION_DENIED.
-      val authorizeForEdge: (String, String, String, Set[String], Set[String], Boolean) => Either[
-        String,
+      // Handshake authorize; Denied bubbles up as PERMISSION_DENIED, Unavailable (the tenant's
+      // OPA unreachable) as UNAVAILABLE.
+      val authorizeForEdge: ai.starlake.quack.ondemand.rbac.AuthzRequest => Either[
+        ai.starlake.quack.ondemand.rbac.HandshakeDenial,
         ai.starlake.quack.ondemand.rbac.AuthorizedHandshake
-      ] =
-        (tenant, pool, username, jwtRoles, jwtGroups, superuserAdmissible) =>
-          sup.authorizeHandshake(
-            tenant,
-            pool,
-            username,
-            jwtRoles,
-            jwtGroups,
-            superuserAdmissible
-          )
+      ] = sup.authorizeHandshakeDetailed
 
       // Branch targeting seam for the edge (Epic 1). The branch service is built later in this
       // block (it needs the preview executor); the edge only consults the holder at handshake
@@ -1261,7 +1288,8 @@ object Main extends IOApp with LazyLogging:
             authService,
             lookupPoolForEdge,
             resolveTenantForEdge,
-            authorizeForEdge
+            authorizeForEdge,
+            edge = "quack"
           )
           val quackSessions = new ai.starlake.quack.edge.quack.QuackSessionRegistry(
             sessionTtlSec = edgeCfg.sessionTtlSec,
@@ -1407,7 +1435,12 @@ object Main extends IOApp with LazyLogging:
               effectiveSet = eff,
               recordExecution = rec,
               patId = caller.patId,
-              adminDispatch = false
+              adminDispatch = false,
+              // Audit origin and SessionOpened.via stay "flightsql" (the pre-OPA default): MCP
+              // and the REST preview family share this closure and are not distinguishable from
+              // each other, but metering and audit must not move just because OPA needs a tag.
+              // Only the OPA input's client.edge is set to "mcp" here.
+              edge = "mcp"
             )
         )(recordExecution)
 
@@ -1759,6 +1792,7 @@ object Main extends IOApp with LazyLogging:
         // One-shot purge at boot: single-manager mode never runs the HA leader's
         // periodic purge of expired denylist rows.
         IO.delay(store.purgeExpiredRevokedJti(java.time.Instant.now())) *>
+        IO.delay(warnOpaTenantsWithoutUrl()) *>
         // Managed object store reachability probe. Advisory only: an unreachable or
         // mis-credentialed bucket must never stop the manager from booting. It does
         // not gate managed tenant-db creates either - those still succeed at the
@@ -1815,7 +1849,9 @@ object Main extends IOApp with LazyLogging:
                     quack = quackDoor.map(_ =>
                       (quackCfgResolved.host, quackCfgResolved.port, quackCfgResolved.tlsEnabled)
                     ),
-                    aclEnabled = aclCfg.enabled
+                    aclEnabled = aclCfg.enabled,
+                    aclMode = opaCfg.defaultMode,
+                    opaTenants = sup.listTenants().count(_.acl.isOpa(opaCfg.defaultMode))
                   )
                 )
                 val shutdownCoordinator = new ai.starlake.quack.boot.ShutdownCoordinator(

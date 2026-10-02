@@ -1294,3 +1294,29 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     rows.head.alias shouldBe "sales"
     rows.head.setupSql shouldBe "ATTACH 'new' AS {{alias}};"
   }
+
+  // ------------------------------------------------------------------
+  // Test 17: a tenant's opa acl round-trips through export/import -- the token is redacted on
+  // export (never leaves the control plane in the clear) and reused on re-import into the SAME
+  // store, same as a federated secret's "***REDACTED***" reuse semantics.
+  // ------------------------------------------------------------------
+
+  it should "round-trip an opa tenant's acl, redacting the token on export and keeping it on import" in {
+    val cp = new InMemoryControlPlaneStore()
+    cp.upsertTenant(
+      Tenant(
+        id = "acme",
+        displayName = "acme",
+        acl = ai.starlake.quack.model
+          .TenantAcl(Some("opa"), Some("http://opa"), None, Some("real-token"))
+      )
+    )
+
+    val exported = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname)
+    val acl      = exported.tenants.find(_.name == "acme").flatMap(_.acl).get
+    acl.mode shouldBe Some("opa")
+    acl.opaToken shouldBe Some(FederatedSecret.RedactedMarker)
+
+    ManifestImporter.apply(exported, cp, requireEncryption = false) shouldBe Right(())
+    cp.listTenants().find(_.id == "acme").get.acl.opaToken shouldBe Some("real-token")
+  }

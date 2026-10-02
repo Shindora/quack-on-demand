@@ -955,6 +955,12 @@ final class ManagerServer(
       TenantEndpoints.setTenantAuth.serverLogic { case (req, token) =>
         tenants.setTenantAuth(req, token)(scopeOfToken)
       },
+      TenantEndpoints.setTenantAcl.serverLogic { case (req, token) =>
+        tenants.setTenantAcl(req, token)(scopeOfToken)
+      },
+      TenantEndpoints.opaTest.serverLogic { case (req, token) =>
+        tenants.opaTest(req, token)(scopeOfToken)
+      },
       TenantEndpoints.createTenantDb.serverLogic { case (req, token) =>
         tenantDbs.createTenantDb(req, token)(scopeOfToken)
       },

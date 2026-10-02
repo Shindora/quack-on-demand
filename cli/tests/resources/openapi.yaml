@@ -6764,6 +6764,86 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/tenant/opaTest:
+    post:
+      operationId: postApiTenantOpatest
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      - name: qod_session
+        in: cookie
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpaTestRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpaTestResponse'
+        '400':
+          description: 'Invalid value for: body, Invalid value for: header X-API-Key,
+            Invalid value for: cookie qod_session'
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/tenant/setAcl:
+    post:
+      operationId: postApiTenantSetacl
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      - name: qod_session
+        in: cookie
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTenantAclRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantResponse'
+        '400':
+          description: 'Invalid value for: body, Invalid value for: header X-API-Key,
+            Invalid value for: cookie qod_session'
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/tenant/setAuth:
     post:
       operationId: postApiTenantSetauth
@@ -9018,6 +9098,39 @@ components:
           type: string
         effect:
           type: string
+    OpaTestRequest:
+      title: OpaTestRequest
+      type: object
+      required:
+      - tenant
+      - pool
+      - user
+      properties:
+        tenant:
+          type: string
+        pool:
+          type: string
+        user:
+          type: string
+        sql:
+          type: string
+    OpaTestResponse:
+      title: OpaTestResponse
+      type: object
+      required:
+      - rule
+      - input
+      - outcome
+      properties:
+        rule:
+          type: string
+        input: {}
+        outcome:
+          type: string
+        reason:
+          type: string
+        decisionId:
+          type: string
     PatCreateRequest:
       title: PatCreateRequest
       type: object
@@ -9811,6 +9924,24 @@ components:
           type: string
         podTemplateYaml:
           type: string
+    SetTenantAclRequest:
+      title: SetTenantAclRequest
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+        mode:
+          type: string
+        opaUrl:
+          type: string
+        opaPolicyPath:
+          type: string
+        opaToken:
+          type: string
+        sendStatementText:
+          type: boolean
     SetTenantAuthRequest:
       title: SetTenantAuthRequest
       type: object
@@ -10199,6 +10330,8 @@ components:
       - disabled
       - authProvider
       - authConfig
+      - opaTokenSet
+      - opaSendStatementText
       properties:
         name:
           type: string
@@ -10216,6 +10349,16 @@ components:
           type: string
         authConfig:
           $ref: '#/components/schemas/Map_String'
+        aclMode:
+          type: string
+        opaUrl:
+          type: string
+        opaPolicyPath:
+          type: string
+        opaTokenSet:
+          type: boolean
+        opaSendStatementText:
+          type: boolean
     TrendBucketEntry:
       title: TrendBucketEntry
       type: object

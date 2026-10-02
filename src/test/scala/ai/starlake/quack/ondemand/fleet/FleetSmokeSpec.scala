@@ -329,6 +329,11 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
     val aclCfg   = source.at("quack-flightsql.acl").loadOrThrow[AclConfig]
     val lockdown = source.at("quack-flightsql.nodeLockdown").loadOrThrow[NodeLockdownConfig]
     val metrics  = source.at("quack-on-demand.metrics").loadOrThrow[MetricsConfig]
+    val opa      = ai.starlake.quack.edge.config.OpaConfig
+      .validate(
+        source.at("quack-flightsql.opa").loadOrThrow[ai.starlake.quack.edge.config.OpaConfig]
+      )
+      .fold(err => throw new IllegalArgumentException(err), identity)
     authCfg.database.jdbcUrl should endWith(s"/$dbName")
     mgrCfg.fleet.heartbeatSec shouldBe 1
     quackCfg.enabled shouldBe false
@@ -339,6 +344,7 @@ class FleetSmokeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
         authCfg,
         aclCfg,
         metrics,
+        opa,
         lockdownCfg = lockdown,
         quackCfg = Some(quackCfg)
       )

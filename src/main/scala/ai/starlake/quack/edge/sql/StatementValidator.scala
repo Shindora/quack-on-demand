@@ -1,5 +1,6 @@
 package ai.starlake.quack.edge.sql
 
+import ai.starlake.quack.model.PoolKey
 import ai.starlake.quack.ondemand.rbac.EffectiveSet
 
 case class ValidationContext(
@@ -25,15 +26,34 @@ case class ValidationContext(
     // handshake state pinned -- the validator denies any tenant-scoped
     // statement in that case so a misconfigured wiring can't
     // accidentally grant unfiltered access.
-    effectiveSet: Option[EffectiveSet] = None
+    effectiveSet: Option[EffectiveSet] = None,
+    // The pool the statement is routed against. `None` only for validators exercised
+    // outside the router (unit tests constructing a bare context); the router always
+    // fills this in.
+    poolKey: Option[PoolKey] = None,
+    // Audit origin of the statement: "flightsql" for the Arrow edge, "quack" for the
+    // native Quack front door. Mirrors `FlightSqlRouter.executeWith`'s `source` param.
+    edge: String = "",
+    // Collapsed statement shape the router's classifier derived: "READ" | "WRITE" | "DDL".
+    // ADVISORY ONLY: the classifier looks at the first statement, so a multi-statement batch
+    // may carry more than this says. The parsed table-access set (the `accesses` a validator
+    // gates, each with its own verb) is authoritative; never authorize on this field alone.
+    statementClass: String = ""
 )
 
 sealed trait ValidationResult
 case object Allowed extends ValidationResult
 case class Denied(
     reason: String,
-    unauthorized: Set[ai.starlake.acl.parser.TableAccess] = Set.empty
+    unauthorized: Set[ai.starlake.acl.parser.TableAccess] = Set.empty,
+    // Extra audit details for the denial row (e.g. authz_source, opa_decision_id).
+    meta: Map[String, String] = Map.empty
 ) extends ValidationResult
+
+/** The deciding authority could not be reached (OPA timeout / refused / 5xx). Fail closed, but
+  * surface as retryable UNAVAILABLE rather than a permission error.
+  */
+final case class ValidatorUnavailable(reason: String) extends ValidationResult
 
 trait StatementValidator:
   def validate(context: ValidationContext): ValidationResult

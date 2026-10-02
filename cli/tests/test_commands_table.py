@@ -600,6 +600,34 @@ CASES = [
         ["profile", "statements", "--limit", "10"],
         "GET", "/api/profile/statements", {"limit": "10"}, None,
     ),
+    (
+        ["tenant", "set-acl", "acme", "--mode", "opa", "--opa-url", "http://opa:8181", "--opa-token", "tok"],
+        "POST",
+        "/api/tenant/setAcl",
+        {},
+        {"name": "acme", "mode": "opa", "opaUrl": "http://opa:8181", "opaToken": "tok"},
+    ),
+    (
+        ["tenant", "set-acl", "acme", "--opa-policy-path", "acme/authz", "--send-statement-text"],
+        "POST",
+        "/api/tenant/setAcl",
+        {},
+        {"name": "acme", "opaPolicyPath": "acme/authz", "sendStatementText": True},
+    ),
+    (
+        ["tenant", "set-acl", "acme", "--mode", "", "--no-send-statement-text"],
+        "POST",
+        "/api/tenant/setAcl",
+        {},
+        {"name": "acme", "mode": "", "sendStatementText": False},
+    ),
+    (
+        ["tenant", "opa-test", "acme", "--pool", "bi", "--user", "alice", "--sql", "SELECT * FROM orders"],
+        "POST",
+        "/api/tenant/opaTest",
+        {},
+        {"tenant": "acme", "pool": "bi", "user": "alice", "sql": "SELECT * FROM orders"},
+    ),
 ]
 
 

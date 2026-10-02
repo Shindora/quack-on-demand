@@ -65,5 +65,62 @@ class BannerSpec extends AnyFlatSpec with Matchers:
     b should include("grpc://myhost:31338")
     b should include("SQL ACL       : DISABLED (every statement admitted; set QOD_ACL_ENABLED=true")
     b should include("&useEncryption=false")
+    b should include(
+      "ACL MODE      : qod (default for tenants that set none; 0 tenant(s) in opa mode)"
+    )
     (b should not).include("DisableCertificateVerification")
+  }
+
+  it should "not imply nothing is enforced when the ACL is off but a tenant is in opa mode" in {
+    val b = Banner.startup(
+      meta,
+      "myhost",
+      20900,
+      "myhost",
+      31338,
+      tlsEnabled = false,
+      aclEnabled = false,
+      aclMode = "qod",
+      opaTenants = 2
+    )
+    b should include("SQL ACL       : DISABLED for qod tenants")
+    b should include("opa tenants enforced by OPA")
+    b should include(
+      "ACL MODE      : qod (default for tenants that set none; 2 tenant(s) in opa mode)"
+    )
+    (b should not).include("SQL ACL       : DISABLED (every statement admitted")
+  }
+
+  it should "name opa as the default mode when QOD_ACL_MODE=opa" in {
+    val b = Banner.startup(
+      meta,
+      "myhost",
+      20900,
+      "myhost",
+      31338,
+      tlsEnabled = false,
+      aclEnabled = false,
+      aclMode = "opa",
+      opaTenants = 0
+    )
+    b should include("opa tenants enforced by OPA")
+    b should include(
+      "ACL MODE      : opa (default for tenants that set none; 0 tenant(s) in opa mode)"
+    )
+  }
+
+  it should "keep the plain ENABLED line with the mode line when the ACL is on" in {
+    val b = Banner.startup(
+      meta,
+      "myhost",
+      20900,
+      "myhost",
+      31338,
+      tlsEnabled = false,
+      aclEnabled = true,
+      aclMode = "qod",
+      opaTenants = 1
+    )
+    b should include("SQL ACL       : ENABLED (grants, column and row policies enforced)")
+    b should include("1 tenant(s) in opa mode")
   }

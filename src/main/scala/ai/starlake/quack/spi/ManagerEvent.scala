@@ -59,6 +59,7 @@ object ManagerEvent:
 
   /** A new session was established. `via` identifies the entry point:
     *   - `"flightsql"`: an Arrow FlightSQL handshake.
+    *   - `"quack"`: a native Quack front door session.
     *   - `"rest"`: a REST password login (`AuthHandlers.login`).
     *   - `"oidc"`: a REST OIDC callback login (`AuthHandlers.oidcCallback`).
     */
