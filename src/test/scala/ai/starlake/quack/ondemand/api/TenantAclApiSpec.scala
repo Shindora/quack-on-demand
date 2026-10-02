@@ -70,6 +70,34 @@ class TenantAclApiSpec extends AnyFlatSpec with Matchers with SecurityHttpHelper
       cursor(r4).get[Option[String]]("aclMode") shouldBe Right(None)
     }
 
+  it should "clear the stored token when opaUrl changes without a new token" in withHarness() { h =>
+    cursor(
+      postJson(
+        h,
+        "/api/tenant/setAcl",
+        s"""{"name":"$t","mode":"opa","opaUrl":"http://opa:8181","opaToken":"s3cr3t-tok"}"""
+      )
+    ).get[Boolean]("opaTokenSet") shouldBe Right(true)
+    // Same URL (and a patch that does not mention it): the token stays.
+    cursor(
+      postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaUrl":"http://opa:8181"}""")
+    ).get[Boolean]("opaTokenSet") shouldBe Right(true)
+    // A new URL with no token in the same patch: the old bearer must never follow it.
+    val moved = cursor(
+      postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaUrl":"http://other:8181"}""")
+    )
+    moved.get[String]("opaUrl") shouldBe Right("http://other:8181")
+    moved.get[Boolean]("opaTokenSet") shouldBe Right(false)
+    // A new URL WITH a token in the same patch keeps that token.
+    cursor(
+      postJson(
+        h,
+        "/api/tenant/setAcl",
+        s"""{"name":"$t","opaUrl":"http://third:8181","opaToken":"t2"}"""
+      )
+    ).get[Boolean]("opaTokenSet") shouldBe Right(true)
+  }
+
   it should "400 on bad mode, bad URL, bad policy path, and opa without any URL" in withHarness() {
     h =>
       code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","mode":"x"}""")) shouldBe
@@ -162,4 +190,42 @@ class TenantAclApiSpec extends AnyFlatSpec with Matchers with SecurityHttpHelper
     code(
       postJson(h, "/api/tenant/opaTest", s"""{"tenant":"$t","pool":"$pool","user":"nobody"}""")
     ) shouldBe "not_found"
+  }
+
+  it should "give a tenant admin a generic transport error and the static key the detail" in
+    withHarness() { h =>
+      cursor(
+        postJson(
+          h,
+          "/api/tenant/setAcl",
+          s"""{"name":"$t","mode":"opa","opaUrl":"http://127.0.0.1:1"}"""
+        )
+      )
+      val body = s"""{"tenant":"$t","pool":"$pool","user":"$user"}"""
+      // Static key (trusted operator): the transport detail, for debugging.
+      val keyed = cursor(postJson(h, "/api/tenant/opaTest", body))
+      keyed.get[String]("outcome") shouldBe Right("error")
+      keyed.get[String]("reason").toOption.get should not be OpaDryRun.GenericTransportError
+      // A tenant admin chooses the URL, so a detailed error would make opaTest a network probe.
+      val aliceToken = h.mintToken(
+        SecurityFixtures.AliceUsername,
+        SecurityFixtures.AlicePassword,
+        Some(SecurityFixtures.TenantId)
+      )
+      val r =
+        post(h.httpClient, s"${h.baseUrl}/api/tenant/opaTest", body, apiKey = Some(aliceToken))
+      val c = cursor(r)
+      c.get[String]("outcome") shouldBe Right("error")
+      c.get[String]("reason") shouldBe Right(OpaDryRun.GenericTransportError)
+    }
+
+  it should "404 a superuser row exactly like an unknown user" in withHarness() { h =>
+    val su = postJson(
+      h,
+      "/api/tenant/opaTest",
+      s"""{"tenant":"$t","pool":"$pool","user":"${SecurityFixtures.RootUsername}"}"""
+    )
+    su.statusCode() shouldBe 404
+    code(su) shouldBe "not_found"
+    su.body() should include(s"user '${SecurityFixtures.RootUsername}' not found in tenant")
   }

@@ -301,7 +301,9 @@ final class TenantHandlers(
         )
         IO.pure(Left(err))
       case None =>
-        IO.blocking(OpaDryRun.run(sup, opa, req)).map {
+        // No resolvable scope = the static key; a session keeps the detail only as a superuser.
+        val detailedErrors = apiKey.flatMap(scopeOf).forall(_.superuser)
+        IO.blocking(OpaDryRun.run(sup, opa, req, detailedErrors)).map {
           case Left(("not_found", msg)) =>
             Left((StatusCode.NotFound, ErrorResponse("not_found", msg)))
           case Left((code, msg)) => Left((StatusCode.BadRequest, ErrorResponse(code, msg)))

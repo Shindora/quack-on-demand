@@ -717,7 +717,9 @@ object ManifestImporter:
     *
     * `opaToken` is exported redacted (`FederatedSecret.RedactedMarker`), so on import:
     *   - redacted + an existing token is already on file -> keep the existing token (the common
-    *     re-import-without-editing-the-token case).
+    *     re-import-without-editing-the-token case), but only when `opaUrl` is unchanged: the stored
+    *     bearer was issued for the stored URL and never follows a URL change, so redacted + a
+    *     changed URL is the same hard error as redacted + nothing to reuse.
     *   - redacted + no existing token -> there is nothing to restore. Same precedent as a federated
     *     secret's redacted-with-nothing-to-reuse case (see `applyFederatedSources` below): a hard
     *     import error, not a silent drop, so a manifest can never leave a tenant mid-edit with an
@@ -742,7 +744,16 @@ object ManifestImporter:
     incoming match
       case None    => Right(existing)
       case Some(a) =>
+        val opaUrl                                      = a.opaUrl.map(_.trim).filter(_.nonEmpty)
         val tokenResult: Either[String, Option[String]] = a.opaToken match
+          case Some(FederatedSecret.RedactedMarker)
+              if existing.opaToken.nonEmpty && opaUrl != existing.opaUrl =>
+            // The stored bearer was issued for the stored URL and never follows a URL change.
+            Left(
+              s"tenant '$tenantName': opaToken is redacted in the manifest but opaUrl changed; " +
+                "the stored token is not carried to a new URL: provide the token for the new " +
+                "opaUrl, or omit opaToken"
+            )
           case Some(FederatedSecret.RedactedMarker) if existing.opaToken.nonEmpty =>
             Right(existing.opaToken)
           case Some(FederatedSecret.RedactedMarker) =>
@@ -754,7 +765,6 @@ object ManifestImporter:
           case other => Right(other.filter(_.nonEmpty))
         tokenResult.flatMap { token =>
           val mode          = a.mode.filter(_.nonEmpty)
-          val opaUrl        = a.opaUrl.map(_.trim).filter(_.nonEmpty)
           val opaPolicyPath = a.opaPolicyPath.map(_.trim).filter(_.nonEmpty)
           val acl           = TenantAcl(mode, opaUrl, opaPolicyPath, token, a.sendStatementText)
           if acl.mode.exists(m => !TenantAcl.ValidModes.contains(m)) then

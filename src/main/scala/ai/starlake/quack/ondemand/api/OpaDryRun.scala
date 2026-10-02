@@ -23,11 +23,21 @@ object OpaDryRun:
 
   val Edge = "dry-run"
 
-  /** A left is `(errorCode, message)`; `not_found` maps to 404, anything else to 400. */
+  /** What a tenant admin sees for a transport failure. The tenant admin chooses the OPA URL, so the
+    * exception class or HTTP status would turn the dry run into a network probe of whatever the
+    * manager can reach; superusers and the static key keep the detail for debugging.
+    */
+  val GenericTransportError: String = "OPA unreachable or returned an error"
+
+  /** A left is `(errorCode, message)`; `not_found` maps to 404, anything else to 400.
+    * `detailedErrors` is true only for a superuser or static-key caller: see
+    * [[GenericTransportError]].
+    */
   def run(
       sup: PoolSupervisor,
       opa: Option[OpaAuthorizer],
-      req: OpaTestRequest
+      req: OpaTestRequest,
+      detailedErrors: Boolean
   ): Either[(String, String), OpaTestResponse] =
     for
       authz  <- opa.toRight("opa_not_wired" -> "OPA is not wired on this manager")
@@ -39,14 +49,13 @@ object OpaDryRun:
         .toRight("not_found" -> s"pool '${req.pool}' not found in tenant '${tenant.id}'")
       user <- sup
         .findUserForLogin(tenant.id, req.user)
+        // A superuser row is never an opa tenant's principal (OPA is never asked about it), and
+        // answering it differently from an unknown user would make this a superuser-name oracle.
+        .filter(_.tenant.nonEmpty)
         .toRight("not_found" -> s"user '${req.user}' not found in tenant '${tenant.id}'")
-      eff =
-        // Superusers carry an empty set, as at the handshake.
-        if user.tenant.isEmpty then EffectiveSet(user, Nil, Nil, Nil, Nil)
-        else
-          sup
-            .effectiveSetForUser(user.id)
-            .getOrElse(EffectiveSet(user, Nil, Nil, Nil, Nil))
+      eff = sup
+        .effectiveSetForUser(user.id)
+        .getOrElse(EffectiveSet(user, Nil, Nil, Nil, Nil))
       target = OpaTarget(key.tenant, key.tenantDb, key.pool, sup.parentPoolNamesOf(key))
       u      = OpaUser(user.username, eff.roles.map(_.name), eff.groups.map(_.name), Map.empty)
       built <- req.sql.map(_.trim).filter(_.nonEmpty) match
@@ -68,9 +77,16 @@ object OpaDryRun:
               val text = Option.when(tenant.acl.sendStatementText)(sql)
               Right(("statement", OpaInput.statement(target, u, Edge, cls, gated, text), gated))
       (rule, input, accesses) = built
-    yield toResponse(rule, input, authz.dryRun(tenant, input, rule, accesses))
+    yield toResponse(rule, input, authz.dryRun(tenant, input, rule, accesses), detailedErrors)
 
-  private def toResponse(rule: String, input: Json, d: Decision): OpaTestResponse = d match
+  private def toResponse(
+      rule: String,
+      input: Json,
+      d: Decision,
+      detailedErrors: Boolean
+  ): OpaTestResponse = d match
     case Decision.Allow(id)           => OpaTestResponse(rule, input, "allow", None, id)
     case Decision.Deny(reason, _, id) => OpaTestResponse(rule, input, "deny", Some(reason), id)
-    case Decision.Error(cause)        => OpaTestResponse(rule, input, "error", Some(cause), None)
+    case Decision.Error(cause)        =>
+      val shown = if detailedErrors then cause else GenericTransportError
+      OpaTestResponse(rule, input, "error", Some(shown), None)

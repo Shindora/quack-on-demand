@@ -632,6 +632,32 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
     s.listTenants().find(_.id == "acme").get.acl.opaToken shouldBe Some("real-token")
   }
 
+  it should "refuse to carry a redacted opaToken over to a changed opaUrl" in {
+    val s           = new InMemoryControlPlaneStore()
+    val existingAcl =
+      ai.starlake.quack.model.TenantAcl(Some("opa"), Some("http://opa"), None, Some("real-token"))
+    s.upsertTenant(Tenant(id = "acme", displayName = "acme", acl = existingAcl))
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(
+            ManifestTenantAcl(
+              mode = Some("opa"),
+              opaUrl = Some("http://elsewhere"),
+              opaToken = Some(ai.starlake.quack.model.FederatedSecret.RedactedMarker)
+            )
+          )
+        )
+      )
+    )
+    val err = ManifestImporter.apply(m, s, requireEncryption = false).left.toOption.get
+    err.exists(e => e.contains("acme") && e.contains("opaToken") && e.contains("opaUrl")) shouldBe
+      true
+    // Caught before any write: the stored token never followed the new URL.
+    s.listTenants().find(_.id == "acme").get.acl shouldBe existingAcl
+  }
+
   it should "error when a new tenant's manifest carries a redacted opaToken with nothing to reuse" in {
     val s = new InMemoryControlPlaneStore()
     val m = base.copy(tenants =

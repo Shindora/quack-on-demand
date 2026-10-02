@@ -1529,12 +1529,16 @@ final class PoolSupervisor(
         case Some(t) =>
           def trimmed(v: Option[String], cur: Option[String]): Option[String] =
             v.fold(cur)(s => Option(s).map(_.trim).filter(_.nonEmpty))
-          val acl = t.acl.copy(
+          val opaUrl = trimmed(patch.opaUrl, t.acl.opaUrl)
+          // The stored bearer was issued for the stored URL: it never follows a URL change.
+          // A new URL keeps a token only when the same patch supplies it.
+          val keptToken = if opaUrl == t.acl.opaUrl then t.acl.opaToken else None
+          val acl       = t.acl.copy(
             // Not trimmed: the mode is matched exactly, so " opa" is refused, not normalized.
             mode = patch.mode.fold(t.acl.mode)(s => Option(s).filter(_.nonEmpty)),
-            opaUrl = trimmed(patch.opaUrl, t.acl.opaUrl),
+            opaUrl = opaUrl,
             opaPolicyPath = trimmed(patch.opaPolicyPath, t.acl.opaPolicyPath),
-            opaToken = patch.opaToken.fold(t.acl.opaToken)(s => Option(s).filter(_.nonEmpty)),
+            opaToken = patch.opaToken.fold(keptToken)(s => Option(s).filter(_.nonEmpty)),
             sendStatementText = patch.sendStatementText.getOrElse(t.acl.sendStatementText)
           )
           val invalid: Option[(String, String)] =
