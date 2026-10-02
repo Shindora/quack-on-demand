@@ -61,13 +61,26 @@ object Banner:
         * Required, not defaulted: the logger's ACL line sits below the default ERROR level, so this
         * banner is the one place an operator reliably sees whether grants are enforced.
         */
-      aclEnabled: Boolean
+      aclEnabled: Boolean,
+      /** Authorization engine of a tenant that sets none (`quack-flightsql.opa.defaultMode`, env
+        * `QOD_ACL_MODE`): `qod` or `opa`.
+        */
+      aclMode: String = "qod",
+      /** Tenants currently in `opa` mode. Their statements are enforced by their OPA even with the
+        * SQL ACL disabled, so the banner must never imply "nothing enforced" while one exists.
+        */
+      opaTenants: Int = 0
   ): String =
     def display(h: String) = if h == "0.0.0.0" || h == "::" then "localhost" else h
+    val opaInPlay          = aclMode != "qod" || opaTenants > 0
     val aclLine            =
       if aclEnabled then "   SQL ACL       : ENABLED (grants, column and row policies enforced)"
+      else if opaInPlay then
+        "   SQL ACL       : DISABLED for qod tenants (every statement admitted; set QOD_ACL_ENABLED=true to enforce); opa tenants enforced by OPA"
       else
         "   SQL ACL       : DISABLED (every statement admitted; set QOD_ACL_ENABLED=true to enforce)"
+    val modeLine =
+      s"   ACL MODE      : $aclMode (default for tenants that set none; $opaTenants tenant(s) in opa mode)"
     val rh        = display(restHost)
     val fh        = display(flightHost)
     val quackLine = quack.fold("") { case (h, p, tls) =>
@@ -94,6 +107,7 @@ object Banner:
        |   REST API + UI : http://$rh:$restPort  (UI: http://$rh:$restPort/ui)
        |   FlightSQL     : $scheme://$fh:$flightPort$quackLine
        |$aclLine
+       |$modeLine
        |
        | Client connection strings (replace <tenant>, <pool>, <user>):$quackStrings
        |   JDBC : jdbc:arrow-flight-sql://$fh:$flightPort/?tenant=<tenant>&pool=<pool>&user=<user>$jdbcTls
