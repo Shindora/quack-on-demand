@@ -12,7 +12,10 @@ enum HandshakeDenial(val message: String):
 
 /** Everything an edge knows about a handshake, for gate 4 and the OPA input. `superuserAdmissible`
   * is false when the credential was validated by a TENANT realm; `edge` names the front door
-  * (`flightsql`, `quack`, `mcp`) and lands in the OPA input's `client.edge`.
+  * (`flightsql`, `quack`, `mcp`) and lands in the OPA input's `client.edge`. `restriction` is the
+  * caller's personal-access-token scope (the routed executor's); a tenant principal's effective set
+  * is attenuated by it BEFORE gate 4, so an opa tenant's connect decision sees only the token's
+  * roles. The FlightSQL / Quack wires have no token concept and leave it Unrestricted.
   */
 final case class AuthzRequest(
     tenant: String,
@@ -22,7 +25,9 @@ final case class AuthzRequest(
     jwtGroups: Set[String] = Set.empty,
     jwtClaims: Map[String, String] = Map.empty,
     superuserAdmissible: Boolean = true,
-    edge: String = ""
+    edge: String = "",
+    restriction: ai.starlake.quack.ondemand.auth.TokenRestriction =
+      ai.starlake.quack.ondemand.auth.TokenRestriction.Unrestricted
 )
 
 /** Gate-4 seam for `opa` tenants. Lives in `ondemand` so PoolSupervisor does not depend on the edge

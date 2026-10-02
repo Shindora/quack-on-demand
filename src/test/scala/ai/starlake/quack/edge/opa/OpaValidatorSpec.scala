@@ -126,3 +126,18 @@ class OpaValidatorSpec extends AnyFlatSpec with Matchers:
     validator(Right((200, """{"result":{"allow":true}}""")), calls).validate(other) shouldBe
       a[Denied]
     calls.toString shouldBe ""
+
+  it should "deny a write outside a token's verb ceiling without asking OPA" in:
+    val calls = StringBuilder()
+    val v     = validator(Right((200, """{"result":{"allow":true}}""")), calls)
+    val ro    = eff(true).copy(verbCeiling = Some(Set(ai.starlake.acl.parser.Verb.Read)))
+    v.validate(ctx("INSERT INTO orders VALUES (1)", Some(ro))) match
+      case Denied(reason, unauthorized, meta) =>
+        reason should include("token verb ceiling")
+        unauthorized.map(_.verb) shouldBe Set(ai.starlake.acl.parser.Verb.Write)
+        meta.get("authz_source") shouldBe Some("opa")
+      case other => fail(s"expected Denied, got $other")
+    calls.toString shouldBe ""
+    // A read inside the ceiling still goes to OPA.
+    v.validate(ctx("SELECT * FROM orders", Some(ro))) shouldBe Allowed
+    calls.toString should include("/v1/data/qod/authz/statement")

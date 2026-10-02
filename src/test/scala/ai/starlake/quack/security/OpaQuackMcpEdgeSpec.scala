@@ -40,7 +40,13 @@ class OpaQuackMcpEdgeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     PoolKey(SecurityFixtures.TenantId, SecurityFixtures.TenantDbName, SecurityFixtures.PoolName)
 
   private def withHarness[A](body: (FlightEdgeHarness.Harness, SecurityFixtures.Fixture) => A): A =
+    withPreparedHarness(_ => ())(body)
+
+  private def withPreparedHarness[A](prep: SecurityFixtures.Fixture => Unit)(
+      body: (FlightEdgeHarness.Harness, SecurityFixtures.Fixture) => A
+  ): A =
     val fix = seed(s"http://localhost:${wm.port()}")
+    prep(fix)
     val opa = authorizer()
     val h   = FlightEdgeHarness.boot(
       fix.store,
@@ -227,4 +233,82 @@ class OpaQuackMcpEdgeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
         case Left(RouterFailure.Unavailable(reason)) =>
           reason should include("authorization service unavailable")
         case other => fail(s"expected Unavailable, got $other")
+    }
+
+  // ---------------------------------------------------------------------------------------------
+  // PAT attenuation on an opa tenant
+  // ---------------------------------------------------------------------------------------------
+
+  private def patRun(
+      h: FlightEdgeHarness.Harness,
+      restriction: ai.starlake.quack.ondemand.auth.TokenRestriction,
+      sql: String
+  ): Either[RouterFailure, QueryResult] =
+    executor(h)(
+      ExecCaller("mcp-acme", SecurityFixtures.BobUsername, restriction, patId = Some("pat-1")),
+      poolKey,
+      sql
+    ).unsafeRunSync()
+
+  private val roCeiling =
+    ai.starlake.quack.ondemand.auth.TokenRestriction.Unrestricted.copy(verbCeiling = Some("RO"))
+
+  "a read-only PAT on an opa tenant" should "be refused a write without asking OPA about it" in:
+    wm.resetAll()
+    stubConnect(wm, allow)
+    stubStatement(wm, allow)
+    withHarness { (h, _) =>
+      patRun(h, roCeiling, "INSERT INTO orders VALUES (3, 'c@x.io')") match
+        case Left(RouterFailure.AccessDenied(reason)) =>
+          reason should include("token verb ceiling")
+          reason should include("orders")
+        case other => fail(s"expected AccessDenied, got $other")
+      wm.verify(0, statementCalls)
+    }
+
+  it should "still run a read OPA allows" in:
+    wm.resetAll()
+    stubConnect(wm, allow)
+    stubStatement(wm, allow)
+    withHarness { (h, _) =>
+      val out = patRun(h, roCeiling, "SELECT * FROM orders")
+      out.isRight shouldBe true
+      out.toOption.get.close()
+      wm.verify(1, statementCalls)
+    }
+
+  "a role-narrowed PAT on an opa tenant" should "send OPA only the token's roles on connect" in:
+    wm.resetAll()
+    stubConnect(wm, allow)
+    stubStatement(wm, allow)
+    withPreparedHarness { fix =>
+      val s = fix.store
+      s.upsertRole(
+        ai.starlake.quack.ondemand.state
+          .RbacRole(id = "r-analyst1", tenantId = SecurityFixtures.TenantId, name = "analyst")
+      )
+      s.upsertRole(
+        ai.starlake.quack.ondemand.state
+          .RbacRole(id = "r-writer01", tenantId = SecurityFixtures.TenantId, name = "writer")
+      )
+      s.addUserRole(fix.bobUserId, "r-analyst1")
+      s.addUserRole(fix.bobUserId, "r-writer01")
+    } { (h, _) =>
+      val narrowed = ai.starlake.quack.ondemand.auth.TokenRestriction.Unrestricted
+        .copy(roles = Some(Set("analyst")))
+      val out = patRun(h, narrowed, "SELECT * FROM orders")
+      out.isRight shouldBe true
+      out.toOption.get.close()
+      wm.verify(
+        1,
+        connectCalls.withRequestBody(
+          matchingJsonPath("$.input.user.roles", equalToJson("""["analyst"]"""))
+        )
+      )
+      wm.verify(
+        1,
+        statementCalls.withRequestBody(
+          matchingJsonPath("$.input.user.roles", equalToJson("""["analyst"]"""))
+        )
+      )
     }

@@ -38,7 +38,20 @@ final class OpaValidator(
                 logger.info(s"OPA gate refused for user:${context.username}: $msg")
                 Denied(msg, meta = Source)
               case GateOutcome.NothingGated(_, _) => Allowed
-              case GateOutcome.Gated(gated, _)    =>
+              case GateOutcome.Gated(gated, _)
+                  if eff.verbCeiling.exists(c => gated.exists(a => !c.contains(a.verb))) =>
+                // A PAT's verb ceiling: attenuation clipped `permissions`, which this arm never
+                // reads, so the ceiling is enforced here, before OPA is asked anything.
+                val ceiling = eff.verbCeiling.getOrElse(Set.empty)
+                val outside = gated.filter(a => !ceiling.contains(a.verb))
+                val names   =
+                  outside.toList.map(a => s"${a.table.canonical}:${a.verb}").sorted.mkString(", ")
+                Denied(
+                  s"user:${context.username} denied by token verb ceiling on $names",
+                  outside,
+                  Source
+                )
+              case GateOutcome.Gated(gated, _) =>
                 val target = OpaTarget(key.tenant, key.tenantDb, key.pool, parentPoolsOf(key))
                 val user   = OpaUser(
                   context.username,

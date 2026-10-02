@@ -68,7 +68,7 @@ class AttenuationSpec extends AnyFlatSpec with Matchers:
   // the one case where that filter actually diverges from passthrough.
   it should "never subtract groups, even when every role is dropped" in {
     val withGroup = base.copy(groups = List(groupG))
-    val out = Attenuation.attenuatedBy(
+    val out       = Attenuation.attenuatedBy(
       withGroup,
       TokenRestriction.Unrestricted.copy(roles = Some(Set("no-such-role")))
     )
@@ -130,4 +130,27 @@ class AttenuationSpec extends AnyFlatSpec with Matchers:
       val original = base.permissions.find(_.id == p.id).get
       TokenRestriction.covers(p.verb).subsetOf(TokenRestriction.covers(original.verb)) shouldBe true
     }
+  }
+
+  it should "carry the token's verb ceiling as collapsed verbs (read by the OPA arm)" in {
+    import ai.starlake.acl.parser.Verb
+    def ceiling(v: String) =
+      Attenuation
+        .attenuatedBy(base, TokenRestriction.Unrestricted.copy(verbCeiling = Some(v)))
+        .verbCeiling
+    base.verbCeiling shouldBe None
+    ceiling("RO") shouldBe Some(Set(Verb.Read))
+    ceiling("RW") shouldBe Some(Set(Verb.Read, Verb.Write))
+    ceiling("DDL") shouldBe Some(Set(Verb.Ddl))
+    ceiling("ALL") shouldBe Some(Set(Verb.Read, Verb.Write, Verb.Ddl))
+    // No ceiling on the token: none on the set.
+    Attenuation
+      .attenuatedBy(base, TokenRestriction.Unrestricted.copy(roles = Some(Set("analyst"))))
+      .verbCeiling shouldBe None
+    // Attenuating twice only ever narrows.
+    val rw =
+      Attenuation.attenuatedBy(base, TokenRestriction.Unrestricted.copy(verbCeiling = Some("RW")))
+    Attenuation
+      .attenuatedBy(rw, TokenRestriction.Unrestricted.copy(verbCeiling = Some("DDL")))
+      .verbCeiling shouldBe Some(Set.empty)
   }

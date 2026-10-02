@@ -128,7 +128,14 @@ object RoutedExecutor:
         else
           IO.delay(
             sup.authorizeHandshakeDetailed(
-              AuthzRequest(poolKey.tenant, poolKey.pool, caller.identity, edge = "mcp")
+              AuthzRequest(
+                poolKey.tenant,
+                poolKey.pool,
+                caller.identity,
+                edge = "mcp",
+                // Attenuate before gate 4: an opa tenant's connect sees only the token's roles.
+                restriction = caller.restriction
+              )
             )
           ).map {
             case Left(HandshakeDenial.Unavailable(reason)) =>

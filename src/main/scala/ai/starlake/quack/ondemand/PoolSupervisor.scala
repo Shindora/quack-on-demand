@@ -3609,7 +3609,14 @@ final class PoolSupervisor(
                         effectiveSetForUser(user.id, req.jwtRoles, req.jwtGroups).getOrElse(
                           ai.starlake.quack.ondemand.rbac.EffectiveSet(user, Nil, Nil, Nil, Nil)
                         )
-                    val effC       = eff.copy(claims = req.jwtClaims)
+                    // A PAT's scope narrows a tenant principal before gate 4, so an opa
+                    // tenant's connect decision sees only the token's roles. Never applied to
+                    // the superuser set (empty, and never narrowed).
+                    val effC =
+                      if user.tenant.isEmpty then eff.copy(claims = req.jwtClaims)
+                      else
+                        ai.starlake.quack.ondemand.rbac.Attenuation
+                          .attenuatedBy(eff.copy(claims = req.jwtClaims), req.restriction)
                     val authorized = ai.starlake.quack.ondemand.rbac.AuthorizedHandshake(
                       poolKey = key,
                       tenantId = tenantRow.id,
