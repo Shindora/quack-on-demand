@@ -26,6 +26,12 @@ class OpaConfigSpec extends AnyFlatSpec with Matchers:
     OpaConfig.validate(OpaConfig.default.copy(cacheTtlSec = -1)).isLeft shouldBe true
     OpaConfig.validate(OpaConfig.default) shouldBe Right(OpaConfig.default)
 
+  it should "refuse a URL with credentials without echoing it" in:
+    val err =
+      OpaConfig.validate(OpaConfig.default.copy(url = "http://u:s3cr3t@m:8181")).left.toOption
+    err.isDefined shouldBe true
+    err.get should not include "s3cr3t"
+
   it should "return the trimmed URL" in:
     OpaConfig.validate(OpaConfig.default.copy(url = "  http://m:8181 ")) shouldBe
       Right(OpaConfig.default.copy(url = "http://m:8181"))

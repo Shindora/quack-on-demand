@@ -106,6 +106,11 @@ class TenantAclApiSpec extends AnyFlatSpec with Matchers with SecurityHttpHelper
         "invalid_acl_mode"
       code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaUrl":"opa:1"}""")) shouldBe
         "invalid_opa_url"
+      val creds =
+        postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaUrl":"http://u:s3cr3t@opa:1"}""")
+      code(creds) shouldBe "invalid_opa_url"
+      creds.body() should not include "s3cr3t"
+      creds.body() should include("without credentials")
       code(postJson(h, "/api/tenant/setAcl", s"""{"name":"$t","opaPolicyPath":"../x"}""")) shouldBe
         "invalid_opa_policy_path"
       code(

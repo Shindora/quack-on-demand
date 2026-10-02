@@ -94,7 +94,8 @@ object OpaConfig:
     if !ai.starlake.quack.model.TenantAcl.ValidModes.contains(c.defaultMode) then
       Left(s"QOD_ACL_MODE must be one of qod, opa (got '${c.defaultMode}')")
     else if c.url.trim.nonEmpty && !ai.starlake.quack.model.TenantAcl.validUrl(c.url.trim) then
-      Left(s"QOD_OPA_URL is not an absolute http(s) URL: '${c.url}'")
+      // Never echo the value: a rejected URL may carry credentials.
+      Left("QOD_OPA_URL must be an absolute http(s) URL without credentials")
     else if c.timeoutMs <= 0 then Left("QOD_OPA_TIMEOUT_MS must be > 0")
     else if c.cacheTtlSec < 0 then Left("QOD_OPA_CACHE_TTL_SEC must be >= 0")
     else Right(c.copy(url = c.url.trim))

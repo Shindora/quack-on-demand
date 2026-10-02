@@ -770,7 +770,7 @@ object ManifestImporter:
           if acl.mode.exists(m => !TenantAcl.ValidModes.contains(m)) then
             Left(s"tenant '$tenantName': invalid acl mode '${acl.mode.get}'")
           else if acl.opaUrl.exists(u => !TenantAcl.validUrl(u)) then
-            Left(s"tenant '$tenantName': invalid opaUrl '${acl.opaUrl.get}'")
+            Left(s"tenant '$tenantName': invalid opaUrl: ${TenantAcl.InvalidUrlMessage}")
           else if acl.opaPolicyPath.exists(p => !TenantAcl.validPolicyPath(p)) then
             Left(s"tenant '$tenantName': invalid opaPolicyPath '${acl.opaPolicyPath.get}'")
           else Right(acl)

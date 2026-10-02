@@ -795,6 +795,21 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
     err.exists(e => e.contains("acme") && e.contains("opaUrl")) shouldBe true
   }
 
+  it should "reject an opaUrl with credentials without echoing them" in {
+    val s = new InMemoryControlPlaneStore()
+    val m = base.copy(tenants =
+      List(
+        ManifestTenant(
+          name = "acme",
+          acl = Some(ManifestTenantAcl(opaUrl = Some("http://u:s3cr3t@opa:8181")))
+        )
+      )
+    )
+    val err = ManifestImporter.apply(m, s, requireEncryption = false).left.toOption.get
+    err.exists(e => e.contains("acme") && e.contains("opaUrl")) shouldBe true
+    err.exists(_.contains("s3cr3t")) shouldBe false
+  }
+
   it should "reject an invalid opaPolicyPath" in {
     val s = new InMemoryControlPlaneStore()
     val m = base.copy(tenants =

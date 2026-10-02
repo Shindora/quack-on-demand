@@ -1548,7 +1548,7 @@ final class PoolSupervisor(
                   "mode must be one of qod, opa (or empty for the manager default)"
               )
             else if acl.opaUrl.exists(u => !TenantAcl.validUrl(u)) then
-              Some("invalid_opa_url" -> "opaUrl must be an absolute http(s) URL")
+              Some("invalid_opa_url" -> TenantAcl.InvalidUrlMessage)
             else if acl.opaPolicyPath.exists(p => !TenantAcl.validPolicyPath(p)) then
               Some(
                 "invalid_opa_policy_path" ->

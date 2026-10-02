@@ -46,11 +46,18 @@ object TenantAcl:
   /** Slash-separated identifiers only: the path is spliced into `/v1/data/<path>/<rule>`. */
   def validPolicyPath(p: String): Boolean = PolicyPathRe.matches(p)
 
+  /** Absolute http(s) with a host and NO userinfo: credentials belong in `opaToken` (a write-only
+    * secret), never in a URL that responses, manifests and logs carry in clear.
+    */
   def validUrl(u: String): Boolean =
     Try(URI(u)).toOption.exists { uri =>
       val scheme = Option(uri.getScheme).map(_.toLowerCase)
-      (scheme.contains("http") || scheme.contains("https")) && Option(uri.getHost).nonEmpty
+      (scheme.contains("http") || scheme.contains("https")) && Option(uri.getHost).nonEmpty &&
+      uri.getRawUserInfo == null
     }
+
+  /** The one invalid-URL message. Never echoes the value: a rejected URL may carry credentials. */
+  val InvalidUrlMessage: String = "opaUrl must be an absolute http(s) URL without credentials"
 
 /** A partial update of [[TenantAcl]]: an omitted field (None) keeps the stored value, `Some("")`
   * clears it (mode `""` = the manager default, opaToken `""` = no token).

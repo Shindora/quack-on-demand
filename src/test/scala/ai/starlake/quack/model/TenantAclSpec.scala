@@ -41,6 +41,10 @@ class TenantAclSpec extends AnyFlatSpec with Matchers:
     Seq("opa:8181", "ftp://opa", "http://", "not a url", "")
       .foreach(u => withClue(u)(TenantAcl.validUrl(u) shouldBe false))
 
+  it should "reject a URL carrying credentials (userinfo)" in:
+    Seq("http://user:pw@opa:8181", "https://tok@opa.example.com/", "http://:pw@opa")
+      .foreach(u => withClue(u)(TenantAcl.validUrl(u) shouldBe false))
+
   "TenantAcl.toString" should "redact opaToken so no log line can ever print it" in:
     val withToken = TenantAcl(opaToken = Some("s3cr3t-x"))
     withToken.toString should not include "s3cr3t-x"
