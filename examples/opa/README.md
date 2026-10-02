@@ -183,6 +183,12 @@ Independently of OPA:
   change stays connected until it reconnects. Statement decisions re-evaluate within the TTL.
 - OPA cannot push a revocation to QoD. QoD-side events (user disabled, locked, deleted, logged out)
   keep their usual behaviour.
+- Cost of `QOD_OPA_CACHE_TTL_SEC=0`: the Flight edge authenticates on every RPC and validates a
+  statement twice, once in the schema probe (`GetFlightInfo`) and once in the fetch (`DoGet`). With
+  the cache off, one FlightSQL statement therefore costs **two statement decisions plus one connect
+  decision per RPC**, so OPA sees roughly three calls per query instead of one. The native Quack
+  front door and MCP validate once per statement. Keep a small positive TTL unless you need every
+  decision re-evaluated on the spot.
 
 ## Dry run
 
@@ -221,6 +227,16 @@ QOD_OPA_URL=http://127.0.0.1:8181 ...           # or per tenant: qod tenant set-
 qod tenant set-acl acme --mode opa
 qod tenant opa-test acme --pool bi --user alice --sql "SELECT * FROM tpch.main.orders"
 ```
+
+## Known limitation: FlightSQL denials in the schema probe are not audited
+
+A FlightSQL client asks for the result schema (`GetFlightInfo`) before it fetches rows (`DoGet`).
+QoD validates the statement at both steps, but the schema probe runs without journaling, so a
+statement OPA denies is refused at the probe and **no denial audit row** is written for it; the
+`authz_source=opa` / `opa_decision_id` row only appears for denials reached through the fetch, the
+native Quack front door, MCP or the REST preview. This is pre-existing behaviour of the Flight edge
+and applies to QoD-mode denials alike. Enable OPA decision logging if you need a complete record of
+FlightSQL denials.
 
 ## Known limitation: catalog listings
 
