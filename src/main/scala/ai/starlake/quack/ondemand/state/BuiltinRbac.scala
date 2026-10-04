@@ -25,6 +25,16 @@ object BuiltinRbac:
   def isReserved(name: String): Boolean =
     name.toLowerCase(Locale.ROOT).startsWith(ReservedPrefix)
 
+  /** The name a user-made row colliding with a built-in name is renamed to on backfill: the first
+    * of `<name>_renamed`, `<name>_renamed_2`, `<name>_renamed_3`, ... that `taken` reports free.
+    */
+  def renamedName(name: String, taken: String => Boolean): String =
+    Iterator
+      .from(1)
+      .map(i => if i == 1 then s"${name}_renamed" else s"${name}_renamed_$i")
+      .find(n => !taken(n))
+      .get
+
   final case class Rows(
       roles: List[RbacRole],
       groups: List[RbacGroup],

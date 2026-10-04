@@ -191,16 +191,39 @@ final class PostgresControlPlaneStore(
             ps.executeUpdate()
           finally ps.close()
 
+        // Case-insensitive: the qod_ prefix is reserved regardless of case. FOR UPDATE makes a
+        // concurrent replica block here, then re-check lower(name) on the renamed row and skip it.
         def renameCollisions(table: String, names: Set[String]): Unit =
           names.toList.sorted.foreach { n =>
-            exec(
-              s"UPDATE $table SET name = name || '_renamed' " +
-                "WHERE tenant_id = ? AND name = ? AND NOT builtin"
-            ) { ps =>
-              ps.setString(1, tenantId)
-              ps.setString(2, n)
+            val ps = c.prepareStatement(
+              s"SELECT id, name FROM $table WHERE tenant_id = ? AND lower(name) = ? " +
+                "AND NOT builtin ORDER BY id FOR UPDATE"
+            )
+            val colliding =
+              try
+                ps.setString(1, tenantId)
+                ps.setString(2, n.toLowerCase(Locale.ROOT))
+                val rs = ps.executeQuery()
+                try drain(rs)(r => (r.getString(1), r.getString(2)))
+                finally rs.close()
+              finally ps.close()
+            colliding.foreach { case (id, name) =>
+              val target = BuiltinRbac.renamedName(name, candidate => nameTaken(table, candidate))
+              exec(s"UPDATE $table SET name = ? WHERE id = ?") { ps =>
+                ps.setString(1, target)
+                ps.setString(2, id)
+              }
             }
           }
+        def nameTaken(table: String, name: String): Boolean =
+          val ps = c.prepareStatement(s"SELECT 1 FROM $table WHERE tenant_id = ? AND name = ?")
+          try
+            ps.setString(1, tenantId)
+            ps.setString(2, name)
+            val rs = ps.executeQuery()
+            try rs.next()
+            finally rs.close()
+          finally ps.close()
         renameCollisions("qodstate_role", BuiltinRbac.RoleNames)
         renameCollisions("qodstate_group", BuiltinRbac.GroupNames)
 

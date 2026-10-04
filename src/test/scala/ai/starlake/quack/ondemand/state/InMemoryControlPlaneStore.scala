@@ -27,7 +27,7 @@ import scala.collection.concurrent.TrieMap
   * Postgres; the in-memory store mirrors that by reaping the dependent edges/permissions on parent
   * removal.
   */
-final class InMemoryControlPlaneStore extends ControlPlaneStore:
+class InMemoryControlPlaneStore extends ControlPlaneStore:
 
   private val tenants   = TrieMap.empty[String, Tenant]
   private val tenantDbs = TrieMap.empty[String, TenantDb]
@@ -54,12 +54,21 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
     builtins.poolGrants.foreach(insertPoolPermission)
 
   def ensureBuiltins(tenantId: String): BuiltinRbac.Rows = synchronized {
-    roles.values
-      .filter(r => r.tenantId == tenantId && !r.builtin && BuiltinRbac.RoleNames(r.name))
-      .foreach(r => upsertRole(r.copy(name = s"${r.name}_renamed")))
-    groups.values
-      .filter(g => g.tenantId == tenantId && !g.builtin && BuiltinRbac.GroupNames(g.name))
-      .foreach(g => upsertGroup(g.copy(name = s"${g.name}_renamed")))
+    def collides(names: Set[String], name: String): Boolean = names.exists(_.equalsIgnoreCase(name))
+    roles.values.toList
+      .filter(r => r.tenantId == tenantId && !r.builtin && collides(BuiltinRbac.RoleNames, r.name))
+      .sortBy(_.id)
+      .foreach { r =>
+        val target = BuiltinRbac.renamedName(r.name, findRole(tenantId, _).isDefined)
+        upsertRole(r.copy(name = target))
+      }
+    groups.values.toList
+      .filter(g => g.tenantId == tenantId && !g.builtin && collides(BuiltinRbac.GroupNames, g.name))
+      .sortBy(_.id)
+      .foreach { g =>
+        val target = BuiltinRbac.renamedName(g.name, findGroup(tenantId, _).isDefined)
+        upsertGroup(g.copy(name = target))
+      }
     val fresh = BuiltinRbac.rowsFor(tenantId)
     fresh.roles.foreach(r => if findRole(tenantId, r.name).isEmpty then putRole(r))
     fresh.groups.foreach(g => if findGroup(tenantId, g.name).isEmpty then putGroup(g))

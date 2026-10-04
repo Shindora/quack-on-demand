@@ -119,6 +119,24 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
       store.findRole("acme", BuiltinRbac.AllTables).map(_.builtin) shouldBe Some(true)
   }
 
+  it should "pick the first free _renamed_N suffix and match built-in names case-insensitively" in
+    withStore { store =>
+      store.upsertTenant(Tenant(id = "acme"))
+      store.upsertRole(RbacRole("r-mine", "acme", BuiltinRbac.AllTables))
+      store.upsertRole(RbacRole("r-prev", "acme", s"${BuiltinRbac.AllTables}_renamed"))
+      store.upsertGroup(RbacGroup("g-upper", "acme", "QOD_NO_POOLS"))
+      BuiltinRbacBackfill.run(store)
+      store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed_2")
+      store.getRole("r-prev").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed")
+      store.getGroup("g-upper").map(_.name) shouldBe Some("QOD_NO_POOLS_renamed")
+      store.findRole("acme", BuiltinRbac.AllTables).map(_.builtin) shouldBe Some(true)
+      store.findGroup("acme", BuiltinRbac.NoPools).map(_.builtin) shouldBe Some(true)
+      // A second run leaves the renamed rows alone.
+      BuiltinRbacBackfill.run(store)
+      store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed_2")
+      store.getGroup("g-upper").map(_.name) shouldBe Some("QOD_NO_POOLS_renamed")
+    }
+
   it should "be idempotent" in withStore { store =>
     legacyTenant(store, "acme")
     BuiltinRbacBackfill.run(store)
@@ -194,4 +212,31 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
     // A fresh id never gets the flag through an upsert either.
     store.upsertRole(RbacRole("r-new", "acme", "new", builtin = true))
     store.getRole("r-new").map(_.builtin) shouldBe Some(false)
+  }
+
+  it should "pick the first free _renamed_N suffix case-insensitively, like Postgres" in {
+    val store = new InMemoryControlPlaneStore
+    store.upsertTenant(Tenant(id = "acme"))
+    store.upsertRole(RbacRole("r-mine", "acme", BuiltinRbac.AllTables))
+    store.upsertRole(RbacRole("r-prev", "acme", s"${BuiltinRbac.AllTables}_renamed"))
+    store.upsertGroup(RbacGroup("g-upper", "acme", "QOD_NO_POOLS"))
+    BuiltinRbacBackfill.run(store)
+    store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed_2")
+    store.getRole("r-prev").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed")
+    store.getGroup("g-upper").map(_.name) shouldBe Some("QOD_NO_POOLS_renamed")
+    store.findGroup("acme", BuiltinRbac.NoPools).map(_.builtin) shouldBe Some(true)
+  }
+
+  "BuiltinRbacBackfill.run" should "log and skip a failing tenant, still backfilling the others" in {
+    val store = new InMemoryControlPlaneStore:
+      override def ensureBuiltins(tenantId: String): BuiltinRbac.Rows =
+        if tenantId == "broken" then throw new java.sql.SQLException("boom")
+        else super.ensureBuiltins(tenantId)
+    List("alpha", "broken", "zulu").foreach(id => store.upsertTenant(Tenant(id = id)))
+    noException should be thrownBy BuiltinRbacBackfill.run(store)
+    List("alpha", "zulu").foreach { id =>
+      store.listRoles(id).filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.RoleNames
+      store.listGroups(id).filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.GroupNames
+    }
+    store.listRoles("broken") shouldBe Nil
   }
