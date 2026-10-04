@@ -516,8 +516,11 @@ qod role permission list --role-id <roleId>
 qod role permission grant --role-id <roleId> --catalog acme_tpch --schema tpch1 --table customer --verb RO
 qod role permission revoke <permissionId>
 
-# Users
+# Users (--kind admin | user is the account kind; --role / --group are RBAC memberships)
 qod user create --tenant acme --username alice --kind user   # prompts for the password
+# Pick memberships at create time (repeatable; names, not ids). Omitted = the permissive defaults.
+qod user create --tenant acme --username bob --role analyst --group analysts
+qod user create --tenant acme --username eve --role qod_no_tables --group qod_no_pools
 
 # Groups
 qod group create --tenant acme --name analysts
@@ -533,7 +536,46 @@ qod pool permission grant --tenant acme --pool-id <poolId> --group-id <groupId>
 qod pool permission revoke <id>
 ```
 
+### Built-in roles and groups (every tenant)
+
+Every tenant carries four built-ins, created with the tenant (and backfilled into existing
+tenants on manager boot):
+
+| Name | Kind | Grants |
+|---|---|---|
+| `qod_all_tables` | role | `* * * ALL` (every table, every verb) |
+| `qod_no_tables` | role | nothing |
+| `qod_all_pools` | group | access to every pool of the tenant |
+| `qod_no_pools` | group | nothing |
+
+- **New tenant users default to `qod_all_tables` + `qod_all_pools`**: ALL on every table of
+  every pool. To create a restricted user, name its memberships at create time
+  (`--role` / `--group` in the CLI, `roles` / `groups` in REST and MCP, `ROLES ... GROUPS ...`
+  in SQL `CREATE USER`). Use `--role qod_no_tables --group qod_no_pools` for a user that can
+  reach nothing until you grant it something.
+- An omitted list takes the default; an explicitly empty list is refused (`400 roles_required`
+  / `groups_required`); an unknown name is `400 unknown_role` / `unknown_group`.
+- `--role` / `--group` do not apply to superusers (no tenant): sending either is a 400. SCIM
+  provisioning and manifest import attach nothing by default.
+- The built-ins cannot be deleted or edited (permissions, column/row policies, group-role
+  bindings, pool grants): `409 builtin_protected`. User memberships in them are freely added and removed.
+- The `qod_` name prefix is reserved for built-ins (case-insensitive): creating a role or group
+  named `qod_...` is `400 reserved_name`. Manifest export omits the built-ins and refuses
+  (`400 reserved_name`) when a user-made `qod_...` role or group exists; rename it first. On
+  upgrade, a pre-existing user-made role or group holding a built-in name is renamed
+  `<name>_renamed` (or `<name>_renamed_N`), and a pristine legacy `admin` role (one `* * * ALL`
+  permission, no policies) is folded into `qod_all_tables`.
+- Upgrade note: the user field formerly called `role` (admin | user) is now `kind` everywhere:
+  REST, CLI `--kind` (`--role` now means an RBAC role), MCP, the manifest `kind` key, custom
+  `QOD_AUTH_DB_*_QUERY` overrides (which must project `kind`), and `QOD_ADMIN_KIND` (formerly
+  `QOD_ADMIN_ROLE`) for the seeded admin. New tenants no longer get an `admin` role.
+
 ### Grant a team read access (6-step flow)
+
+The flow below narrows access only for users that do not also hold the defaults: create the
+user with `--role qod_no_tables --group qod_no_pools` (or with the team's own role and group),
+or remove its `qod_all_tables` / `qod_all_pools` memberships.
+
 
 ```bash
 # 1. Create a role (qod --json prints the raw response so the id can be captured)
