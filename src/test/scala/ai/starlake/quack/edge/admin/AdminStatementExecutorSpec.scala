@@ -2,7 +2,7 @@ package ai.starlake.quack.edge.admin
 
 import ai.starlake.quack.model.{PoolKey, RoleDistribution, Tenant, TenantDbKind}
 import ai.starlake.quack.ondemand.rbac.EffectiveSet
-import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, RbacUser}
+import ai.starlake.quack.ondemand.state.{BuiltinRbac, InMemoryControlPlaneStore, RbacUser}
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
 import ai.starlake.quack.ondemand.telemetry.{
   AuditActions,
@@ -446,7 +446,8 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
         case Right(qr) => readAll(qr)
         case Left(f)   => fail(s"expected rows for '$sql', got $f")
 
-    val granted = rowsOf("SHOW POOL GRANTS")
+    // createTenant seeds the built-in qod_all_pools tenant-wide grant; leave it out.
+    val granted = rowsOf("SHOW POOL GRANTS").filterNot(_(3).contains(BuiltinRbac.AllPools))
     granted should have size 1
     granted.head(2) shouldBe Some("alice")
     rowsOf("SHOW POOL GRANTS FOR USER alice") shouldBe granted

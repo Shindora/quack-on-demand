@@ -8390,6 +8390,7 @@ components:
       - id
       - tenantId
       - name
+      - builtin
       properties:
         id:
           type: string
@@ -8399,6 +8400,8 @@ components:
           type: string
         description:
           type: string
+        builtin:
+          type: boolean
     GroupRoleMembershipRequest:
       title: GroupRoleMembershipRequest
       type: object
@@ -9689,6 +9692,7 @@ components:
       - tenantId
       - name
       - createdAt
+      - builtin
       properties:
         id:
           type: string
@@ -9700,6 +9704,8 @@ components:
           type: string
         createdAt:
           type: string
+        builtin:
+          type: boolean
     RowPolicyDto:
       title: RowPolicyDto
       type: object

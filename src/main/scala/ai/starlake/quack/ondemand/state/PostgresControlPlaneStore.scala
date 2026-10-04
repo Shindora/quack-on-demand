@@ -142,14 +142,10 @@ final class PostgresControlPlaneStore(
 
   def deleteTenant(id: String): Unit = withConn(c => deleteById(c, "qodstate_tenant", "id", id))
 
-  def createTenantWithAdminRole(
-      tenant: Tenant,
-      adminRole: RbacRole,
-      adminPermission: RolePermission
-  ): Unit = withConn { c =>
-    // Single connection + manual commit so the three inserts either all
-    // land or roll back together. INSERT (not upsert) because this is a
-    // bootstrap path -- a duplicate id is a programmer error.
+  def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit = withConn { c =>
+    // Single connection + manual commit so the tenant row and every built-in row either all land
+    // or roll back together. INSERT (not upsert) because this is a bootstrap path -- a duplicate
+    // id is a programmer error.
     c.setAutoCommit(false)
     try
       val tps = c.prepareStatement(
@@ -168,33 +164,10 @@ final class PostgresControlPlaneStore(
         tps.executeUpdate()
       finally tps.close()
 
-      val rps = c.prepareStatement(
-        """INSERT INTO qodstate_role (id, tenant_id, name, description)
-          |VALUES (?, ?, ?, ?)""".stripMargin
-      )
-      try
-        rps.setString(1, adminRole.id)
-        rps.setString(2, adminRole.tenantId)
-        rps.setString(3, adminRole.name)
-        setNullable(rps, 4, adminRole.description)
-        rps.executeUpdate()
-      finally rps.close()
-
-      val pps = c.prepareStatement(
-        """INSERT INTO qodstate_role_permission
-          |  (id, role_id, catalog_name, schema_name, table_name, verb)
-          |VALUES (?, ?, ?, ?, ?, ?)""".stripMargin
-      )
-      try
-        pps.setString(1, adminPermission.id)
-        pps.setString(2, adminPermission.roleId)
-        pps.setString(3, adminPermission.catalogName)
-        pps.setString(4, adminPermission.schemaName)
-        pps.setString(5, adminPermission.tableName)
-        pps.setString(6, adminPermission.verb.toUpperCase(Locale.ROOT))
-        pps.executeUpdate()
-      finally pps.close()
-
+      builtins.roles.foreach(r => insertRoleRow(c, r))
+      builtins.groups.foreach(g => insertGroupRow(c, g))
+      builtins.permissions.foreach(p => insertRolePermissionRow(c, p))
+      builtins.poolGrants.foreach(p => insertPoolPermissionRow(c, p))
       c.commit()
     catch
       case t: Throwable =>
@@ -203,6 +176,64 @@ final class PostgresControlPlaneStore(
         throw t
     finally c.setAutoCommit(true)
   }
+
+  private def insertRoleRow(c: Connection, r: RbacRole): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_role (id, tenant_id, name, description, builtin)
+        |VALUES (?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, r.id)
+      ps.setString(2, r.tenantId)
+      ps.setString(3, r.name)
+      setNullable(ps, 4, r.description)
+      ps.setBoolean(5, r.builtin)
+      ps.executeUpdate()
+    finally ps.close()
+
+  private def insertGroupRow(c: Connection, g: RbacGroup): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_group (id, tenant_id, name, description, builtin)
+        |VALUES (?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, g.id)
+      ps.setString(2, g.tenantId)
+      ps.setString(3, g.name)
+      setNullable(ps, 4, g.description)
+      ps.setBoolean(5, g.builtin)
+      ps.executeUpdate()
+    finally ps.close()
+
+  private def insertRolePermissionRow(c: Connection, p: RolePermission): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_role_permission
+        |  (id, role_id, catalog_name, schema_name, table_name, verb)
+        |VALUES (?, ?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, p.id)
+      ps.setString(2, p.roleId)
+      ps.setString(3, p.catalogName)
+      ps.setString(4, p.schemaName)
+      ps.setString(5, p.tableName)
+      ps.setString(6, p.verb.toUpperCase(Locale.ROOT))
+      ps.executeUpdate()
+    finally ps.close()
+
+  private def insertPoolPermissionRow(c: Connection, p: PoolPermission): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_pool_permission (id, tenant_id, pool_id, user_id, group_id)
+        |VALUES (?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, p.id)
+      ps.setString(2, p.tenantId)
+      setNullable(ps, 3, p.poolId)
+      setNullable(ps, 4, p.userId)
+      setNullable(ps, 5, p.groupId)
+      ps.executeUpdate()
+    finally ps.close()
 
   private def readTenant(rs: ResultSet): Tenant =
     Tenant(
@@ -852,7 +883,7 @@ final class PostgresControlPlaneStore(
 
   def listRoles(tenantId: String): List[RbacRole] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, created_at
+      """SELECT id, tenant_id, name, description, created_at, builtin
         |FROM qodstate_role WHERE tenant_id = ? ORDER BY name""".stripMargin
     )
     try
@@ -865,7 +896,7 @@ final class PostgresControlPlaneStore(
 
   def getRole(id: String): Option[RbacRole] = withConn { c =>
     val ps = c.prepareStatement(
-      "SELECT id, tenant_id, name, description, created_at FROM qodstate_role WHERE id = ?"
+      "SELECT id, tenant_id, name, description, created_at, builtin FROM qodstate_role WHERE id = ?"
     )
     try
       ps.setString(1, id)
@@ -877,7 +908,7 @@ final class PostgresControlPlaneStore(
 
   def findRole(tenantId: String, name: String): Option[RbacRole] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, created_at
+      """SELECT id, tenant_id, name, description, created_at, builtin
         |FROM qodstate_role WHERE tenant_id = ? AND name = ?""".stripMargin
     )
     try
@@ -898,7 +929,8 @@ final class PostgresControlPlaneStore(
       tenantId = rs.getString("tenant_id"),
       name = rs.getString("name"),
       description = Option(rs.getString("description")),
-      createdAt = Option(rs.getTimestamp("created_at")).map(_.toInstant)
+      createdAt = Option(rs.getTimestamp("created_at")).map(_.toInstant),
+      builtin = rs.getBoolean("builtin")
     )
 
   // ---------------- RBAC: role permissions ----------------
@@ -1010,7 +1042,7 @@ final class PostgresControlPlaneStore(
 
   def listGroups(tenantId: String): List[RbacGroup] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, external_id FROM qodstate_group
+      """SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group
         |WHERE tenant_id = ? ORDER BY name""".stripMargin
     )
     try
@@ -1023,7 +1055,7 @@ final class PostgresControlPlaneStore(
 
   def getGroup(id: String): Option[RbacGroup] = withConn { c =>
     val ps = c.prepareStatement(
-      "SELECT id, tenant_id, name, description, external_id FROM qodstate_group WHERE id = ?"
+      "SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group WHERE id = ?"
     )
     try
       ps.setString(1, id)
@@ -1035,7 +1067,7 @@ final class PostgresControlPlaneStore(
 
   def findGroup(tenantId: String, name: String): Option[RbacGroup] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, external_id FROM qodstate_group
+      """SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group
         |WHERE tenant_id = ? AND name = ?""".stripMargin
     )
     try
@@ -1056,7 +1088,8 @@ final class PostgresControlPlaneStore(
       tenantId = rs.getString("tenant_id"),
       name = rs.getString("name"),
       description = Option(rs.getString("description")),
-      externalId = Option(rs.getString("external_id"))
+      externalId = Option(rs.getString("external_id")),
+      builtin = rs.getBoolean("builtin")
     )
 
   // ---------------- RBAC: memberships ----------------
@@ -1567,7 +1600,7 @@ final class PostgresControlPlaneStore(
       ),
       roles = selectAll(
         c,
-        "SELECT id, tenant_id, name, description, created_at FROM qodstate_role ORDER BY tenant_id, name",
+        "SELECT id, tenant_id, name, description, created_at, builtin FROM qodstate_role ORDER BY tenant_id, name",
         readRole
       ),
       rolePermissions = selectAll(
@@ -1577,7 +1610,7 @@ final class PostgresControlPlaneStore(
       ),
       groups = selectAll(
         c,
-        "SELECT id, tenant_id, name, description, external_id FROM qodstate_group ORDER BY tenant_id, name",
+        "SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group ORDER BY tenant_id, name",
         readGroup
       ),
       userGroups = selectAll(

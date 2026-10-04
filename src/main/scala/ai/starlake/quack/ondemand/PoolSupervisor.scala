@@ -27,6 +27,7 @@ import ai.starlake.quack.ondemand.runtime.{
   QuackBackend
 }
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
   ControlPlaneStore,
   DbAdmin,
   EmailPolicy,
@@ -1442,27 +1443,16 @@ final class PoolSupervisor(
               id = id,
               displayName = if t.displayName.trim.nonEmpty then t.displayName.trim else id
             )
-            // Every new tenant gets a built-in `admin` role with a wildcard ALL permission,
-            // inserted in the same transaction as the tenant row so a partial failure leaves no
-            // orphans. BootstrapAccessSeeder wires the bootstrap admin superuser to it at boot.
-            val adminRole = RbacRole(
-              id = newId("r"),
-              tenantId = withId.id,
-              name = PoolSupervisor.AdminRoleName,
-              description = Some(s"Built-in admin role for tenant ${withId.displayName}")
-            )
-            val adminPerm = RolePermission(
-              id = newId("rp"),
-              roleId = adminRole.id,
-              catalogName = RolePermission.Wildcard,
-              schemaName = RolePermission.Wildcard,
-              tableName = RolePermission.Wildcard,
-              verb = "ALL"
-            )
-            store.createTenantWithAdminRole(withId, adminRole, adminPerm)
+            // Every new tenant gets the four protected built-ins (BuiltinRbac), in the same
+            // transaction as the tenant row so a partial failure leaves no orphans.
+            val builtins = BuiltinRbac.rowsFor(withId.id)
+            store.createTenantWithBuiltins(withId, builtins)
             tenants.put(withId.id, withId)
-            rbacResolver.putRole(adminRole)
-            rbacResolver.putRolePermission(adminPerm)
+            builtins.roles.foreach(rbacResolver.putRole)
+            builtins.groups.foreach(rbacResolver.putGroup)
+            builtins.permissions.foreach(rbacResolver.putRolePermission)
+            builtins.poolGrants.foreach(rbacResolver.putPoolPermission)
+            invalidateEffectiveCache()
             publish.topologyChanged()
             events.emit(ManagerEvent.TenantCreated(withId.id))
             Right(withId)
@@ -3779,7 +3769,6 @@ final class PoolSupervisor(
     }
 
 object PoolSupervisor:
-  val AdminRoleName: String = "admin"
 
   /** Concatenate per-pool [[ai.starlake.quack.ondemand.PoolState.initSql]] with the federation blob
     * for shipment as a single `extraSetupSql` to spawn-quack-node.sh. Order: `initSql` FIRST

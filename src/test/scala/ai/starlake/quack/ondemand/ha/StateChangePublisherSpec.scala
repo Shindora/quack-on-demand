@@ -45,10 +45,12 @@ class StateChangePublisherSpec extends AnyFlatSpec with Matchers:
 
   it should "publish rbacChanged on RBAC mutations but not on restore" in {
     val (sup, rec) = fresh()
-    sup.createRole("acme", "analyst").unsafeRunSync()
+    // createTenant seeds the BuiltinRbac rows, itself an RBAC mutation peers must reload.
     rec.rbac shouldBe 1
+    sup.createRole("acme", "analyst").unsafeRunSync()
+    rec.rbac shouldBe 2
     sup.restore()
-    rec.rbac shouldBe 1 // restore invalidates locally, never broadcasts
+    rec.rbac shouldBe 2 // restore invalidates locally, never broadcasts
   }
 
   it should "broadcast both channels via broadcastStateChanged for external store writers" in {

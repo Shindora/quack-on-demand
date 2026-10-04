@@ -44,16 +44,14 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
   def updateTenantAcl(tenantId: String, acl: TenantAcl): Unit =
     tenants.updateWith(tenantId)(_.map(_.copy(acl = acl)))
 
-  def createTenantWithAdminRole(
-      tenant: Tenant,
-      adminRole: RbacRole,
-      adminPermission: RolePermission
-  ): Unit =
+  def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit =
     if tenants.contains(tenant.id) then
       throw new java.sql.SQLException(s"tenant id ${tenant.id} already exists")
     tenants.put(tenant.id, tenant)
-    upsertRole(adminRole)
-    insertRolePermission(adminPermission)
+    builtins.roles.foreach(upsertRole)
+    builtins.groups.foreach(upsertGroup)
+    builtins.permissions.foreach(insertRolePermission)
+    builtins.poolGrants.foreach(insertPoolPermission)
   def listTenants(): List[Tenant]    = tenants.values.toList.sortBy(_.displayName)
   def deleteTenant(id: String): Unit =
     if tenantDbs.values.exists(_.tenantId == id) then

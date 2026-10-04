@@ -10,3 +10,27 @@ databaseChangeLog:
             tableName: qodstate_user
             oldColumnName: role
             newColumnName: kind
+  - changeSet:
+      id: 0045-builtin-rbac
+      author: qod
+      changes:
+        # Marks the per-tenant built-ins (qod_no_tables, qod_all_tables, qod_no_pools,
+        # qod_all_pools). Rows are seeded by the store, not here: see BuiltinRbacBackfill.
+        - addColumn:
+            tableName: qodstate_role
+            columns:
+              - column:
+                  name: builtin
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+        - addColumn:
+            tableName: qodstate_group
+            columns:
+              - column:
+                  name: builtin
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false

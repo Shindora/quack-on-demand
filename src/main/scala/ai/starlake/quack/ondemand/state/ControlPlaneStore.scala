@@ -39,16 +39,11 @@ trait ControlPlaneStore:
   def listTenants(): List[Tenant]
   def deleteTenant(id: String): Unit
 
-  /** Bootstrap a new tenant atomically: insert the tenant row, its built-in `admin` role, and the
-    * `*.*.* ALL` permission attached to that role -- all three in a single transaction so a partial
-    * failure leaves no orphan role / permission rows. Caller picks the role / permission ids.
-    * Throws on uniqueness violation.
+  /** Bootstrap a new tenant atomically: the tenant row plus every [[BuiltinRbac]] row (roles,
+    * groups, the role permission, the tenant-wide pool grant) in one transaction, so a partial
+    * failure leaves no orphans. Throws on uniqueness violation.
     */
-  def createTenantWithAdminRole(
-      tenant: Tenant,
-      adminRole: RbacRole,
-      adminPermission: RolePermission
-  ): Unit
+  def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit
 
   def upsertTenantDb(t: TenantDb): Unit
   def listTenantDbs(tenantId: String): List[TenantDb]

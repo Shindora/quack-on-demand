@@ -18,6 +18,10 @@ import org.scalatest.matchers.should.Matchers
 
 class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
 
+  /** True for a role or group JSON row the tenant got from BuiltinRbac seeding. */
+  private def isBuiltin(j: Json): Boolean =
+    j.hcursor.get[Boolean]("builtin").toOption.contains(true)
+
   private val Tenant0  = "acme"
   private val patToken = "qod_pat_alice"
 
@@ -289,9 +293,9 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       .downField("groups")
       .values
       .get
+      .filterNot(isBuiltin)
       .size shouldBe 1
-    // create_tenant seeds a built-in "admin" role (PoolSupervisor.createTenant), so the tenant
-    // already has 1 role before "reader" is created here.
+    // create_tenant also seeds the built-in roles and groups (BuiltinRbac); count user-made ones.
     f.call("list_roles", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
       .toOption
       .get
@@ -299,7 +303,8 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       .downField("roles")
       .values
       .get
-      .size shouldBe 2
+      .filterNot(isBuiltin)
+      .size shouldBe 1
   }
 
   "list_roles" should "infer the tenant for a tenant-scoped PAT" in {
@@ -313,8 +318,8 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     )
     val out = f.call("list_roles", adminPat()) // no tenant arg
     out.isRight shouldBe true
-    // create_tenant's built-in "admin" role plus the "reader" role created above.
-    out.toOption.get.hcursor.downField("roles").values.get.size shouldBe 2
+    // Only the "reader" role created above; create_tenant's built-ins are left out.
+    out.toOption.get.hcursor.downField("roles").values.get.filterNot(isBuiltin).size shouldBe 1
   }
 
   "add_membership" should "attach a user to a role and reflect in effective permissions" in {

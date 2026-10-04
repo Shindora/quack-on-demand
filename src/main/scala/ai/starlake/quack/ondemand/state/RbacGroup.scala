@@ -10,5 +10,7 @@ final case class RbacGroup(
     description: Option[String] = None,
     // SCIM 2.0 externalId: the provisioning IdP's identifier, set only through the
     // /api/scim surface. None = not IdP-managed.
-    externalId: Option[String] = None
+    externalId: Option[String] = None,
+    // True for the per-tenant built-ins (BuiltinRbac). Written only by the seeding paths.
+    builtin: Boolean = false
 )

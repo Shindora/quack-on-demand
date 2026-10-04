@@ -970,7 +970,8 @@ final case class RoleResponse(
     tenantId: String,
     name: String,
     description: Option[String],
-    createdAt: String
+    createdAt: String,
+    builtin: Boolean = false
 )
 final case class RoleListResponse(roles: List[RoleResponse])
 
@@ -1005,7 +1006,8 @@ final case class GroupResponse(
     id: String,
     tenantId: String,
     name: String,
-    description: Option[String]
+    description: Option[String],
+    builtin: Boolean = false
 )
 final case class GroupListResponse(groups: List[GroupResponse])
 

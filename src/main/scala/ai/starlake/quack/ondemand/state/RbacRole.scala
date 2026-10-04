@@ -11,5 +11,7 @@ final case class RbacRole(
     tenantId: String,
     name: String,
     description: Option[String] = None,
-    createdAt: Option[Instant] = None
+    createdAt: Option[Instant] = None,
+    // True for the per-tenant built-ins (BuiltinRbac). Written only by the seeding paths.
+    builtin: Boolean = false
 )

@@ -450,7 +450,8 @@ final class UserHandlers(
       description = r.description,
       createdAt = r.createdAt
         .map(_.toString)
-        .getOrElse(DateTimeFormatter.ISO_INSTANT.format(java.time.Instant.now()))
+        .getOrElse(DateTimeFormatter.ISO_INSTANT.format(java.time.Instant.now())),
+      builtin = r.builtin
     )
 
   def toGroupResponse(g: RbacGroup): GroupResponse =
@@ -458,7 +459,8 @@ final class UserHandlers(
       id = g.id,
       tenantId = g.tenantId,
       name = g.name,
-      description = g.description
+      description = g.description,
+      builtin = g.builtin
     )
 
   def toPoolPermissionResponse(p: PoolPermission): PoolPermissionResponse =
