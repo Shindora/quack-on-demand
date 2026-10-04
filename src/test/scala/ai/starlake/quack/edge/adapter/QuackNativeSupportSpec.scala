@@ -84,3 +84,32 @@ class QuackNativeSupportSpec extends AnyFlatSpec with Matchers:
     )
     result shouldBe false
   }
+
+  "QuackNativeSupport.probe" should "report nothing when the load succeeds" in {
+    QuackNativeSupport.probe(() => ()) shouldBe None
+  }
+
+  it should "unwrap a failed object init to the original link error, as a non-fatal exception" in {
+    val link = new UnsatisfiedLinkError("boom: Library not loaded: @rpath/libduckdb.dylib")
+    val got  = QuackNativeSupport.probe(() => throw new ExceptionInInitializerError(link))
+    got shouldBe defined
+    val e = got.get
+    scala.util.control.NonFatal(e) shouldBe true
+    e.getMessage should include("boom")
+    e.getMessage should include("DUCKDB_CACHE_DIR")
+    e.getCause shouldBe link
+  }
+
+  it should "unwrap the NoClassDefFoundError a second touch of a failed object raises" in {
+    val link   = new UnsatisfiedLinkError("boom")
+    val second = new NoClassDefFoundError("Could not initialize class QuackNativeBridge$")
+    second.initCause(new ExceptionInInitializerError(link))
+    val e = QuackNativeSupport.probe(() => throw second).get
+    scala.util.control.NonFatal(e) shouldBe true
+    e.getCause shouldBe link
+    e.getMessage should include("boom")
+  }
+
+  "QuackNativeSupport.requireLoaded" should "pass when the bundled native loads in this JVM" in {
+    noException should be thrownBy QuackNativeSupport.requireLoaded()
+  }

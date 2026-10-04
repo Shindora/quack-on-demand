@@ -247,6 +247,27 @@ lazy val root = (project in file("."))
       "--add-opens=java.base/java.nio=ALL-UNNAMED",
       "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
     ),
+    // libquackwire links libduckdb through an rpath that only exists on the build machine, so the
+    // forked test JVM relies on LibDuckDbPreload finding the pinned copy (macOS SIP strips DYLD_*
+    // from the bash-launched fork, so the loader path cannot help). A git worktree has no .duckdb
+    // cache of its own: point DUCKDB_CACHE_DIR at the main checkout's, unless already set.
+    Test / envVars ++= {
+      if (sys.env.get("DUCKDB_CACHE_DIR").exists(_.trim.nonEmpty)) Map.empty[String, String]
+      else {
+        val base   = baseDirectory.value
+        val common = scala.util
+          .Try(
+            scala.sys.process
+              .Process(Seq("git", "rev-parse", "--path-format=absolute", "--git-common-dir"), base)
+              .!!(scala.sys.process.ProcessLogger(_ => ()))
+              .trim
+          )
+          .toOption
+          .filter(_.nonEmpty)
+          .flatMap(d => Option(file(d).getParentFile))
+        Map("DUCKDB_CACHE_DIR" -> (common.getOrElse(base) / ".duckdb").getAbsolutePath)
+      }
+    },
 
     // For `java -jar distrib/...assembly.jar`: the Add-Opens manifest attribute
     // (JEP 261) makes the JVM apply the same opens automatically - users don't

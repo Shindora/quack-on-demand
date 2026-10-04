@@ -89,7 +89,10 @@ final class QuackProtocol(
     * `ai.starlake.quack.ondemand.runtime.LocalQuackBackend` produces. Translated to
     * `http://host:port/quack` for the actual HTTP POST.
     */
-  def open(endpoint: String, token: String): IO[Connection] =
+  def open(endpoint: String, token: String): IO[Connection] = IO.defer {
+    // Fail this IO, not the runtime: a broken native would otherwise surface as a fatal
+    // LinkageError at the first bridge call below (see QuackNativeSupport.probe).
+    QuackNativeSupport.requireLoaded()
     val url     = QuackProtocol.endpointToHttp(endpoint)
     val reqBody = QuackNativeBridge.serializeConnectionRequest(token)
     transport.post(url, reqBody).map { respBytes =>
@@ -107,6 +110,7 @@ final class QuackProtocol(
             s"unexpected response type after CONNECTION_REQUEST: $label"
           )
     }
+  }
 
 object QuackProtocol:
 

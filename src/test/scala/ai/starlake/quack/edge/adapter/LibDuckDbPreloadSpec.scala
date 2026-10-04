@@ -92,3 +92,29 @@ class LibDuckDbPreloadSpec extends AnyFunSpec with Matchers:
         load = _ => throw new UnsatisfiedLinkError("wrong architecture")
       ) shouldBe None
     }
+
+    it("prefers the DUCKDB_CACHE_DIR copy over the working directory's .duckdb cache") {
+      val cache = cacheWith("1.5.6")
+      val cwd   = Files.createTempDirectory("qod-cwd")
+      Files.move(cacheWith("1.5.6"), cwd.resolve(".duckdb"))
+      LibDuckDbPreload.preload(
+        abi = Some("1.5.6"),
+        env = Map("DUCKDB_CACHE_DIR" -> cache.toString),
+        cwd = cwd,
+        load = _ => ()
+      ) shouldBe Some(cache.resolve("1.5.6").resolve("lib").resolve(lib))
+    }
+
+  describe("the warning when nothing is found"):
+    it("names the ABI, every path tried and how to provision the cache") {
+      val tried = LibDuckDbPreload.candidates(
+        "1.5.6",
+        Map("DUCKDB_CACHE_DIR" -> "/cache"),
+        Path.of("/work/repo")
+      )
+      val msg = LibDuckDbPreload.notFoundMessage("1.5.6", tried)
+      msg should include("1.5.6")
+      tried.foreach(p => msg should include(p.toString))
+      msg should include("scripts/run-jar.sh")
+      msg should include("DUCKDB_CACHE_DIR")
+    }
