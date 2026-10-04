@@ -60,7 +60,11 @@ export function ScopedLayout({ all }: { all?: boolean }) {
   }
   return (
     <Ctx.Provider value={{ scope, scopedTenant: scope.kind === 'tenant' ? scope.tenant : null }}>
-      <Outlet />
+      {/* Keyed on the scope: switching tenant must not carry page state (pool filter, selected
+        * database, paging cursors) from the previous tenant, so the page remounts per scope. In
+        * React 18, state updates from in-flight requests of the unmounted page are dropped, which
+        * closes the stale-response race too. */}
+      <Outlet key={scopePrefix(scope)} />
     </Ctx.Provider>
   );
 }

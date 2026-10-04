@@ -119,8 +119,6 @@ export default function Usage() {
   // The tenant filter is the sidebar scope (empty under All tenants).
   const tenant = scopedTenant ?? '';
   const [pool, setPool] = useState('');
-  // A pool picked under the previous tenant does not exist under the new one.
-  useEffect(() => { setPool(''); }, [scopedTenant]);
 
   const [groups, setGroups] = useState<UsageGroupEntry[]>([]);
   const [resGroupBy, setResGroupBy] = useState<string>(groupBy);

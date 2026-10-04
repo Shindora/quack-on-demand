@@ -212,8 +212,6 @@ export default function History() {
   // The tenant filter is the sidebar scope (empty under All tenants).
   const tenant = scopedTenant ?? '';
   const [pool, setPool]     = useState('');
-  // A pool picked under the previous tenant does not exist under the new one.
-  useEffect(() => { setPool(''); }, [scopedTenant]);
   const [buckets, setBuckets] = useState<TrendBucketEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr]         = useState('');
