@@ -110,8 +110,8 @@ final class AdminStatementExecutor(
               run(ctx, cmd)
     }
 
-  /** Superuser (tenant IS NULL) anywhere; tenant admin only within the session tenant.
-    * RbacUser.role is the free-text admin/user label, not an RBAC role.
+  /** Superuser (tenant IS NULL) anywhere; tenant admin only within the session tenant. The admin
+    * test reads the account kind (RbacUser.kind: admin | user), never an RBAC role.
     */
   private def authorize(
       user: String,

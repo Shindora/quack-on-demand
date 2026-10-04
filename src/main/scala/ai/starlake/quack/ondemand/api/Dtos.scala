@@ -2,7 +2,7 @@ package ai.starlake.quack.ondemand.api
 
 import ai.starlake.quack.model.{NodePlacement, NodeToleration, PoolCohort, RoleDistribution}
 import ai.starlake.quack.ondemand.federation.iceberg.IcebergRestConfig
-import io.circe.{Codec, Decoder, Encoder, Json}
+import io.circe.{Codec, Decoder, DecodingFailure, Encoder, Json}
 import io.circe.derivation.{Configuration, ConfiguredCodec}
 import io.circe.generic.semiauto.deriveCodec
 
@@ -1691,8 +1691,25 @@ object Dtos:
   given Codec[AuditActionsResponse] = deriveCodec
 
   // RBAC: users
-  given Codec[UserCreateRequest] = ConfiguredCodec.derived
-  given Codec[UserUpdateRequest] = deriveCodec
+  // The `role` key was renamed to `kind`. Without the guard an old client's `"role":"admin"` is an
+  // unknown key the decoder ignores: create would mint a `kind=user` account and update would
+  // silently do nothing. Refused instead, so the caller sees a 400 naming the new field.
+  private def refusingLegacyRoleKey[A](derived: Codec[A]): Codec[A] =
+    Codec.from(
+      Decoder.instance { c =>
+        if c.downField("role").succeeded then
+          Left(
+            DecodingFailure(
+              "the field `role` was renamed to `kind` (admin | user); `roles` lists RBAC roles",
+              c.history
+            )
+          )
+        else derived(c)
+      },
+      derived
+    )
+  given Codec[UserCreateRequest] = refusingLegacyRoleKey(ConfiguredCodec.derived)
+  given Codec[UserUpdateRequest] = refusingLegacyRoleKey(deriveCodec)
   given Codec[UserDeleteRequest] = deriveCodec
   given Codec[UserResponse]      = deriveCodec
   given Codec[UserListResponse]  = deriveCodec

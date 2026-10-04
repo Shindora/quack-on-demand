@@ -379,6 +379,60 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
     finally h.shutdown()
   }
 
+  "user/create and user/update" should "refuse the legacy `role` key with a 400 naming `kind`" in {
+    val fix     = SecurityFixtures.freshStore()
+    val carolId = addTenantB(fix)
+    // The default memberships of a create resolve against tenant A's built-ins.
+    fix.store.ensureBuiltins(SecurityFixtures.TenantId)
+    val h = ManagerServerHarness.boot(fix.store, staticApiKey = None)
+    try
+      val token = h.mintToken(
+        SecurityFixtures.AliceUsername,
+        SecurityFixtures.AlicePassword,
+        Some(SecurityFixtures.TenantId)
+      )
+      val tid    = SecurityFixtures.TenantId
+      val legacy = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/create",
+        s"""{"tenant":"$tid","username":"oldclient","password":"pw","role":"admin"}""",
+        apiKey = Some(token)
+      )
+      withClue(legacy.body()) {
+        legacy.statusCode() shouldBe 400
+        legacy.body() should include("kind")
+      }
+      val legacyUpd = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/update",
+        s"""{"id":"$carolId","role":"admin"}""",
+        apiKey = Some(token)
+      )
+      withClue(legacyUpd.body()) {
+        legacyUpd.statusCode() shouldBe 400
+        legacyUpd.body() should include("kind")
+      }
+      // The renamed field still works on both endpoints.
+      val created = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/create",
+        s"""{"tenant":"$tid","username":"newclient","password":"pw","kind":"user"}""",
+        apiKey = Some(token)
+      )
+      withClue(created.body())(created.statusCode() shouldBe 200)
+      val newId = parse(created.body()).toOption
+        .flatMap(_.hcursor.get[String]("id").toOption)
+        .getOrElse(fail(s"no id in create response: ${created.body()}"))
+      val updated = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/update",
+        s"""{"id":"$newId","kind":"admin"}""",
+        apiKey = Some(token)
+      )
+      withClue(updated.body())(updated.statusCode() shouldBe 200)
+    finally h.shutdown()
+  }
+
   // ---- /pool/permission/revoke ----
 
   "revokePoolPermission" should "reject a tenant-A admin revoking a tenant-B grant" in {
