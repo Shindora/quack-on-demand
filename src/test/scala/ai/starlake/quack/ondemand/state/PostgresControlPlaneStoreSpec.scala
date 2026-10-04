@@ -733,3 +733,25 @@ class PostgresControlPlaneStoreSpec extends AnyFlatSpec with Matchers:
     store.listSnapshotTags("tenant-1", "tenant-1_db1") shouldBe Nil
     store.deleteSnapshotTag("tenant-1", "tenant-1_db1", "pre-migration") shouldBe None
   }
+
+  "createTenantWithBuiltins" should "store exactly the four built-ins and their two grants" in
+    withStore { store =>
+      store.createTenantWithBuiltins(tenant, BuiltinRbac.rowsFor(tenant.id))
+      val roles  = store.listRoles(tenant.id)
+      val groups = store.listGroups(tenant.id)
+      roles.filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.RoleNames
+      groups.filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.GroupNames
+      roles.size shouldBe 2
+      groups.size shouldBe 2
+      val allTables = store.findRole(tenant.id, BuiltinRbac.AllTables).get
+      store
+        .listRolePermissions(allTables.id)
+        .map(p => (p.catalogName, p.schemaName, p.tableName, p.verb)) shouldBe
+        List(("*", "*", "*", "ALL"))
+      val noTables = store.findRole(tenant.id, BuiltinRbac.NoTables).get
+      store.listRolePermissions(noTables.id) shouldBe Nil
+      val allPools = store.findGroup(tenant.id, BuiltinRbac.AllPools).get
+      store.listPoolPermissionsForGroup(allPools.id).map(_.poolId) shouldBe List(None)
+      val noPools = store.findGroup(tenant.id, BuiltinRbac.NoPools).get
+      store.listPoolPermissionsForGroup(noPools.id) shouldBe Nil
+    }

@@ -45,6 +45,20 @@ trait ControlPlaneStore:
     */
   def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit
 
+  /** Idempotently make `tenantId` carry every [[BuiltinRbac]] row, in one transaction: a
+    * NON-built-in role/group already holding a built-in name is renamed `<name>_renamed`, missing
+    * built-ins are inserted, a missing `qod_all_tables` permission or `qod_all_pools` pool grant is
+    * restored. Safe to run concurrently from several HA replicas. Returns the rows as stored
+    * (existing ids preserved).
+    */
+  def ensureBuiltins(tenantId: String): BuiltinRbac.Rows
+
+  /** Fold a pristine legacy `admin` role (non-built-in, exactly one `* * * ALL` permission, no
+    * column or row policy) into the tenant's `qod_all_tables`: its user and group edges move over,
+    * then it is deleted. One transaction. Returns true when a role was folded.
+    */
+  def foldLegacyAdminRole(tenantId: String): Boolean
+
   def upsertTenantDb(t: TenantDb): Unit
   def listTenantDbs(tenantId: String): List[TenantDb]
   def deleteTenantDb(id: String): Unit

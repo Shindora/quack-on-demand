@@ -177,6 +177,171 @@ final class PostgresControlPlaneStore(
     finally c.setAutoCommit(true)
   }
 
+  def ensureBuiltins(tenantId: String): BuiltinRbac.Rows =
+    withConn { c =>
+      // Every write is either guarded by `NOT builtin` or ON CONFLICT DO NOTHING against a unique
+      // constraint, so two replicas running this at once serialize on the row/index locks and the
+      // loser's writes become no-ops instead of failing.
+      c.setAutoCommit(false)
+      try
+        def exec(sql: String)(bind: PreparedStatement => Unit): Unit =
+          val ps = c.prepareStatement(sql)
+          try
+            bind(ps)
+            ps.executeUpdate()
+          finally ps.close()
+
+        def renameCollisions(table: String, names: Set[String]): Unit =
+          names.toList.sorted.foreach { n =>
+            exec(
+              s"UPDATE $table SET name = name || '_renamed' " +
+                "WHERE tenant_id = ? AND name = ? AND NOT builtin"
+            ) { ps =>
+              ps.setString(1, tenantId)
+              ps.setString(2, n)
+            }
+          }
+        renameCollisions("qodstate_role", BuiltinRbac.RoleNames)
+        renameCollisions("qodstate_group", BuiltinRbac.GroupNames)
+
+        val fresh = BuiltinRbac.rowsFor(tenantId)
+        def insertBuiltin(table: String, id: String, name: String, desc: Option[String]): Unit =
+          exec(
+            s"""INSERT INTO $table (id, tenant_id, name, description, builtin)
+               |VALUES (?, ?, ?, ?, TRUE)
+               |ON CONFLICT (tenant_id, name) DO NOTHING""".stripMargin
+          ) { ps =>
+            ps.setString(1, id)
+            ps.setString(2, tenantId)
+            ps.setString(3, name)
+            setNullable(ps, 4, desc)
+          }
+        fresh.roles.foreach(r => insertBuiltin("qodstate_role", r.id, r.name, r.description))
+        fresh.groups.foreach(g => insertBuiltin("qodstate_group", g.id, g.name, g.description))
+
+        def builtinId(table: String, name: String): String =
+          val ps =
+            c.prepareStatement(
+              s"SELECT id FROM $table WHERE tenant_id = ? AND name = ? AND builtin"
+            )
+          try
+            ps.setString(1, tenantId)
+            ps.setString(2, name)
+            val rs = ps.executeQuery()
+            try
+              if rs.next() then rs.getString(1)
+              else throw new IllegalStateException(s"built-in $name missing in tenant $tenantId")
+            finally rs.close()
+          finally ps.close()
+        val allTablesId = builtinId("qodstate_role", BuiltinRbac.AllTables)
+        val allPoolsId  = builtinId("qodstate_group", BuiltinRbac.AllPools)
+
+        // qodstate_role_permission_unique covers (role_id, catalog, schema, table, verb).
+        val perm = fresh.permissions.head
+        exec(
+          """INSERT INTO qodstate_role_permission
+            |  (id, role_id, catalog_name, schema_name, table_name, verb)
+            |VALUES (?, ?, ?, ?, ?, ?)
+            |ON CONFLICT DO NOTHING""".stripMargin
+        ) { ps =>
+          ps.setString(1, perm.id)
+          ps.setString(2, allTablesId)
+          ps.setString(3, perm.catalogName)
+          ps.setString(4, perm.schemaName)
+          ps.setString(5, perm.tableName)
+          ps.setString(6, perm.verb.toUpperCase(Locale.ROOT))
+        }
+        // qodstate_pool_permission_group_unique covers (tenant_id, COALESCE(pool_id, ''),
+        // group_id), so a second tenant-wide grant for the group is a conflict.
+        val grant = fresh.poolGrants.head
+        exec(
+          """INSERT INTO qodstate_pool_permission (id, tenant_id, pool_id, user_id, group_id)
+            |VALUES (?, ?, NULL, NULL, ?)
+            |ON CONFLICT DO NOTHING""".stripMargin
+        ) { ps =>
+          ps.setString(1, grant.id)
+          ps.setString(2, tenantId)
+          ps.setString(3, allPoolsId)
+        }
+        c.commit()
+      catch
+        case t: Throwable =>
+          try c.rollback()
+          catch case _: Throwable => ()
+          throw t
+      finally c.setAutoCommit(true)
+    }
+    builtinRowsOf(tenantId)
+
+  private def builtinRowsOf(tenantId: String): BuiltinRbac.Rows =
+    val roles  = listRoles(tenantId).filter(_.builtin)
+    val groups = listGroups(tenantId).filter(_.builtin)
+    BuiltinRbac.Rows(
+      roles = roles,
+      groups = groups,
+      permissions = roles.flatMap(r => listRolePermissions(r.id)),
+      poolGrants = groups.flatMap(g => listPoolPermissionsForGroup(g.id))
+    )
+
+  def foldLegacyAdminRole(tenantId: String): Boolean = withConn { c =>
+    c.setAutoCommit(false)
+    try
+      def single(sql: String)(bind: PreparedStatement => Unit): Option[String] =
+        val ps = c.prepareStatement(sql)
+        try
+          bind(ps)
+          val rs = ps.executeQuery()
+          try if rs.next() then Some(rs.getString(1)) else None
+          finally rs.close()
+        finally ps.close()
+
+      // FOR UPDATE: a concurrent replica blocks here, then re-checks and finds the row gone.
+      val adminId = single(
+        """SELECT r.id FROM qodstate_role r
+          |WHERE r.tenant_id = ? AND r.name = 'admin' AND NOT r.builtin
+          |  AND (SELECT count(*) FROM qodstate_role_permission p WHERE p.role_id = r.id) = 1
+          |  AND EXISTS (SELECT 1 FROM qodstate_role_permission p WHERE p.role_id = r.id
+          |      AND p.catalog_name = '*' AND p.schema_name = '*' AND p.table_name = '*'
+          |      AND p.verb = 'ALL')
+          |  AND NOT EXISTS (SELECT 1 FROM qodstate_role_column_policy cp WHERE cp.role_id = r.id)
+          |  AND NOT EXISTS (SELECT 1 FROM qodstate_role_row_policy rp WHERE rp.role_id = r.id)
+          |FOR UPDATE""".stripMargin
+      )(_.setString(1, tenantId))
+      val target = adminId.flatMap { _ =>
+        single("SELECT id FROM qodstate_role WHERE tenant_id = ? AND name = ? AND builtin") { ps =>
+          ps.setString(1, tenantId)
+          ps.setString(2, BuiltinRbac.AllTables)
+        }
+      }
+      val folded = (adminId, target) match
+        case (Some(aid), Some(all)) =>
+          List(
+            "INSERT INTO qodstate_user_role (user_id, role_id) " +
+              "SELECT user_id, ? FROM qodstate_user_role WHERE role_id = ? ON CONFLICT DO NOTHING",
+            "INSERT INTO qodstate_group_role (group_id, role_id) " +
+              "SELECT group_id, ? FROM qodstate_group_role WHERE role_id = ? ON CONFLICT DO NOTHING"
+          ).foreach { sql =>
+            val ps = c.prepareStatement(sql)
+            try
+              ps.setString(1, all)
+              ps.setString(2, aid)
+              ps.executeUpdate()
+            finally ps.close()
+          }
+          // The admin role's own edges and its permission go with it (ON DELETE CASCADE).
+          deleteById(c, "qodstate_role", "id", aid)
+          true
+        case _ => false
+      c.commit()
+      folded
+    catch
+      case t: Throwable =>
+        try c.rollback()
+        catch case _: Throwable => ()
+        throw t
+    finally c.setAutoCommit(true)
+  }
+
   private def insertRoleRow(c: Connection, r: RbacRole): Unit =
     val ps = c.prepareStatement(
       """INSERT INTO qodstate_role (id, tenant_id, name, description, builtin)

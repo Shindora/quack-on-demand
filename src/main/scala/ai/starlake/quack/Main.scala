@@ -59,6 +59,7 @@ import ai.starlake.quack.ondemand.federation.{FederationBlobBuilder, SecretResol
 import ai.starlake.quack.ondemand.state.FederatedSourceStore
 import ai.starlake.quack.ondemand.runtime._
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbacBackfill,
   ControlPlaneStore,
   LiquibaseRunner,
   PatStore,
@@ -363,6 +364,9 @@ object Main extends IOApp with LazyLogging:
     logger.info("state storage: postgres (normalized qodstate_* tables via Liquibase)")
     val store: PostgresControlPlaneStore =
       PostgresControlPlaneStore.fromDefaultMetastore(mgrCfg.defaultMetastore.asMap)
+    // Built-in roles/groups for tenants created before they existed (or by any path that bypassed
+    // seeding). Must run before the supervisor below snapshots the RBAC graph.
+    BuiltinRbacBackfill.run(store)
     // After the store: the fleet backend claims servers through it (FleetServerStore).
     val backend: QuackBackend = BootFactories.quackBackend(mgrCfg, store)
     val fleetBackend: Option[ai.starlake.quack.ondemand.runtime.FleetQuackBackend] =
