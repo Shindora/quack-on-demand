@@ -260,11 +260,14 @@ lazy val root = (project in file("."))
             scala.sys.process
               .Process(Seq("git", "rev-parse", "--path-format=absolute", "--git-common-dir"), base)
               .!!(scala.sys.process.ProcessLogger(_ => ()))
-              .trim
           )
           .toOption
-          .filter(_.nonEmpty)
-          .flatMap(d => Option(file(d).getParentFile))
+          // git < 2.31 echoes the unknown --path-format flag before the (relative) answer.
+          .flatMap(_.linesIterator.map(_.trim).filter(_.nonEmpty).toList.lastOption)
+          .map(file)
+          .filter(_.isAbsolute)
+          .flatMap(d => Option(d.getParentFile))
+          .filter(_.isDirectory)
         Map("DUCKDB_CACHE_DIR" -> (common.getOrElse(base) / ".duckdb").getAbsolutePath)
       }
     },

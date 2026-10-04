@@ -68,6 +68,19 @@ class LibDuckDbPreloadSpec extends AnyFunSpec with Matchers:
       ) shouldBe
         None
       calls shouldBe 0
+      LibDuckDbPreload.lastMiss.get should include("/nonexistent/.duckdb/1.5.6/lib")
+    }
+
+    it("clears the recorded miss once a candidate is found") {
+      LibDuckDbPreload.preload(Some("1.5.6"), Map.empty, Path.of("/nonexistent"), _ => ())
+      val cache = cacheWith("1.5.6")
+      LibDuckDbPreload.preload(
+        Some("1.5.6"),
+        Map("DUCKDB_CACHE_DIR" -> cache.toString),
+        Path.of("/nonexistent"),
+        _ => ()
+      )
+      LibDuckDbPreload.lastMiss shouldBe None
     }
 
     it("loads nothing without a bundled ABI version") {

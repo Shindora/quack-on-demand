@@ -89,28 +89,36 @@ final class QuackProtocol(
     * `ai.starlake.quack.ondemand.runtime.LocalQuackBackend` produces. Translated to
     * `http://host:port/quack` for the actual HTTP POST.
     */
-  def open(endpoint: String, token: String): IO[Connection] = IO.defer {
-    // Fail this IO, not the runtime: a broken native would otherwise surface as a fatal
-    // LinkageError at the first bridge call below (see QuackNativeSupport.probe).
-    QuackNativeSupport.requireLoaded()
-    val url     = QuackProtocol.endpointToHttp(endpoint)
-    val reqBody = QuackNativeBridge.serializeConnectionRequest(token)
-    transport.post(url, reqBody).map { respBytes =>
-      val wireOrdinal = QuackNativeBridge.parseMessageType(respBytes)
-      MessageType.fromWireOrdinal(wireOrdinal) match
-        case Some(MessageType.ConnectionResponse) =>
-          val connId = QuackNativeBridge.extractConnectionId(respBytes)
-          new Connection(transport, url, connId, allocator)
-        case Some(MessageType.ErrorResponse) =>
-          val msg = QuackNativeBridge.extractErrorMessage(respBytes)
-          throw QuackWireError.Permanent(msg)
-        case other =>
-          val label = other.map(_.toString).getOrElse(wireOrdinal.toString)
-          throw QuackWireError.Permanent(
-            s"unexpected response type after CONNECTION_REQUEST: $label"
-          )
+  def open(endpoint: String, token: String): IO[Connection] =
+    open(endpoint, token, () => QuackNativeSupport.requireLoaded())
+
+  /** [[open]] with the native-load guard injectable, so a test can fail it without breaking the
+    * real native.
+    */
+  private[adapter] def open(endpoint: String, token: String, guard: () => Unit): IO[Connection] =
+    IO.defer {
+      // Fail this IO, not the runtime: a broken native would otherwise surface as a fatal
+      // LinkageError at the first bridge call below (see QuackNativeSupport.probe).
+      guard()
+      // Inside the IO too: a malformed endpoint fails the IO rather than throwing at call time.
+      val url     = QuackProtocol.endpointToHttp(endpoint)
+      val reqBody = QuackNativeBridge.serializeConnectionRequest(token)
+      transport.post(url, reqBody).map { respBytes =>
+        val wireOrdinal = QuackNativeBridge.parseMessageType(respBytes)
+        MessageType.fromWireOrdinal(wireOrdinal) match
+          case Some(MessageType.ConnectionResponse) =>
+            val connId = QuackNativeBridge.extractConnectionId(respBytes)
+            new Connection(transport, url, connId, allocator)
+          case Some(MessageType.ErrorResponse) =>
+            val msg = QuackNativeBridge.extractErrorMessage(respBytes)
+            throw QuackWireError.Permanent(msg)
+          case other =>
+            val label = other.map(_.toString).getOrElse(wireOrdinal.toString)
+            throw QuackWireError.Permanent(
+              s"unexpected response type after CONNECTION_REQUEST: $label"
+            )
+      }
     }
-  }
 
 object QuackProtocol:
 

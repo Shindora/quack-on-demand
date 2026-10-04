@@ -113,3 +113,14 @@ class QuackNativeSupportSpec extends AnyFlatSpec with Matchers:
   "QuackNativeSupport.requireLoaded" should "pass when the bundled native loads in this JVM" in {
     noException should be thrownBy QuackNativeSupport.requireLoaded()
   }
+
+  "QuackNativeSupport.probe" should "name the preload paths tried when libduckdb was not found" in {
+    val e = QuackNativeSupport
+      .probe(
+        () => throw new UnsatisfiedLinkError("boom"),
+        preloadMiss = Some("no libduckdb 1.5.6 to preload; tried /cache/1.5.6/lib/libduckdb.dylib")
+      )
+      .get
+    e.getMessage should include("boom")
+    e.getMessage should include("/cache/1.5.6/lib/libduckdb.dylib")
+  }

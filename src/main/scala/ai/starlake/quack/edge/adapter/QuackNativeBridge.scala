@@ -191,18 +191,23 @@ object QuackNativeSupport extends com.typesafe.scalalogging.LazyLogging:
     * `unsafeRunSync` caller waiting forever. Unwrapping to the `UnsatisfiedLinkError` underneath
     * keeps the message actionable.
     */
-  private[adapter] def probe(load: () => Unit): Option[IllegalStateException] =
+  private[adapter] def probe(
+      load: () => Unit,
+      preloadMiss: => Option[String] = LibDuckDbPreload.lastMiss
+  ): Option[IllegalStateException] =
     try
       load()
       None
     catch
       case t: Throwable =>
         val root = initCause(t)
+        val hint = preloadMiss.getOrElse(
+          "It links the pinned libduckdb dynamically: provision .duckdb/<abi>/lib " +
+            "(scripts/run-jar.sh does) or point DUCKDB_CACHE_DIR at a cache holding it."
+        )
         Some(
           new IllegalStateException(
-            s"libquackwire native failed to load: ${root.getMessage}. It links the pinned " +
-              "libduckdb dynamically: provision .duckdb/<abi>/lib (scripts/run-jar.sh does) or " +
-              "point DUCKDB_CACHE_DIR at a cache holding it.",
+            s"libquackwire native failed to load: ${root.getMessage}. $hint",
             root
           )
         )
@@ -242,16 +247,17 @@ private object NativeLoader:
     s"$osTag-$archTag"
 
   def loadFromResources(resourcePath: String): Unit =
+    // Resolved before the preload: a platform with no bundled native (Windows on ARM64) has
+    // nothing to preload libduckdb for.
+    val resource = Option(getClass.getResourceAsStream(resourcePath))
+      .getOrElse(sys.error(s"libquackwire resource not found: $resourcePath"))
     // libquackwire links libduckdb dynamically. Loading the pinned one first lets the dynamic
     // loader satisfy that dependency from the image already in the process, instead of from the
     // library path baked in at build time (see LibDuckDbPreload).
     LibDuckDbPreload.preload()
     val tmp =
       java.nio.file.Files.createTempFile("libquackwire-", System.mapLibraryName("quackwire"))
-    Using.resource(
-      Option(getClass.getResourceAsStream(resourcePath))
-        .getOrElse(sys.error(s"libquackwire resource not found: $resourcePath"))
-    ) { in =>
+    Using.resource(resource) { in =>
       Using.resource(java.nio.file.Files.newOutputStream(tmp)) { fos =>
         in.transferTo(fos)
       }
@@ -302,7 +308,14 @@ private[adapter] object LibDuckDbPreload extends com.typesafe.scalalogging.LazyL
     (env.get("DUCKDB_CACHE_DIR").map(_.trim).filter(_.nonEmpty).map(Path.of(_)).toList :+
       cwd.resolve(".duckdb")).map(_.resolve(abi).resolve("lib").resolve(lib)).distinct
 
-  /** What [[preload]] logs when an ABI is known but no candidate holds libduckdb. */
+  /** The [[notFoundMessage]] of the last [[preload]] that found no candidate, None after one that
+    * did. Only logged at DEBUG there: a miss is the normal case wherever libduckdb comes from the
+    * loader path (the Docker image, `qod start`, Windows PATH), so the paths are named only when
+    * the libquackwire load really fails ([[QuackNativeSupport.probe]]).
+    */
+  @volatile private[adapter] var lastMiss: Option[String] = None
+
+  /** What [[preload]] records when an ABI is known but no candidate holds libduckdb. */
   def notFoundMessage(abi: String, tried: List[Path]): String =
     s"no libduckdb $abi to preload; tried ${tried.mkString(", ")}. libquackwire falls back to " +
       s"the dynamic loader path, which fails unless a launcher put the cache on it. Provision " +
@@ -321,7 +334,8 @@ private[adapter] object LibDuckDbPreload extends com.typesafe.scalalogging.LazyL
     val found = abi.flatMap { a =>
       val tried = candidates(a, env, cwd)
       val hit   = tried.find(Files.isRegularFile(_))
-      if hit.isEmpty then logger.warn(notFoundMessage(a, tried))
+      lastMiss = if hit.isEmpty then Some(notFoundMessage(a, tried)) else None
+      lastMiss.foreach(m => logger.debug(m))
       hit
     }
     found.flatMap { lib =>
