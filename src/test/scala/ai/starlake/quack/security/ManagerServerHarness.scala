@@ -71,7 +71,7 @@ object ManagerServerHarness:
       schemaName = "main",
       dataPath = ""
     ),
-    admin = AdminConfig(username = "", password = "", role = "admin"),
+    admin = AdminConfig(username = "", password = "", kind = "admin"),
     k8s = K8sConfig(
       namespace = "default",
       image = "",

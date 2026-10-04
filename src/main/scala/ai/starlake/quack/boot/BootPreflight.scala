@@ -187,7 +187,7 @@ object BootPreflight extends LazyLogging:
 
   /** Bootstrap admin users at startup so the DB auth backend has at least one credential. Re-hashed
     * on every boot: changing QOD_ADMIN_PASSWORD + restart rotates. All names in QOD_ADMIN_USERNAME
-    * (comma-separated) get the same password + kind (from `admin.role`). Superuser scope:
+    * (comma-separated) get the same password + kind (from `admin.kind`). Superuser scope:
     * tenant=NULL (the qodstate_user_scope_consistency CHECK only forbids empty-string tenants).
     */
   def seedAdminUsers(userStore: UserStore, admin: AdminConfig): Unit =
@@ -204,12 +204,12 @@ object BootPreflight extends LazyLogging:
           tenant = None,
           username = name,
           plaintext = admin.password,
-          kind = admin.role,
+          kind = admin.kind,
           email = Some(seedEmail)
         )
         val verb = if out.inserted then "created" else "updated"
         logger.info(
-          s"admin user $verb: $name (id=${out.id}, kind=${admin.role}) in qodstate_user"
+          s"admin user $verb: $name (id=${out.id}, kind=${admin.kind}) in qodstate_user"
         )
       }
 

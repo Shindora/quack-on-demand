@@ -1,12 +1,15 @@
 package ai.starlake.quack.boot
 
 import ai.starlake.quack.AdminConfig
+import ai.starlake.quack.Main
+import ai.starlake.quack.ManagerConfig
 import ai.starlake.quack.ondemand.state.LiquibaseRunner
 import ai.starlake.quack.ondemand.state.PostgresControlPlaneStore
 import ai.starlake.quack.ondemand.state.UserStore
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import pureconfig.ConfigSource
 
 import java.sql.DriverManager
 import scala.util.Try
@@ -122,7 +125,7 @@ class BootPreflightSpec extends AnyFlatSpec with Matchers:
       try
         BootPreflight.seedAdminUsers(
           userStore,
-          AdminConfig(username = "admin@localhost.local", password = "admin", role = "admin")
+          AdminConfig(username = "admin@localhost.local", password = "admin", kind = "admin")
         )
         store.findUser(None, "admin@localhost.local").get.email shouldBe
           Some("admin@localhost.local")
@@ -137,10 +140,41 @@ class BootPreflightSpec extends AnyFlatSpec with Matchers:
     try
       BootPreflight.seedAdminUsers(
         userStore,
-        AdminConfig(username = "root", password = "admin", role = "admin")
+        AdminConfig(username = "root", password = "admin", kind = "admin")
       )
       store.findUser(None, "root").get.email shouldBe None
     finally
       userStore.close()
       store.close()
+  }
+
+  it should "store the configured admin.kind as the seeded row's kind" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    val store     = new PostgresControlPlaneStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "ops", password = "admin", kind = "user")
+      )
+      store.findUser(None, "ops").get.kind shouldBe "user"
+    finally
+      userStore.close()
+      store.close()
+  }
+
+  "AdminConfig" should "read admin.kind (QOD_ADMIN_KIND), defaulting to admin" in {
+    import Main.given
+    def load(overlay: String): AdminConfig =
+      ConfigSource
+        .string(overlay)
+        .withFallback(ConfigSource.default)
+        .at("quack-on-demand")
+        .loadOrThrow[ManagerConfig]
+        .admin
+    // Guarded on the env so a developer shell exporting QOD_ADMIN_KIND cannot flip it.
+    if sys.env.get("QOD_ADMIN_KIND").isEmpty then load("").kind shouldBe "admin"
+    load("quack-on-demand.admin.kind = user").kind shouldBe "user"
+    // The old key is gone with no alias: it no longer reaches the field.
+    if sys.env.get("QOD_ADMIN_KIND").isEmpty then
+      load("quack-on-demand.admin.role = user").kind shouldBe "admin"
   }
