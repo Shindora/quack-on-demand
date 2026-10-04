@@ -5,6 +5,7 @@ import type {
   GroupResponse, PoolResponse, RoleResponse, TenantResponse, UserResponse,
 } from '../api/types';
 import EffectivePermsCard from './EffectivePermsCard';
+import MultiSelectDropdown from './MultiSelectDropdown';
 import { DeleteIcon, EditIcon } from './Icons';
 import { Modal } from './Modal';
 
@@ -455,32 +456,20 @@ export default function UserSection({
                   ))}
                 </select>
               </label>
-              <label>
-                Roles
-                <select
-                  multiple
-                  disabled={isSuperuserTarget}
-                  value={newRoles}
-                  onChange={ev => setNewRoles(Array.from(ev.target.selectedOptions, o => o.value))}
-                >
-                  {tenantRoles.map(r => (
-                    <option key={r.id} value={r.name}>{r.name}{r.builtin ? ' (built-in)' : ''}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Groups
-                <select
-                  multiple
-                  disabled={isSuperuserTarget}
-                  value={newGroups}
-                  onChange={ev => setNewGroups(Array.from(ev.target.selectedOptions, o => o.value))}
-                >
-                  {tenantGroups.map(g => (
-                    <option key={g.id} value={g.name}>{g.name}{g.builtin ? ' (built-in)' : ''}</option>
-                  ))}
-                </select>
-              </label>
+              <MultiSelectDropdown
+                caption="Roles"
+                disabled={isSuperuserTarget}
+                options={tenantRoles.map(r => ({ value: r.name, label: `${r.name}${r.builtin ? ' (built-in)' : ''}` }))}
+                selected={newRoles}
+                onChange={setNewRoles}
+              />
+              <MultiSelectDropdown
+                caption="Groups"
+                disabled={isSuperuserTarget}
+                options={tenantGroups.map(g => ({ value: g.name, label: `${g.name}${g.builtin ? ' (built-in)' : ''}` }))}
+                selected={newGroups}
+                onChange={setNewGroups}
+              />
               {isSuperuserTarget && <p className="subtle">Superusers bypass roles and groups.</p>}
               {membershipsMissing && <p className="subtle">Pick at least one role and one group.</p>}
               <label className="checkbox-label">
