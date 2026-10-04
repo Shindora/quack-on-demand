@@ -162,7 +162,9 @@ object ManifestExporter:
         )
       }
 
-      val manifestRoles = roleRows.map { r =>
+      // Built-ins are omitted: every tenant gets them from the importer, and the id -> name maps
+      // above span ALL rows so user and group references to them still export by name.
+      val manifestRoles = roleRows.filterNot(_.builtin).map { r =>
         ManifestRole(
           tenant = t.id,
           name = r.name,
@@ -205,7 +207,7 @@ object ManifestExporter:
         )
       }
 
-      val manifestGroups = groupRows.map { g =>
+      val manifestGroups = groupRows.filterNot(_.builtin).map { g =>
         ManifestGroup(
           tenant = t.id,
           name = g.name,
