@@ -36,11 +36,14 @@
   `qod_all_pools`, which gives the new user full data access to every table and every pool of the
   tenant; pass narrower lists (for example `qod_no_tables` / `qod_no_pools`) to start from
   nothing. An explicitly empty list is refused (400 `roles_required` / `groups_required`), as is an
-  unknown name. Superusers take no lists, and SCIM provisioning gets no defaults.
+  unknown name. Superusers take no lists, and SCIM provisioning and manifest import attach no
+  defaults.
 
-- **Manifest export refuses a tenant holding a user-made `qod_` role or group.** Such a row (left
-  from before the prefix was reserved) cannot be replayed by an import, so export answers 400
+- **Manifest export refuses while any tenant holds a user-made `qod_` role or group.** Such a row
+  (left from before the prefix was reserved, or renamed `<name>_renamed` by the boot backfill,
+  which keeps the prefix) cannot be replayed by an import, so the whole export answers 400
   `reserved_name` and lists the offending rows instead of producing a manifest that fails later.
+  Rename those rows by hand, then export again.
 
 - **Tests run from a git worktree.** A forked `sbt test` in a worktree now finds libduckdb through
   the main checkout's `.duckdb` cache, and a native library that cannot load fails the statement
