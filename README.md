@@ -274,7 +274,7 @@ Each table lists what Quack on Demand adds on top of a bare DuckDB process plus 
 
 | Feature | Description | Added value |
 |---|---|---|
-| React admin console | `http://localhost:20900/ui/`: tenant / pool / user CRUD, per-user "Effective permissions" drilldown, live node dashboard (in-flight, total served, EWMA latency), incident-response page | Ops visibility DuckDB never had |
+| React admin console | `http://localhost:20900/ui/`: left sidebar with a tenant switcher, tenant-scoped pages with bookmarkable URLs (`/ui/t/acme/pools`), tenant / pool / user CRUD, per-user "Effective permissions" drilldown, live node dashboard (in-flight, total served, EWMA latency), incident-response actions | Ops visibility DuckDB never had |
 | Python CLI `qod` | Full REST parity with a pytest gate, profiles, install via `uvx` and PyPI | Scriptable operations, same contract as the API |
 | Admin REST API | Every operation guarded by an `X-API-Key` static key OR a session token from `/api/auth/login`, tenant scope checked on every RBAC endpoint | Automation hook for IaC and portals |
 | SQL admin dialect | Administer users, grants and pools over FlightSQL itself | DBA tools become admin tools |
