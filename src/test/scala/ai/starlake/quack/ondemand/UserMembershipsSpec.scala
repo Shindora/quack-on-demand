@@ -1,16 +1,20 @@
 package ai.starlake.quack.ondemand
 
+import ai.starlake.quack.edge.RouterFailure
 import ai.starlake.quack.edge.adapter.NodeLoadTracker
+import ai.starlake.quack.edge.admin.AdminStatementExecutor
+import ai.starlake.quack.model.PoolKey
 import ai.starlake.quack.model.Tenant
 import ai.starlake.quack.ondemand.api.{UserCreateRequest, UserHandlers}
 import ai.starlake.quack.ondemand.auth.SessionScope
-import ai.starlake.quack.ondemand.rbac.UserMemberships
+import ai.starlake.quack.ondemand.rbac.{EffectiveSet, UserMemberships}
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
 import ai.starlake.quack.ondemand.state.{
   BuiltinRbac,
   ControlPlaneStore,
   LiquibaseRunner,
   PostgresControlPlaneStore,
+  RbacUser,
   UserStore
 }
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
@@ -189,3 +193,53 @@ class UserMembershipsSpec extends AnyFlatSpec with Matchers:
     ,
     failAttach = true
   )
+
+  // SQL dialect end to end: the executor wired over the real supervisor exactly as Main wires
+  // it, so the ROLES / GROUPS clauses land as memberships on the created row.
+  private def dialect(sup: PoolSupervisor, users: UserStore): AdminStatementExecutor =
+    new AdminStatementExecutor(
+      sup,
+      createUserFn = (tenantId, username, password, kind, memberships) =>
+        sup.createUser(
+          tenant = Some(tenantId),
+          username = username,
+          password = password,
+          kind = kind,
+          userStore = users,
+          memberships = memberships,
+          failIfExists = true
+        )
+    )
+
+  private def runSql(exec: AdminStatementExecutor, sql: String) =
+    val eff = EffectiveSet(
+      user = RbacUser("u-admin", Some("acme"), "boss", kind = "admin"),
+      roles = Nil,
+      groups = Nil,
+      permissions = Nil,
+      poolPerms = Nil
+    )
+    exec.execute("boss", PoolKey("acme", "acme_default", "sales"), sql, Some(eff)).unsafeRunSync()
+
+  "SQL CREATE USER" should "attach the ROLES and GROUPS it names" in withSup {
+    (sup, store, users) =>
+      val exec = dialect(sup, users)
+      runSql(
+        exec,
+        "CREATE USER bob PASSWORD 'pw' ROLES qod_no_tables GROUPS qod_no_pools"
+      ).isRight shouldBe true
+      val u = store.findUser(Some("acme"), "bob").get
+      names(store, u.id) shouldBe ((Set(BuiltinRbac.NoTables), Set(BuiltinRbac.NoPools)))
+
+      runSql(exec, "CREATE USER carol PASSWORD 'pw'").isRight shouldBe true
+      val c = store.findUser(Some("acme"), "carol").get
+      names(store, c.id) shouldBe ((Set(BuiltinRbac.AllTables), Set(BuiltinRbac.AllPools)))
+  }
+
+  it should "answer BadRequest for an unknown role and create nothing" in withSup {
+    (sup, store, users) =>
+      runSql(dialect(sup, users), "CREATE USER bob PASSWORD 'pw' ROLES nope") match
+        case Left(RouterFailure.BadRequest(msg)) => msg should include("nope")
+        case other                               => fail(s"expected BadRequest, got $other")
+      store.findUser(Some("acme"), "bob") shouldBe None
+  }

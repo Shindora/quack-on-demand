@@ -1006,16 +1006,16 @@ object Main extends IOApp with LazyLogging:
         Option.when(sqlAdminEnabled)(
           new ai.starlake.quack.edge.admin.AdminStatementExecutor(
             sup,
-            createUserFn = (tenantId, username, password, kind) =>
+            createUserFn = (tenantId, username, password, kind, memberships) =>
               sup.createUser(
                 tenant = Some(tenantId),
                 username = username,
                 password = password,
                 kind = kind,
                 userStore = userStore,
-                // ROLES / GROUPS clauses arrive with the dialect change; until then the
-                // built-in defaults apply.
-                memberships = ai.starlake.quack.ondemand.rbac.UserMemberships.Requested(None, None),
+                // From the dialect's ROLES / GROUPS clauses; an absent clause is None and
+                // the supervisor applies the built-in default for it.
+                memberships = memberships,
                 failIfExists = true
               ),
             // Same per-(tenant, username) rotation path REST user/update uses

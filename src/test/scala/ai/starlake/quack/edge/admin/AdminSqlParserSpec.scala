@@ -411,15 +411,43 @@ class AdminSqlParserSpec extends AnyFlatSpec with Matchers:
 
   "parse CREATE/DROP USER" should "handle password literals, WITH, ADMIN, IF EXISTS" in:
     AdminSqlParser.parse("CREATE USER alice PASSWORD 'secret'") shouldBe
-      Right(AdminCommand.CreateUser("alice", "secret", admin = false))
+      Right(AdminCommand.CreateUser("alice", "secret", admin = false, None, None))
     AdminSqlParser.parse("CREATE USER alice WITH PASSWORD 'it''s'") shouldBe
-      Right(AdminCommand.CreateUser("alice", "it's", admin = false))
+      Right(AdminCommand.CreateUser("alice", "it's", admin = false, None, None))
     AdminSqlParser.parse("CREATE USER ops PASSWORD 'x' ADMIN") shouldBe
-      Right(AdminCommand.CreateUser("ops", "x", admin = true))
+      Right(AdminCommand.CreateUser("ops", "x", admin = true, None, None))
     AdminSqlParser.parse("DROP USER alice") shouldBe
       Right(AdminCommand.DropUser("alice", ifExists = false))
     AdminSqlParser.parse("DROP USER IF EXISTS alice") shouldBe
       Right(AdminCommand.DropUser("alice", ifExists = true))
+
+  it should "parse ROLES and GROUPS lists on CREATE USER" in:
+    AdminSqlParser.parse(
+      "CREATE USER bob PASSWORD 'x' ADMIN ROLES analyst, qod_all_tables GROUPS qod_all_pools"
+    ) shouldBe Right(
+      AdminCommand.CreateUser(
+        "bob",
+        "x",
+        admin = true,
+        roles = Some(List("analyst", "qod_all_tables")),
+        groups = Some(List("qod_all_pools"))
+      )
+    )
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' GROUPS ops") shouldBe Right(
+      AdminCommand.CreateUser("bob", "x", admin = false, roles = None, groups = Some(List("ops")))
+    )
+    AdminSqlParser.parse("CREATE USER bob WITH PASSWORD 'x' ROLES r") shouldBe Right(
+      AdminCommand.CreateUser("bob", "x", admin = false, roles = Some(List("r")), groups = None)
+    )
+
+  it should "reject an empty or dangling ROLES / GROUPS clause" in:
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' ROLES").isLeft shouldBe true
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' ROLES a,").isLeft shouldBe true
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' GROUPS").isLeft shouldBe true
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' GROUPS g ROLES r").isLeft shouldBe true
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' ROLES r ROLES s").isLeft shouldBe true
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' GROUPS g GROUPS h").isLeft shouldBe true
+    AdminSqlParser.parse("CREATE USER bob PASSWORD 'x' ROLES r ADMIN").isLeft shouldBe true
 
   it should "fail closed on malformed user statements" in:
     AdminSqlParser.parse("CREATE USER alice").isLeft shouldBe true                 // no password

@@ -742,6 +742,7 @@ ALTER GROUP finance ADD USER alice;
 -- Users
 CREATE USER alice PASSWORD 'secret';
 CREATE USER ops PASSWORD 'secret' ADMIN;
+CREATE USER bob PASSWORD 'secret' ROLES analyst, qod_no_tables GROUPS qod_no_pools;
 ALTER USER alice PASSWORD 'newsecret';
 ALTER USER alice REQUIRE PASSWORD CHANGE;
 ALTER USER alice DISABLE;
@@ -817,7 +818,11 @@ what the later Execute actually delivers.
   `WITH` before `PASSWORD` is optional Postgres-style noise; `ADMIN` sets the
   account kind to `admin` (management rights), not RBAC superuser status. `CREATE USER` is a true
   create (`failIfExists = true`): an existing `(tenant, username)` is refused
-  with `ALREADY_EXISTS`, never upserted. `DROP USER` refuses to drop the
+  with `ALREADY_EXISTS`, never upserted. Optional `ROLES r1, r2` then
+  `GROUPS g1, g2` (in that order, each at most once, at least one name each)
+  attach the user to exactly those roles / groups; an omitted clause defaults
+  to `qod_all_tables` (roles) / `qod_all_pools` (groups), and an unknown name
+  is refused with `INVALID_ARGUMENT` and creates nothing. `DROP USER` refuses to drop the
   session's own username (self-drop guard, mirroring the REST posture). The
   password literal is excluded from statement history (the executor logs only
   the command kind) AND redacted from the edge's DEBUG statement logging - a

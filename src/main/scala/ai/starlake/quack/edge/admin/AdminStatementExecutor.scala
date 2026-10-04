@@ -2,7 +2,7 @@ package ai.starlake.quack.edge.admin
 
 import ai.starlake.quack.edge.{QueryResult, RouterFailure}
 import ai.starlake.quack.model.PoolKey
-import ai.starlake.quack.ondemand.rbac.EffectiveSet
+import ai.starlake.quack.ondemand.rbac.{EffectiveSet, UserMemberships}
 import ai.starlake.quack.ondemand.state.{
   RbacGroup,
   RbacRole,
@@ -589,11 +589,22 @@ final class AdminStatementExecutor(
             }
         }
 
-      case AdminCommand.CreateUser(name, password, admin) =>
-        val kind = if admin then "admin" else "user"
-        mut(createUserFn(ctx.tenantId, name, password, kind)) { u =>
-          // password is never in the detail map - only the target username and its kind.
-          auditOk(ctx, AuditActions.UserCreate, target = Some(u.id), Map("kind" -> kind))
+      case AdminCommand.CreateUser(name, password, admin, roles, groups) =>
+        val kind        = if admin then "admin" else "user"
+        val memberships = UserMemberships.Requested(roles, groups)
+        mut(createUserFn(ctx.tenantId, name, password, kind, memberships)) { u =>
+          // password is never in the detail map - only the target username, kind and
+          // memberships ("(default)" when the clause was absent).
+          auditOk(
+            ctx,
+            AuditActions.UserCreate,
+            target = Some(u.id),
+            Map(
+              "kind"   -> kind,
+              "roles"  -> roles.map(_.mkString(",")).getOrElse("(default)"),
+              "groups" -> groups.map(_.mkString(",")).getOrElse("(default)")
+            )
+          )
           AdminResults.ok(s"user ${u.username} created")
         }
 
@@ -863,14 +874,15 @@ final class AdminStatementExecutor(
         }
 
 object AdminStatementExecutor:
-  /** (tenantId, username, password, kind) -> created user. Wired in Main over
+  /** (tenantId, username, password, kind, memberships) -> created user. Wired in Main over
     * PoolSupervisor.createUser + the boot UserStore with failIfExists = true; the default keeps
     * test/unwired constructions compiling and fail-closed.
     */
-  type CreateUserFn = (String, String, String, String) => IO[Either[SupervisorError, RbacUser]]
+  type CreateUserFn =
+    (String, String, String, String, UserMemberships) => IO[Either[SupervisorError, RbacUser]]
 
   val unwiredCreateUser: CreateUserFn =
-    (_, _, _, _) => IO.pure(Left(SupervisorError.Internal("user creation is not wired")))
+    (_, _, _, _, _) => IO.pure(Left(SupervisorError.Internal("user creation is not wired")))
 
   /** (tenantId, username, newPassword) -> unit. Wired in Main over the same per-(tenant, username)
     * rotation path REST user/update uses (clears lockout columns as part of the write); unwired
