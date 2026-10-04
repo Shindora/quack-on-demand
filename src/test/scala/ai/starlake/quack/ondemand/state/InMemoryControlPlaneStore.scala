@@ -55,38 +55,44 @@ class InMemoryControlPlaneStore extends ControlPlaneStore:
 
   def ensureBuiltins(tenantId: String): BuiltinRbac.Rows = synchronized {
     def collides(names: Set[String], name: String): Boolean = names.exists(_.equalsIgnoreCase(name))
+    var changed                                             = false
     roles.values.toList
       .filter(r => r.tenantId == tenantId && !r.builtin && collides(BuiltinRbac.RoleNames, r.name))
       .sortBy(_.id)
       .foreach { r =>
         val target = BuiltinRbac.renamedName(r.name, findRole(tenantId, _).isDefined)
-        upsertRole(r.copy(name = target))
+        upsertRole(r.copy(name = target)); changed = true
       }
     groups.values.toList
       .filter(g => g.tenantId == tenantId && !g.builtin && collides(BuiltinRbac.GroupNames, g.name))
       .sortBy(_.id)
       .foreach { g =>
         val target = BuiltinRbac.renamedName(g.name, findGroup(tenantId, _).isDefined)
-        upsertGroup(g.copy(name = target))
+        upsertGroup(g.copy(name = target)); changed = true
       }
     val fresh = BuiltinRbac.rowsFor(tenantId)
-    fresh.roles.foreach(r => if findRole(tenantId, r.name).isEmpty then putRole(r))
-    fresh.groups.foreach(g => if findGroup(tenantId, g.name).isEmpty then putGroup(g))
+    fresh.roles.foreach(r =>
+      if findRole(tenantId, r.name).isEmpty then { putRole(r); changed = true }
+    )
+    fresh.groups.foreach(g =>
+      if findGroup(tenantId, g.name).isEmpty then { putGroup(g); changed = true }
+    )
     val all = findRole(tenantId, BuiltinRbac.AllTables).filter(_.builtin).get
     if !listRolePermissions(all.id).exists(p =>
         p.catalogName == "*" && p.schemaName == "*" && p.tableName == "*" && p.verb == "ALL"
       )
-    then insertRolePermission(fresh.permissions.head.copy(roleId = all.id))
+    then { insertRolePermission(fresh.permissions.head.copy(roleId = all.id)); changed = true }
     val pools = findGroup(tenantId, BuiltinRbac.AllPools).filter(_.builtin).get
     if !listPoolPermissionsForGroup(pools.id).exists(_.poolId.isEmpty) then
-      insertPoolPermission(fresh.poolGrants.head.copy(groupId = Some(pools.id)))
+      insertPoolPermission(fresh.poolGrants.head.copy(groupId = Some(pools.id))); changed = true
     val bRoles  = listRoles(tenantId).filter(_.builtin)
     val bGroups = listGroups(tenantId).filter(_.builtin)
     BuiltinRbac.Rows(
       bRoles,
       bGroups,
       bRoles.flatMap(r => listRolePermissions(r.id)),
-      bGroups.flatMap(g => listPoolPermissionsForGroup(g.id))
+      bGroups.flatMap(g => listPoolPermissionsForGroup(g.id)),
+      changed
     )
   }
 

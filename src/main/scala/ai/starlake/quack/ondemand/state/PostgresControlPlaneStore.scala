@@ -178,6 +178,7 @@ final class PostgresControlPlaneStore(
   }
 
   def ensureBuiltins(tenantId: String): BuiltinRbac.Rows =
+    var changed = false
     withConn { c =>
       // Every write is either guarded by `NOT builtin` or ON CONFLICT DO NOTHING against a unique
       // constraint, so two replicas running this at once serialize on the row/index locks and the
@@ -188,7 +189,7 @@ final class PostgresControlPlaneStore(
           val ps = c.prepareStatement(sql)
           try
             bind(ps)
-            ps.executeUpdate()
+            if ps.executeUpdate() > 0 then changed = true
           finally ps.close()
 
         // Case-insensitive: the qod_ prefix is reserved regardless of case. FOR UPDATE makes a
@@ -294,7 +295,7 @@ final class PostgresControlPlaneStore(
           throw t
       finally c.setAutoCommit(true)
     }
-    builtinRowsOf(tenantId)
+    builtinRowsOf(tenantId).copy(changed = changed)
 
   private def builtinRowsOf(tenantId: String): BuiltinRbac.Rows =
     val roles  = listRoles(tenantId).filter(_.builtin)

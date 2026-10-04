@@ -49,7 +49,7 @@ trait ControlPlaneStore:
     * NON-built-in role/group already holding a built-in name is renamed `<name>_renamed`, missing
     * built-ins are inserted, a missing `qod_all_tables` permission or `qod_all_pools` pool grant is
     * restored. Safe to run concurrently from several HA replicas. Returns the rows as stored
-    * (existing ids preserved).
+    * (existing ids preserved), with `changed` set when any row was written.
     */
   def ensureBuiltins(tenantId: String): BuiltinRbac.Rows
 

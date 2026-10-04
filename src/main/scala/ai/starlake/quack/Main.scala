@@ -364,9 +364,6 @@ object Main extends IOApp with LazyLogging:
     logger.info("state storage: postgres (normalized qodstate_* tables via Liquibase)")
     val store: PostgresControlPlaneStore =
       PostgresControlPlaneStore.fromDefaultMetastore(mgrCfg.defaultMetastore.asMap)
-    // Built-in roles/groups for tenants created before they existed (or by any path that bypassed
-    // seeding). Must run before the supervisor below snapshots the RBAC graph.
-    BuiltinRbacBackfill.run(store)
     // After the store: the fleet backend claims servers through it (FleetServerStore).
     val backend: QuackBackend = BootFactories.quackBackend(mgrCfg, store)
     val fleetBackend: Option[ai.starlake.quack.ondemand.runtime.FleetQuackBackend] =
@@ -464,6 +461,10 @@ object Main extends IOApp with LazyLogging:
       else PoolLocker.inProcess()
     val publisher =
       if haOn then new PgStateChangePublisher(store) else StateChangePublisher.noop
+    // Built-in roles/groups for tenants created before they existed (or by any path that bypassed
+    // seeding). Must run before the supervisor below snapshots the RBAC graph; it NOTIFYs peers
+    // (HA) when it changed anything, so replicas already running pick the new rows up.
+    BuiltinRbacBackfill.run(store, publisher)
     val moduleEventBus = new ai.starlake.quack.ondemand.module.ModuleEventBus(modules)
     val singletonTasks = new ai.starlake.quack.ondemand.module.SingletonTasksImpl
     // Constructed before the supervisor so its teardown hook can clear a torn-down

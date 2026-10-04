@@ -35,11 +35,15 @@ object BuiltinRbac:
       .find(n => !taken(n))
       .get
 
+  /** `changed` is set by `ControlPlaneStore.ensureBuiltins` when it wrote anything (a rename, an
+    * insert, a restored permission or grant), so a caller can tell peers to refresh.
+    */
   final case class Rows(
       roles: List[RbacRole],
       groups: List[RbacGroup],
       permissions: List[RolePermission],
-      poolGrants: List[PoolPermission]
+      poolGrants: List[PoolPermission],
+      changed: Boolean = false
   )
 
   /** Fresh rows (new ids) for one tenant. */

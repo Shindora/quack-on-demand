@@ -1,6 +1,7 @@
 package ai.starlake.quack.ondemand.state
 
 import ai.starlake.quack.model.Tenant
+import ai.starlake.quack.ondemand.ha.StateChangePublisher
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -37,7 +38,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
 
   "run" should "seed the four built-ins into a tenant that has none" in withStore { store =>
     store.upsertTenant(Tenant(id = "acme"))
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     store.listRoles("acme").filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.RoleNames
     store.listGroups("acme").filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.GroupNames
     val allPools = store.findGroup("acme", BuiltinRbac.AllPools).get
@@ -85,7 +86,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
       store.addUserRole(uid, admin.id)
       store.upsertGroup(RbacGroup("g-ops", "acme", "ops"))
       store.addGroupRole("g-ops", admin.id)
-      BuiltinRbacBackfill.run(store)
+      BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
       val all = store.findRole("acme", BuiltinRbac.AllTables).get
       store.findRole("acme", "admin") shouldBe None
       store.listDirectRolesForUser(uid) shouldBe List(all.id)
@@ -95,7 +96,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
   it should "keep an admin role that was customized" in withStore { store =>
     val admin = legacyTenant(store, "acme")
     store.insertRolePermission(RolePermission("rp-extra", admin.id, "c", "s", "t", "RO"))
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     store.findRole("acme", "admin").map(_.builtin) shouldBe Some(false)
   }
 
@@ -104,7 +105,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
     store.insertColumnPolicy(
       RoleColumnPolicy("cp-1", admin.id, "c", "s", "t", "col", "mask", Some("'***'"))
     )
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     store.findRole("acme", "admin").map(_.builtin) shouldBe Some(false)
   }
 
@@ -113,7 +114,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
       store.upsertTenant(Tenant(id = "acme"))
       store.upsertRole(RbacRole("r-mine", "acme", BuiltinRbac.AllTables))
       store.upsertGroup(RbacGroup("g-mine", "acme", BuiltinRbac.NoPools))
-      BuiltinRbacBackfill.run(store)
+      BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
       store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed")
       store.getGroup("g-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.NoPools}_renamed")
       store.findRole("acme", BuiltinRbac.AllTables).map(_.builtin) shouldBe Some(true)
@@ -125,25 +126,25 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
       store.upsertRole(RbacRole("r-mine", "acme", BuiltinRbac.AllTables))
       store.upsertRole(RbacRole("r-prev", "acme", s"${BuiltinRbac.AllTables}_renamed"))
       store.upsertGroup(RbacGroup("g-upper", "acme", "QOD_NO_POOLS"))
-      BuiltinRbacBackfill.run(store)
+      BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
       store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed_2")
       store.getRole("r-prev").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed")
       store.getGroup("g-upper").map(_.name) shouldBe Some("QOD_NO_POOLS_renamed")
       store.findRole("acme", BuiltinRbac.AllTables).map(_.builtin) shouldBe Some(true)
       store.findGroup("acme", BuiltinRbac.NoPools).map(_.builtin) shouldBe Some(true)
       // A second run leaves the renamed rows alone.
-      BuiltinRbacBackfill.run(store)
+      BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
       store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed_2")
       store.getGroup("g-upper").map(_.name) shouldBe Some("QOD_NO_POOLS_renamed")
     }
 
   it should "be idempotent" in withStore { store =>
     legacyTenant(store, "acme")
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     val roles1  = store.listRoles("acme").map(r => r.id -> r.name).toSet
     val groups1 = store.listGroups("acme").map(g => g.id -> g.name).toSet
     val perms1  = store.listRolePermissions(store.findRole("acme", BuiltinRbac.AllTables).get.id)
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     store.listRoles("acme").map(r => r.id -> r.name).toSet shouldBe roles1
     store.listGroups("acme").map(g => g.id -> g.name).toSet shouldBe groups1
     store
@@ -174,7 +175,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
     store.addUserRole(uid, admin.id)
     store.upsertGroup(RbacGroup("g-ops", "acme", "ops"))
     store.addGroupRole("g-ops", admin.id)
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     val all = store.findRole("acme", BuiltinRbac.AllTables).get
     all.builtin shouldBe true
     store.findRole("acme", "admin") shouldBe None
@@ -182,7 +183,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
     store.listDirectRolesForUser(uid) shouldBe List(all.id)
     store.listRolesForGroup("g-ops") shouldBe List(all.id)
     val before = store.ensureBuiltins("acme")
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     val after = store.ensureBuiltins("acme")
     after.roles.map(_.id).toSet shouldBe before.roles.map(_.id).toSet
     after.groups.map(_.id).toSet shouldBe before.groups.map(_.id).toSet
@@ -194,7 +195,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
     val store = new InMemoryControlPlaneStore
     val admin = legacyTenant(store, "acme")
     store.insertRolePermission(RolePermission("rp-extra", admin.id, "c", "s", "t", "RO"))
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     store.findRole("acme", "admin").map(_.builtin) shouldBe Some(false)
   }
 
@@ -220,7 +221,7 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
     store.upsertRole(RbacRole("r-mine", "acme", BuiltinRbac.AllTables))
     store.upsertRole(RbacRole("r-prev", "acme", s"${BuiltinRbac.AllTables}_renamed"))
     store.upsertGroup(RbacGroup("g-upper", "acme", "QOD_NO_POOLS"))
-    BuiltinRbacBackfill.run(store)
+    BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     store.getRole("r-mine").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed_2")
     store.getRole("r-prev").map(_.name) shouldBe Some(s"${BuiltinRbac.AllTables}_renamed")
     store.getGroup("g-upper").map(_.name) shouldBe Some("QOD_NO_POOLS_renamed")
@@ -233,10 +234,55 @@ class BuiltinRbacBackfillSpec extends AnyFlatSpec with Matchers:
         if tenantId == "broken" then throw new java.sql.SQLException("boom")
         else super.ensureBuiltins(tenantId)
     List("alpha", "broken", "zulu").foreach(id => store.upsertTenant(Tenant(id = id)))
-    noException should be thrownBy BuiltinRbacBackfill.run(store)
+    noException should be thrownBy BuiltinRbacBackfill.run(store, StateChangePublisher.noop)
     List("alpha", "zulu").foreach { id =>
       store.listRoles(id).filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.RoleNames
       store.listGroups(id).filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.GroupNames
     }
     store.listRoles("broken") shouldBe Nil
+  }
+
+  private final class CountingPublisher extends StateChangePublisher:
+    var rbac                    = 0
+    var topology                = 0
+    def topologyChanged(): Unit = topology += 1
+    def rbacChanged(): Unit     = rbac += 1
+
+  "ensureBuiltins" should "report changed only when it wrote a row" in withStore { store =>
+    store.upsertTenant(Tenant(id = "acme"))
+    store.ensureBuiltins("acme").changed shouldBe true
+    store.ensureBuiltins("acme").changed shouldBe false
+    // Heal path: a removed qod_all_pools grant is restored and counts as a change.
+    val allPools = store.findGroup("acme", BuiltinRbac.AllPools).get
+    store.listPoolPermissionsForGroup(allPools.id).foreach(p => store.deletePoolPermission(p.id))
+    store.ensureBuiltins("acme").changed shouldBe true
+    store.ensureBuiltins("acme").changed shouldBe false
+  }
+
+  "BuiltinRbacBackfill.run" should "broadcast one rbac change when it changed something, none after" in
+    withStore { store =>
+      legacyTenant(store, "acme")
+      store.upsertTenant(Tenant(id = "globex"))
+      val pub = new CountingPublisher
+      BuiltinRbacBackfill.run(store, pub) shouldBe true
+      pub.rbac shouldBe 1
+      BuiltinRbacBackfill.run(store, pub) shouldBe false
+      pub.rbac shouldBe 1
+      pub.topology shouldBe 0
+    }
+
+  it should "broadcast when only the legacy admin fold changed something" in {
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(Tenant(id = "acme"))
+    store.ensureBuiltins("acme")
+    store.upsertRole(RbacRole("r-acme-admin", "acme", "admin", Some("legacy")))
+    store.insertRolePermission(
+      RolePermission("rp-acme-admin", "r-acme-admin", "*", "*", "*", "ALL")
+    )
+    val pub = new CountingPublisher
+    BuiltinRbacBackfill.run(store, pub) shouldBe true
+    pub.rbac shouldBe 1
+    store.getRole("r-acme-admin") shouldBe None
+    BuiltinRbacBackfill.run(store, pub) shouldBe false
+    pub.rbac shouldBe 1
   }
