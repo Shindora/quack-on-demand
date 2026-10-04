@@ -196,7 +196,7 @@ trait ControlPlaneStore:
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Boolean = true,
       mustChangePassword: Boolean = false,
       email: Option[String] = None

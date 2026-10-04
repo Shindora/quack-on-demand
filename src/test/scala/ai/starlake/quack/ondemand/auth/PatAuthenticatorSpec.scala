@@ -40,7 +40,7 @@ class PatAuthenticatorSpec extends AnyFlatSpec with Matchers:
     new PatAuthenticator(
       pats,
       id => users.userById(id),
-      u => List(UserGrant(u.tenant, u.role))
+      u => List(UserGrant(u.tenant, u.kind))
     )
 
   private def seed(
@@ -146,7 +146,7 @@ class PatAuthenticatorSpec extends AnyFlatSpec with Matchers:
       val auth       = new PatAuthenticator(
         pats,
         id => { lookups.incrementAndGet(); users.userById(id) },
-        u => List(UserGrant(u.tenant, u.role))
+        u => List(UserGrant(u.tenant, u.kind))
       )
       // What is pinned is the end-to-end property: a non-PAT value costs no user lookup (the
       // counter stays at zero) and no connection (the pool is closed, so any query would throw --

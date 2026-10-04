@@ -143,7 +143,7 @@ class BranchServiceSpec extends AnyFlatSpec with Matchers:
 
     def grantConnect(username: String): Unit =
       val user =
-        RbacUser(id = s"u-$username", tenant = Some(tenant.id), username = username, role = "user")
+        RbacUser(id = s"u-$username", tenant = Some(tenant.id), username = username, kind = "user")
       store.upsertUserIdentity(user)
       sup.grantPoolPermission(tenant.id, None, Some(user.id), None).unsafeRunSync()
 

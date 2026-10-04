@@ -113,14 +113,14 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
       tenant = Some(GlobexTenantId),
       username = CarolUser,
       passwordHash = bcryptHash(CarolPassword),
-      role = "user"
+      kind = "user"
     )
     // dave -- globex tenant admin (mirrors alice in acme: admin role label + role membership).
     val daveId = s.upsertUserWithHash(
       tenant = Some(GlobexTenantId),
       username = DaveUser,
       passwordHash = bcryptHash(DavePassword),
-      role = "admin"
+      kind = "admin"
     )
     s.addUserRole(daveId, GlobexRoleId)
     carolId
@@ -322,7 +322,7 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
         Some(SecurityFixtures.TenantId)
       )
       val body =
-        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","role":"admin"}"""
+        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","kind":"admin"}"""
       val resp = post(h.httpClient, s"${h.baseUrl}/api/user/create", body, apiKey = Some(token))
       expectForbidden(resp, "tenant-A admin -> /user/create in tenant-B")
     finally h.shutdown()
@@ -336,7 +336,7 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
         SecurityFixtures.AlicePassword,
         Some(SecurityFixtures.TenantId)
       )
-      val body = """{"tenant":null,"username":"mallory","password":"pw","role":"admin"}"""
+      val body = """{"tenant":null,"username":"mallory","password":"pw","kind":"admin"}"""
       val resp = post(h.httpClient, s"${h.baseUrl}/api/user/create", body, apiKey = Some(token))
       expectForbidden(resp, "tenant-A admin -> /user/create with tenant=null (superuser)")
     finally h.shutdown()
@@ -652,7 +652,7 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
         Some(SecurityFixtures.TenantId)
       )
       val body =
-        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","role":"user"}"""
+        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","kind":"user"}"""
       val resp =
         postWithCookie(h.httpClient, s"${h.baseUrl}/api/user/create", body, cookieToken = token)
       expectForbidden(resp, "tenant-A admin (cookie) -> /api/user/create in tenant-B")

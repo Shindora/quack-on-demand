@@ -74,7 +74,7 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
           id = "u1",
           tenant = tenant,
           username = "alice",
-          role = if admin then "admin" else "user"
+          kind = if admin then "admin" else "user"
         ),
         patId = "pat-1",
         scope = scope,
@@ -87,7 +87,7 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
   private def scopedPat(r: TokenRestriction): McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u1", tenant = Some(Tenant), username = "alice", role = "user"),
+        user = RbacUser(id = "u1", tenant = Some(Tenant), username = "alice", kind = "user"),
         patId = "pat-1",
         scope = SessionScope(superuser = false, manageableTenants = Set.empty),
         isAdmin = false,
@@ -843,7 +843,7 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
   private val icebergPat: McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u1", tenant = Some(Tenant), username = "alice", role = "admin"),
+        user = RbacUser(id = "u1", tenant = Some(Tenant), username = "alice", kind = "admin"),
         patId = "pat-1",
         scope = SessionScope(superuser = false, manageableTenants = Set(Tenant)),
         isAdmin = true,
@@ -918,7 +918,7 @@ class McpDataToolsSpec extends AnyFlatSpec with Matchers:
   private val nonAdminPat: McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u2", tenant = Some(Tenant), username = "bob", role = "user"),
+        user = RbacUser(id = "u2", tenant = Some(Tenant), username = "bob", kind = "user"),
         patId = "pat-2",
         scope = SessionScope.NoAccess,
         isAdmin = false,

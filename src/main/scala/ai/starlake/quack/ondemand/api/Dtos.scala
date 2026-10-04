@@ -901,7 +901,8 @@ final case class UserCreateRequest(
     tenant: Option[String] = None, // None = superuser
     username: String,
     password: String,
-    role: String = "user",
+    // Account kind (admin | user): admin grants management rights. Not an RBAC role.
+    kind: String = "user",
     // Marks the assigned password as temporary: login is refused (REST and FlightSQL)
     // until the user swaps it via POST /api/auth/change-password.
     mustChangePassword: Boolean = false,
@@ -913,10 +914,10 @@ final case class UserUpdateRequest(
     id: String,
     tenant: Option[String] = None,   // None = leave unchanged
     password: Option[String] = None, // None = no rotation
-    role: Option[String] = None,
+    kind: Option[String] = None,     // account kind (admin | user); None = unchanged
     // Only meaningful together with `password`: Some(true) flags the new temp password,
     // Some(false)/None clears any pending flag along with the rotation. Without a
-    // password this field is a no-op -- role-only updates never touch the flag, and
+    // password this field is a no-op -- kind-only updates never touch the flag, and
     // Some(true) without a password is a 400.
     mustChangePassword: Option[Boolean] = None,
     // Omit (None) = unchanged; empty string = clear to no email; non-empty = set.
@@ -936,7 +937,7 @@ final case class UserResponse(
     id: String,
     tenant: Option[String],
     username: String,
-    role: String,
+    kind: String, // account kind: admin | user (management rights), NOT an RBAC role
     enabled: Boolean = true,
     roles: List[String] = Nil,      // role NAMES (not ids), tenant-scoped
     groups: List[String] = Nil,     // group NAMES

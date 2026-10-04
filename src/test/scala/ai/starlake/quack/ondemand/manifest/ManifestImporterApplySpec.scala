@@ -24,14 +24,14 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
   private def storeWithAdmin: InMemoryControlPlaneStore =
     val s   = new InMemoryControlPlaneStore()
     val pre = BCrypt.withDefaults().hashToString(12, "old-secret".toCharArray)
-    s.upsertUserWithHash(tenant = None, username = "admin", passwordHash = pre, role = "admin")
+    s.upsertUserWithHash(tenant = None, username = "admin", passwordHash = pre, kind = "admin")
     s
 
   "ManifestImporter.apply" should "bcrypt plaintext passwords" in {
     val s = new InMemoryControlPlaneStore()
     val m = base.copy(users =
       List(
-        ManifestUser(tenant = None, username = "admin", password = Some("hunter2"), role = "admin")
+        ManifestUser(tenant = None, username = "admin", password = Some("hunter2"), kind = "admin")
       )
     )
     ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
@@ -43,7 +43,7 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
     val s   = new InMemoryControlPlaneStore()
     val pre = BCrypt.withDefaults().hashToString(12, "hunter2".toCharArray)
     val m   = base.copy(users =
-      List(ManifestUser(tenant = None, username = "admin", password = Some(pre), role = "admin"))
+      List(ManifestUser(tenant = None, username = "admin", password = Some(pre), kind = "admin"))
     )
     ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
     s.getPasswordHash(None, "admin").get shouldBe pre
@@ -53,7 +53,7 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
     val s   = storeWithAdmin
     val pre = s.getPasswordHash(None, "admin").get
     val m   = base.copy(users =
-      List(ManifestUser(tenant = None, username = "admin", password = None, role = "admin"))
+      List(ManifestUser(tenant = None, username = "admin", password = None, kind = "admin"))
     )
     ManifestImporter.apply(m, s, requireEncryption = false) shouldBe Right(())
     s.getPasswordHash(None, "admin").get shouldBe pre
@@ -68,7 +68,7 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
           tenant = Some("acme"),
           username = "alice",
           password = Some("pw"),
-          role = "user"
+          kind = "user"
         )
       )
     )
@@ -86,7 +86,7 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
   it should "reject a new user without a password field and no prior credential" in {
     val s = new InMemoryControlPlaneStore()
     val m = base.copy(users =
-      List(ManifestUser(tenant = None, username = "newbie", password = None, role = "user"))
+      List(ManifestUser(tenant = None, username = "newbie", password = None, kind = "user"))
     )
     val err = ManifestImporter.apply(m, s, requireEncryption = false).left.toOption.get
     err.exists(_.contains("newbie")) shouldBe true
@@ -100,7 +100,7 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
           tenant = None,
           username = "alice@example.com",
           password = Some("hunter2"),
-          role = "user",
+          kind = "user",
           email = Some("someone-else@example.com")
         )
       )
@@ -118,14 +118,14 @@ class ManifestImporterApplySpec extends AnyFlatSpec with Matchers:
           tenant = None,
           username = "bob@example.com",
           password = Some("hunter2"),
-          role = "user",
+          kind = "user",
           email = None
         ),
         ManifestUser(
           tenant = None,
           username = "carol@example.com",
           password = Some("hunter2"),
-          role = "user",
+          kind = "user",
           email = Some("carol@example.com")
         )
       )

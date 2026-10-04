@@ -129,7 +129,7 @@ final class AdminStatementExecutor(
           case None    => Left(RouterFailure.Internal(s"unknown tenant '${poolKey.tenant}'"))
           case Some(t) =>
             val superuser   = e.user.tenant.isEmpty
-            val tenantAdmin = e.user.role == "admin" && e.user.tenant.contains(t.id)
+            val tenantAdmin = e.user.kind == "admin" && e.user.tenant.contains(t.id)
             if superuser || tenantAdmin then Right(Ctx(t.id, poolKey.tenant, superuser, user))
             else Left(RouterFailure.AccessDenied("admin_required"))
 
@@ -587,10 +587,10 @@ final class AdminStatementExecutor(
         }
 
       case AdminCommand.CreateUser(name, password, admin) =>
-        val role = if admin then "admin" else "user"
-        mut(createUserFn(ctx.tenantId, name, password, role)) { u =>
-          // password is never in the detail map - only the target username and its role.
-          auditOk(ctx, AuditActions.UserCreate, target = Some(u.id), Map("role" -> role))
+        val kind = if admin then "admin" else "user"
+        mut(createUserFn(ctx.tenantId, name, password, kind)) { u =>
+          // password is never in the detail map - only the target username and its kind.
+          auditOk(ctx, AuditActions.UserCreate, target = Some(u.id), Map("kind" -> kind))
           AdminResults.ok(s"user ${u.username} created")
         }
 
@@ -664,9 +664,9 @@ final class AdminStatementExecutor(
           val rows = supervisor
             .listUsers(Some(ctx.tenantId))
             .map(u =>
-              List(Some(u.id), Some(u.username), Some(u.role), Some(u.enabled.toString), u.email)
+              List(Some(u.id), Some(u.username), Some(u.kind), Some(u.enabled.toString), u.email)
             )
-          Right(AdminResults.table(List("id", "username", "role", "enabled", "email"), rows))
+          Right(AdminResults.table(List("id", "username", "kind", "enabled", "email"), rows))
         }
 
       case AdminCommand.ShowGrants(role) =>
@@ -860,7 +860,7 @@ final class AdminStatementExecutor(
         }
 
 object AdminStatementExecutor:
-  /** (tenantId, username, password, role) -> created user. Wired in Main over
+  /** (tenantId, username, password, kind) -> created user. Wired in Main over
     * PoolSupervisor.createUser + the boot UserStore with failIfExists = true; the default keeps
     * test/unwired constructions compiling and fail-closed.
     */

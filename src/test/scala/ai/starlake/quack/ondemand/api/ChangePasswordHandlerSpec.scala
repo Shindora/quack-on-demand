@@ -92,9 +92,9 @@ class ChangePasswordHandlerSpec extends AnyFlatSpec with Matchers:
   )
 
   private val DefaultSystemQuery =
-    "SELECT password_hash, role, enabled, must_change_password FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
+    "SELECT password_hash, kind, enabled, must_change_password FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
   private val DefaultTenantQuery =
-    "SELECT password_hash, role, enabled, must_change_password FROM qodstate_user WHERE tenant = ? AND username = ? LIMIT 1"
+    "SELECT password_hash, kind, enabled, must_change_password FROM qodstate_user WHERE tenant = ? AND username = ? LIMIT 1"
 
   private def authConfig(url: String) =
     DatabaseAuthConfig(

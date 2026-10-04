@@ -1,7 +1,7 @@
 // src/main/scala/ai/starlake/quack/ondemand/manifest/ConfigManifest.scala
 package ai.starlake.quack.ondemand.manifest
 
-import io.circe.Codec
+import io.circe.{Codec, Decoder, DecodingFailure}
 import io.circe.derivation.{Configuration, ConfiguredCodec}
 
 import java.time.Instant
@@ -222,7 +222,9 @@ final case class ManifestUser(
     // re-hashing, so a round-tripped user authenticates with the SAME credential it had before
     // export -- this is what makes password round-trip possible without ever seeing plaintext.
     passwordHash: Option[String] = None,
-    role: String = "user",
+    // Account kind (admin | user): management rights, NOT an RBAC role. Was `role` before
+    // Liquibase 0045; the legacy key is refused by the codec below.
+    kind: String = "user",
     enabled: Boolean = true,
     // Marks the stored credential as must-change-at-next-login; round-trips so a flagged
     // user stays flagged across export/import. Optional and backward compatible.
@@ -277,5 +279,22 @@ object ConfigManifest:
   given Codec[ManifestTenant]           = ConfiguredCodec.derived
   given Codec[ManifestRole]             = ConfiguredCodec.derived
   given Codec[ManifestGroup]            = ConfiguredCodec.derived
-  given Codec[ManifestUser]             = ConfiguredCodec.derived
-  given Codec[ConfigManifest]           = ConfiguredCodec.derived
+  // The `role` user key was renamed to `kind`. Without this guard `withDefaults` would decode an
+  // old `role: admin` entry as `kind: user`, silently demoting the account.
+  given Codec[ManifestUser] =
+    val derived: Codec[ManifestUser] = ConfiguredCodec.derived
+    Codec.from(
+      Decoder.instance { c =>
+        if c.downField("role").succeeded then
+          Left(
+            DecodingFailure(
+              "users[]: the field `role` was renamed to `kind` (admin | user); " +
+                "rename it in the manifest",
+              c.history
+            )
+          )
+        else derived(c)
+      },
+      derived
+    )
+  given Codec[ConfigManifest] = ConfiguredCodec.derived

@@ -57,18 +57,18 @@ groups:
 users:
   - username: root
     password: demo-root
-    role: admin
+    kind: admin
 
   # Matches the Keycloak realm user `admin` so an OIDC login maps to
   # this superuser row; the password is only used for Basic/DB auth.
   - username: admin
     password: admin
-    role: admin
+    kind: admin
 
   - tenant: acme
     username: alice
     password: demo-alice
-    role: admin
+    kind: admin
     roles: [analyst]
     poolGrants:
       - { pool: bi }
@@ -76,7 +76,7 @@ users:
   - tenant: acme
     username: acme-admin
     password: demo-acme-admin
-    role: admin
+    kind: admin
     roles: [tenant_admin]
     poolGrants:
       - { pool: bi }

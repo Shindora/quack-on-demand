@@ -36,14 +36,14 @@ class UserEnabledAuthSpec extends AnyFlatSpec with Matchers:
   // Mirror the application.conf defaults (four-column projection with
   // `enabled` and `must_change_password`).
   private val DefaultSystemQuery =
-    "SELECT password_hash, role, enabled, must_change_password FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
+    "SELECT password_hash, kind, enabled, must_change_password FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
   private val DefaultTenantQuery =
-    "SELECT password_hash, role, enabled, must_change_password FROM qodstate_user WHERE tenant = ? AND username = ? LIMIT 1"
+    "SELECT password_hash, kind, enabled, must_change_password FROM qodstate_user WHERE tenant = ? AND username = ? LIMIT 1"
 
   // A pre-0022-style operator override that does not project `enabled`. Must
   // now be rejected outright: the enabled column is mandatory.
   private val LegacySystemQuery =
-    "SELECT password_hash, role FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
+    "SELECT password_hash, kind FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
 
   private def authConfig(url: String, systemQuery: String = DefaultSystemQuery) =
     DatabaseAuthConfig(
@@ -176,7 +176,7 @@ class UserEnabledAuthSpec extends AnyFlatSpec with Matchers:
     withFreshDb { (store, url) =>
       store.upsertUserWithHash(None, "dave", hash("x"), "admin", enabled = true)
       val us = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass, poolSize = 2)
-      try us.grantsForIdentity("dave", None).map(_.role) shouldBe List("admin")
+      try us.grantsForIdentity("dave", None).map(_.kind) shouldBe List("admin")
       finally us.close()
     }
 

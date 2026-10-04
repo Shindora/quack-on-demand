@@ -128,7 +128,7 @@ class PostgresFederationE2ESpec extends AnyFlatSpec with Matchers with OptionVal
       perms:    List[RolePermission]
   ): EffectiveSet =
     EffectiveSet(
-      user        = RbacUser(id = "u-1", tenant = Some(tenantId), username = "alice", role = "analyst",
+      user        = RbacUser(id = "u-1", tenant = Some(tenantId), username = "alice", kind = "analyst",
                              createdAt = Some(Instant.now()), updatedAt = Some(Instant.now())),
       roles       = List(RbacRole(id = "role-1", tenantId = tenantId, name = "analyst")),
       groups      = Nil,

@@ -21,7 +21,7 @@ import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
   * versa.
   *
   * Both queries MUST return exactly four columns:
-  * `(password_hash, role, enabled, must_change_password)`. The third and fourth columns are
+  * `(password_hash, kind, enabled, must_change_password)`. The third and fourth columns are
   * mandatory, not optional -- a result set with fewer than four columns fails the login outright
   * (config error, not a tolerant default-to-enabled / default-to-unflagged).
   *
@@ -97,7 +97,7 @@ class DatabaseAuthenticator(
           if rs.next() then
             // The enabled and must_change_password columns are mandatory:
             // systemQuery/tenantQuery MUST project exactly
-            // (password_hash, role, enabled, must_change_password). A short
+            // (password_hash, kind, enabled, must_change_password). A short
             // result set used to be tolerated with enabled defaulted to
             // true, which silently dropped enforcement for any operator
             // still running a legacy custom query. That tolerant branch is
@@ -107,7 +107,7 @@ class DatabaseAuthenticator(
               logger.error(
                 s"login rejected for '$username': the configured auth query returns " +
                   s"${rs.getMetaData.getColumnCount} column(s); it must project " +
-                  "(password_hash, role, enabled, must_change_password) -- update " +
+                  "(password_hash, kind, enabled, must_change_password) -- update " +
                   "systemQuery/tenantQuery (QOD_AUTH_DB_SYSTEM_QUERY / QOD_AUTH_DB_TENANT_QUERY)"
               )
               Left(AuthFailure.InvalidCredentials("Invalid password"))

@@ -528,7 +528,7 @@ class PostgresControlPlaneStoreSpec extends AnyFlatSpec with Matchers:
       store.upsertTenant(tenant)
       store.upsertRole(role)
       store.upsertGroup(group)
-      val user = RbacUser(id = "u-1", tenant = Some("tenant-1"), username = "alice", role = "user")
+      val user = RbacUser(id = "u-1", tenant = Some("tenant-1"), username = "alice", kind = "user")
       store.upsertUserIdentity(user)
 
       store.addUserGroup("u-1", "g-1")
@@ -550,7 +550,7 @@ class PostgresControlPlaneStoreSpec extends AnyFlatSpec with Matchers:
   // ---------- RBAC: users ----------
 
   "RBAC: users" should "round-trip a superuser (tenant = NULL)" in withStore { store =>
-    val u = RbacUser(id = "u-root", tenant = None, username = "root", role = "admin")
+    val u = RbacUser(id = "u-root", tenant = None, username = "root", kind = "admin")
     store.upsertUserIdentity(u)
     val got = store.getUserById("u-root")
     got.map(_.copy(createdAt = None, updatedAt = None)) shouldBe Some(u)

@@ -81,7 +81,7 @@ class EmailFormatEnforcementSpec extends AnyFlatSpec with Matchers:
       // Outer-None email = no email change: the rule is skipped, so a role-only update
       // must not 400 even though the username is email-format.
       val out = sup
-        .updateUserPassword(id, password = None, role = Some("admin"), users, email = None)
+        .updateUserPassword(id, password = None, kind = Some("admin"), users, email = None)
         .unsafeRunSync()
       out.isRight shouldBe true
       store.findUser(None, "root@corp.io").get.email shouldBe Some("root@corp.io")

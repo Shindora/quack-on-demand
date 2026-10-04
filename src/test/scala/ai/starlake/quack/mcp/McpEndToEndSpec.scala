@@ -36,7 +36,7 @@ class McpEndToEndSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll:
       new LiquibaseRunner(url, TestPostgres.pgUser, TestPostgres.pgPass).run()
       users = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
       pats = new PatStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
-      patAuth = new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.role)))
+      patAuth = new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.kind)))
       users.upsertUser(None, SecurityFixtures.RootUsername, SecurityFixtures.RootPassword, "admin")
       users.upsertUser(
         Some(SecurityFixtures.TenantId),

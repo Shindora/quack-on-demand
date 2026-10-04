@@ -24,7 +24,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
   private def adminPat(tenant: String = Tenant0): McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", role = "admin"),
+        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", kind = "admin"),
         patId = "pat-1",
         scope = SessionScope(superuser = false, manageableTenants = Set(tenant)),
         isAdmin = true,
@@ -52,7 +52,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
           |  tenant                TEXT,
           |  username              TEXT NOT NULL,
           |  password_hash         TEXT NOT NULL,
-          |  role                  TEXT NOT NULL DEFAULT 'user',
+          |  kind                  TEXT NOT NULL DEFAULT 'user',
           |  enabled               BOOLEAN NOT NULL DEFAULT true,
           |  must_change_password  BOOLEAN NOT NULL DEFAULT false,
           |  email                 TEXT,

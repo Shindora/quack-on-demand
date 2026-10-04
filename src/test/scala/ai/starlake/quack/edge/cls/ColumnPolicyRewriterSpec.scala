@@ -10,9 +10,9 @@ import org.scalatest.matchers.should.Matchers
 class ColumnPolicyRewriterSpec extends AnyFlatSpec with Matchers:
   import ColumnPolicyRewriter._
 
-  private val superuser = RbacUser(id = "u-super", tenant = None, username = "root", role = "admin")
+  private val superuser = RbacUser(id = "u-super", tenant = None, username = "root", kind = "admin")
   private val tenantUser =
-    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", role = "user")
+    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", kind = "user")
 
   private def eff(user: RbacUser, policies: List[RoleColumnPolicy] = Nil): EffectiveSet =
     EffectiveSet(user, Nil, Nil, Nil, Nil, policies)

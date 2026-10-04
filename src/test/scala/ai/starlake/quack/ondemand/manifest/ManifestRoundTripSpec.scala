@@ -119,7 +119,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = None,
       username = "admin",
       passwordHash = adminHash,
-      role = "admin"
+      kind = "admin"
     )
 
     // Tenant-scoped alice, bound to the reader role
@@ -127,7 +127,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = Some("tpch"),
       username = "alice",
       passwordHash = aliceHash,
-      role = "user"
+      kind = "user"
     )
     s.addUserRole(aliceId, "r-1")
 
@@ -388,7 +388,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = Some("tpch"),
       username = "alice",
       passwordHash = aliceHash,
-      role = "user",
+      kind = "user",
       enabled = false
     )
 
@@ -463,7 +463,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = Some("tpch"),
       username = "alice",
       passwordHash = aliceHash,
-      role = "user",
+      kind = "user",
       mustChangePassword = true
     )
     // Same for the superuser "admin" (tenant = None): the exporter's
@@ -474,7 +474,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = None,
       username = "admin",
       passwordHash = adminHash,
-      role = "admin",
+      kind = "admin",
       mustChangePassword = true
     )
 
@@ -528,7 +528,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = Some("tpch"),
       username = "alice",
       passwordHash = aliceHash,
-      role = "user",
+      kind = "user",
       email = Some("alice@x.io")
     )
     // Same for the superuser "admin" (tenant = None): the exporter's
@@ -539,7 +539,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = None,
       username = "admin",
       passwordHash = adminHash,
-      role = "admin",
+      kind = "admin",
       email = Some("admin@x.io")
     )
 
@@ -563,7 +563,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       tenant = Some("tpch"),
       username = "alice",
       passwordHash = aliceHash,
-      role = "user",
+      kind = "user",
       email = Some("alice@x.io")
     )
     val manifest1 = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)

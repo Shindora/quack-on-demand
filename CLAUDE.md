@@ -263,11 +263,11 @@ on `user/create` / `user/update`) makes `DatabaseAuthenticator` refuse the passw
 the REST login (401 `password_change_required`) and the FlightSQL handshake, until the user
 swaps it through the public pre-session `POST /api/auth/change-password` (current password
 is the credential; new must differ; clears the flag). The auth queries MUST project
-`(password_hash, role, enabled, must_change_password)` - a shorter custom
+`(password_hash, kind, enabled, must_change_password)` - a shorter custom
 `QOD_AUTH_DB_SYSTEM_QUERY` / `QOD_AUTH_DB_TENANT_QUERY` fails boot and every login.
 
 **Regular-user profile sessions.** The manager UI is not admin-exclusive: a tenant-scoped
-`role=user` principal can log in through their tenant (the blank/system login and OIDC SSO
+`kind=user` principal can log in through their tenant (the blank/system login and OIDC SSO
 stay admin-only). `AuthHandlers.mintSessionFor` accepts a DB-mode `Tenant(t)` login from any
 principal holding a grant on `t`, not just an admin, and mints a non-admin, profile-only
 session (`LoginResponse.admin = false`). `ManagerServer.apiKeyGuard` demotes such sessions to

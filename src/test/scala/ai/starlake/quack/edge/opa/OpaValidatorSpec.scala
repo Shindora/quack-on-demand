@@ -20,7 +20,7 @@ class OpaValidatorSpec extends AnyFlatSpec with Matchers:
         id = "u1",
         tenant = if tenantScoped then Some("acme") else None,
         username = "alice",
-        role = "user",
+        kind = "user",
         enabled = true
       ),
       roles = Nil,

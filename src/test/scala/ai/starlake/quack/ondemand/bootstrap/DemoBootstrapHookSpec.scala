@@ -25,7 +25,7 @@ class DemoBootstrapHookSpec extends AnyFlatSpec with Matchers:
        |users:
        |  - username: root
        |    password: demo-root
-       |    role: admin
+       |    kind: admin
        |""".stripMargin
 
   private def emptyEnv: String => Option[String]                      = _ => None

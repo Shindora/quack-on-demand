@@ -819,7 +819,7 @@ object IdentityFixtures:
           id = "u-sentinel",
           tenant = Some("acme"),
           username = "superuser",
-          role = "admin"
+          kind = "admin"
         ),
         patId = "pat-sentinel",
         scope = SessionScope(false, Set("acme")),
@@ -831,7 +831,7 @@ object IdentityFixtures:
   val patOf: String => Option[PatPrincipal] = t =>
     Option.when(t == PatTok)(
       PatPrincipal(
-        user = RbacUser(id = "u-alice", tenant = Some("acme"), username = "alice", role = "admin"),
+        user = RbacUser(id = "u-alice", tenant = Some("acme"), username = "alice", kind = "admin"),
         patId = PatId,
         scope = SessionScope(false, Set("acme")),
         isAdmin = true,

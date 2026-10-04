@@ -158,7 +158,7 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
   def upsertUserIdentity(u: RbacUser): Unit =
     val existing = users.get(u.id)
     val now      = Instant.now()
-    // Mirror the Postgres impl: the identity upsert writes (tenant, username, role) only, so
+    // Mirror the Postgres impl: the identity upsert writes (tenant, username, kind) only, so
     // `enabled`, `mustChangePassword` and `email` keep whatever the credential paths last stored.
     users.put(
       u.id,
@@ -178,7 +178,7 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Boolean = true,
       mustChangePassword: Boolean = false,
       email: Option[String] = None
@@ -194,7 +194,7 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
         id = id,
         tenant = tenant,
         username = username,
-        role = role,
+        kind = kind,
         enabled = enabled,
         mustChangePassword = mustChangePassword,
         email = email,

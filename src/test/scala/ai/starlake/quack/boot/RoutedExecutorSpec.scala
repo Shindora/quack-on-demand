@@ -47,7 +47,7 @@ class RoutedExecutorSpec extends AnyFlatSpec with Matchers:
     sup.createPool(key, RoleDistribution(1, 0, 0)).unsafeRunSync()
     // A tenant-scoped admin whose user name happens to be the old sentinel; no pool grant.
     store.upsertUserIdentity(
-      RbacUser(id = "u-sentinel", tenant = Some("acme"), username = "superuser", role = "admin")
+      RbacUser(id = "u-sentinel", tenant = Some("acme"), username = "superuser", kind = "admin")
     )
 
     var routed: List[(ExecCaller, Option[EffectiveSet])] = Nil

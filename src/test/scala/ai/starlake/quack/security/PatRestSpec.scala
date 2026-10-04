@@ -94,7 +94,7 @@ class PatRestSpec extends AnyFlatSpec with Matchers with SecurityHttpHelpers wit
       patUserOf =
         Some((tenant, username) => users.userIdOf(tenant, username).flatMap(users.userById)),
       patAuth =
-        Some(new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.role))))
+        Some(new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.kind))))
     )
     try body(h)
     finally h.shutdown()

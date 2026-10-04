@@ -73,7 +73,7 @@ class PatChainRestSpec
       patUserOf =
         Some((tenant, username) => users.userIdOf(tenant, username).flatMap(users.userById)),
       patAuth =
-        Some(new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.role)))),
+        Some(new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.kind)))),
       env = env
     )
     try body(h)

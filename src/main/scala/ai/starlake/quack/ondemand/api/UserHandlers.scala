@@ -55,7 +55,7 @@ final class UserHandlers(
       id = u.id,
       tenant = u.tenant.map(tid => tenantNameForId.getOrElse(tid, tid)),
       username = u.username,
-      role = u.role,
+      kind = u.kind,
       enabled = u.enabled,
       roles = roles,
       groups = groups,
@@ -125,7 +125,7 @@ final class UserHandlers(
             req.tenant,
             req.username,
             req.password,
-            req.role,
+            req.kind,
             userStore,
             mustChangePassword = req.mustChangePassword,
             email = req.email
@@ -141,7 +141,7 @@ final class UserHandlers(
                 "ok",
                 tenant = tenantId,
                 target = Some(u.username),
-                detail = Map("username" -> u.username, "role" -> u.role)
+                detail = Map("username" -> u.username, "kind" -> u.kind)
               )
               toResponseFor(u.id) match
                 case Some(r) => Right(r)
@@ -204,9 +204,9 @@ final class UserHandlers(
     if callerRowIds(apiKey).contains(targetId) then Some((StatusCode.BadRequest, selfError))
     else
       sup.findUserById(targetId) match
-        case Some(t) if t.tenant.isEmpty && t.role.equalsIgnoreCase("admin") && t.enabled =>
+        case Some(t) if t.tenant.isEmpty && t.kind.equalsIgnoreCase("admin") && t.enabled =>
           val enabledSuperusers =
-            sup.listSuperusers().count(x => x.role.equalsIgnoreCase("admin") && x.enabled)
+            sup.listSuperusers().count(x => x.kind.equalsIgnoreCase("admin") && x.enabled)
           if enabledSuperusers <= 1 then
             Some((StatusCode.BadRequest, ErrorResponse("last_superuser", floorMessage)))
           else None
@@ -262,7 +262,7 @@ final class UserHandlers(
               .updateUserPassword(
                 req.id,
                 req.password,
-                req.role,
+                req.kind,
                 userStore,
                 mustChangePassword = req.mustChangePassword,
                 email = email,

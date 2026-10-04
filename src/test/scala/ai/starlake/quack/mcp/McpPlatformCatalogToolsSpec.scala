@@ -193,7 +193,7 @@ class McpPlatformCatalogToolsSpec extends AnyFlatSpec with Matchers:
       id = "u-agent",
       tenant = Some(Tenant0),
       username = "agent-owner",
-      role = "admin"
+      kind = "admin"
     ),
     patId = "pat-agent",
     scope = SessionScope(superuser = false, manageableTenants = Set(Tenant0)),

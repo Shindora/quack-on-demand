@@ -2813,7 +2813,7 @@ final class PoolSupervisor(
       tenant: Option[String],
       username: String,
       password: String,
-      role: String = "user",
+      kind: String = "user",
       userStore: ai.starlake.quack.ondemand.state.UserStore,
       mustChangePassword: Boolean = false,
       email: Option[String] = None,
@@ -2821,7 +2821,7 @@ final class PoolSupervisor(
       // creates with active: false), atomically -- no enabled window.
       enabled: Boolean = true,
       // failIfExists = true makes this a true CREATE: an existing (tenant,
-      // username) row is refused untouched (no password rotation, no role
+      // username) row is refused untouched (no password rotation, no kind
       // change) instead of upserted. SCIM provisioning retries depend on it.
       failIfExists: Boolean = false
   ): IO[Either[SupervisorError, RbacUser]] = IO.blocking {
@@ -2855,7 +2855,7 @@ final class PoolSupervisor(
                   resolvedTenantId,
                   username,
                   password,
-                  role,
+                  kind,
                   mustChangePassword = Some(mustChangePassword),
                   email = Some(effEmail),
                   enabled = Option.when(!enabled)(false),
@@ -2868,7 +2868,7 @@ final class PoolSupervisor(
                     out.id,
                     resolvedTenantId,
                     username,
-                    role,
+                    kind,
                     enabled = enabled,
                     mustChangePassword = mustChangePassword,
                     email = effEmail
@@ -2881,7 +2881,7 @@ final class PoolSupervisor(
   def updateUserPassword(
       userId: String,
       password: Option[String],
-      role: Option[String],
+      kind: Option[String],
       userStore: ai.starlake.quack.ondemand.state.UserStore,
       mustChangePassword: Option[Boolean] = None,
       email: Option[Option[String]] = None,
@@ -2907,17 +2907,17 @@ final class PoolSupervisor(
           emailCheck match
             case Left(err)       => Left(err)
             case Right(effEmail) =>
-              val newRole = role.getOrElse(u.role)
+              val newKind = kind.getOrElse(u.kind)
               // A rotation always writes the flag: the requested value, or false when
               // absent -- an unflagged admin reset hands out a normal password and
-              // clears any pending must-change state. Role-only updates leave it alone.
+              // clears any pending must-change state. Kind-only updates leave it alone.
               val newFlag = password.map { pw =>
                 val flag = mustChangePassword.getOrElse(false)
                 userStore.upsertUser(
                   u.tenant,
                   u.username,
                   pw,
-                  newRole,
+                  newKind,
                   mustChangePassword = Some(flag),
                   email = effEmail
                 )
@@ -2953,7 +2953,7 @@ final class PoolSupervisor(
                         u.tenant,
                         u.username,
                         hash,
-                        newRole,
+                        newKind,
                         enabled = enabled.getOrElse(u.enabled),
                         mustChangePassword = effMustChangePassword,
                         email = effEmail.getOrElse(u.email)
@@ -2972,12 +2972,12 @@ final class PoolSupervisor(
               rewriteOk match
                 case Left(err) => Left(err)
                 case Right(()) =>
-                  // upsertUserIdentity only writes (tenant, username, role) on conflict,
+                  // upsertUserIdentity only writes (tenant, username, kind) on conflict,
                   // so the flag/email/enabled just persisted above survive; carry them
                   // on the returned value.
                   val updated =
                     u.copy(
-                      role = newRole,
+                      kind = newKind,
                       mustChangePassword = effMustChangePassword,
                       email = effEmail.getOrElse(u.email),
                       enabled = enabled.getOrElse(u.enabled)

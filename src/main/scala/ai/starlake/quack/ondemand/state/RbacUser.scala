@@ -7,14 +7,15 @@ import java.time.Instant
   * principals carry a non-empty tenant; uniqueness is enforced by the partial unique index on
   * `(tenant, username) WHERE tenant IS NOT NULL`.
   *
-  * `role` is kept as a free-text label for back-compat with the `AuthenticatedProfile.role` JWT
-  * claim. It does NOT participate in RBAC role resolution -- that lives in `qodstate_role`.
+  * `kind` is the account kind (`admin` | `user`): `admin` grants management rights (UI, REST admin
+  * endpoints, SQL admin statements). It does NOT participate in RBAC role resolution, which lives
+  * in `qodstate_role`.
   */
 final case class RbacUser(
     id: String,
     tenant: Option[String],
     username: String,
-    role: String,
+    kind: String,
     enabled: Boolean = true,
     mustChangePassword: Boolean = false,
     email: Option[String] = None,

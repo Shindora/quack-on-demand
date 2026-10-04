@@ -238,7 +238,7 @@ object ManifestExporter:
             // ManifestUser.passwordHash doc comment), so this is the only way a
             // round-trip can carry the SAME credential forward.
             passwordHash = store.getPasswordHash(u.tenant, u.username),
-            role = u.role,
+            kind = u.kind,
             enabled = u.enabled,
             mustChangePassword = u.mustChangePassword,
             email = u.email,
@@ -288,7 +288,7 @@ object ManifestExporter:
         username = u.username,
         password = None,
         passwordHash = store.getPasswordHash(None, u.username),
-        role = u.role,
+        kind = u.kind,
         enabled = u.enabled,
         mustChangePassword = u.mustChangePassword,
         email = u.email,

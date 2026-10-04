@@ -36,7 +36,7 @@ class PatScopeAuthSpec extends AnyFlatSpec with Matchers:
     new PatAuthenticator(
       pats,
       id => users.userById(id),
-      u => List(UserGrant(u.tenant, u.role))
+      u => List(UserGrant(u.tenant, u.kind))
     )
 
   "resolve" should "carry the row's restriction onto the principal" in

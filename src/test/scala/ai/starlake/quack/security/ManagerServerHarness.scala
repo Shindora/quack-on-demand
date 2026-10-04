@@ -164,7 +164,7 @@ object ManagerServerHarness:
           |  tenant               TEXT,
           |  username             TEXT NOT NULL,
           |  password_hash        TEXT NOT NULL,
-          |  role                 TEXT NOT NULL DEFAULT 'user',
+          |  kind                 TEXT NOT NULL DEFAULT 'user',
           |  enabled              BOOLEAN NOT NULL DEFAULT true,
           |  email                TEXT,
           |  must_change_password BOOLEAN,

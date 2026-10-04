@@ -179,7 +179,7 @@ class FlightSqlRealClientSpec extends AnyFlatSpec with Matchers:
       username = SecurityFixtures.AliceUsername,
       passwordHash =
         BCrypt.withDefaults().hashToString(10, SecurityFixtures.AlicePassword.toCharArray),
-      role = "admin"
+      kind = "admin"
     )
     s.addUserRole(hexAliceId, hexAdminRoleId)
     s.insertPoolPermission(

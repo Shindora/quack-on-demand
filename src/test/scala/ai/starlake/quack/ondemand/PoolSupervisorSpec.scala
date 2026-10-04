@@ -1629,7 +1629,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     // createRole registers the role in the rbacResolver so effectiveSetForUser can resolve it.
     val role  = sup.createRole(t.id, "analyst").unsafeRunSync().toOption.get
     // Insert the user directly (createUser requires a UserStore; for this test we bypass it).
-    val user  = RbacUser(id = "u-cp1", tenant = Some(t.id), username = "alice", role = "user")
+    val user  = RbacUser(id = "u-cp1", tenant = Some(t.id), username = "alice", kind = "user")
     store.upsertUserIdentity(user)
     // addUserRole goes through the supervisor so the effective-set cache is cleared.
     sup.addUserRole(user.id, role.id).unsafeRunSync()
@@ -1653,7 +1653,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val sup   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store)
     val t     = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val role  = sup.createRole(t.id, "Aa").unsafeRunSync().toOption.get
-    val user  = RbacUser(id = "u-hash", tenant = Some(t.id), username = "carol", role = "user")
+    val user  = RbacUser(id = "u-hash", tenant = Some(t.id), username = "carol", kind = "user")
     store.upsertUserIdentity(user)
     // Java string hashes collide for "Aa" / "BB", so the two claim sets share a hashCode.
     Set("Aa").hashCode shouldBe Set("BB").hashCode
@@ -1669,7 +1669,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val sup   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store)
     val t     = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val role  = sup.createRole(t.id, "analyst").unsafeRunSync().toOption.get
-    val user  = RbacUser(id = "u-cp2", tenant = Some(t.id), username = "bob", role = "user")
+    val user  = RbacUser(id = "u-cp2", tenant = Some(t.id), username = "bob", kind = "user")
     store.upsertUserIdentity(user)
     sup.addUserRole(user.id, role.id).unsafeRunSync()
 
@@ -1797,7 +1797,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val a     = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val b     = sup.createTenant(Tenant("globex")).unsafeRunSync().toOption.get
     val roleB = sup.createRole(b.id, "analyst").unsafeRunSync().toOption.get
-    val userA = RbacUser(id = "u-a1", tenant = Some(a.id), username = "alice", role = "user")
+    val userA = RbacUser(id = "u-a1", tenant = Some(a.id), username = "alice", kind = "user")
     store.upsertUserIdentity(userA)
     val res = sup.addUserRole(userA.id, roleB.id).unsafeRunSync()
     res.isLeft shouldBe true
@@ -1809,7 +1809,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val sup   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store)
     val a     = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val roleA = sup.createRole(a.id, "analyst").unsafeRunSync().toOption.get
-    val userA = RbacUser(id = "u-a2", tenant = Some(a.id), username = "alice", role = "user")
+    val userA = RbacUser(id = "u-a2", tenant = Some(a.id), username = "alice", kind = "user")
     store.upsertUserIdentity(userA)
     sup.addUserRole(userA.id, roleA.id).unsafeRunSync() shouldBe Right(())
 
@@ -1818,7 +1818,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val sup   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store)
     val a     = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val roleA = sup.createRole(a.id, "analyst").unsafeRunSync().toOption.get
-    val root  = RbacUser(id = "u-root", tenant = None, username = "root", role = "admin")
+    val root  = RbacUser(id = "u-root", tenant = None, username = "root", kind = "admin")
     store.upsertUserIdentity(root)
     val res = sup.addUserRole(root.id, roleA.id).unsafeRunSync()
     res.isLeft shouldBe true
@@ -1830,7 +1830,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val a      = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val b      = sup.createTenant(Tenant("globex")).unsafeRunSync().toOption.get
     val groupB = sup.createGroup(b.id, "team").unsafeRunSync().toOption.get
-    val userA  = RbacUser(id = "u-a3", tenant = Some(a.id), username = "alice", role = "user")
+    val userA  = RbacUser(id = "u-a3", tenant = Some(a.id), username = "alice", kind = "user")
     store.upsertUserIdentity(userA)
     val res = sup.addUserGroup(userA.id, groupB.id).unsafeRunSync()
     res.isLeft shouldBe true
@@ -1841,7 +1841,7 @@ class PoolSupervisorSpec extends AnyFlatSpec with Matchers:
     val sup   = new PoolSupervisor(fakeBackend(), new NodeLoadTracker, store)
     val a      = sup.createTenant(Tenant("acme")).unsafeRunSync().toOption.get
     val groupA = sup.createGroup(a.id, "team").unsafeRunSync().toOption.get
-    val userA  = RbacUser(id = "u-a4", tenant = Some(a.id), username = "alice", role = "user")
+    val userA  = RbacUser(id = "u-a4", tenant = Some(a.id), username = "alice", kind = "user")
     store.upsertUserIdentity(userA)
     sup.addUserGroup(userA.id, groupA.id).unsafeRunSync() shouldBe Right(())
 

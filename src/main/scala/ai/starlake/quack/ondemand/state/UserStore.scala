@@ -32,14 +32,15 @@ trait LockoutStore:
   * [[ai.starlake.quack.edge.auth.DatabaseAuthenticator]] and as the FK target for the RBAC
   * user-group / user-role / pool-permission edges.
   *
-  * Schema (owned by Liquibase changelogs `0003-user-table.yaml` + `0006-rbac.yaml`):
+  * Schema (owned by Liquibase changelogs `0003-user-table.yaml` + `0006-rbac.yaml`; the `role`
+  * column was renamed to `kind` by `0045`):
   * {{{
   *   CREATE TABLE qodstate_user (
   *     id            TEXT PRIMARY KEY,                -- u-<8 hex>
   *     tenant        TEXT NULL,                       -- NULL = superuser
   *     username      TEXT NOT NULL,
   *     password_hash TEXT NOT NULL,
-  *     role          TEXT NOT NULL DEFAULT 'user',    -- free-text auth label
+  *     kind          TEXT NOT NULL DEFAULT 'user',    -- account kind: admin | user
   *     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   *     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
   *   );
@@ -112,7 +113,7 @@ final class UserStore(
       tenant: Option[String],
       username: String,
       plaintext: String,
-      role: String,
+      kind: String,
       mustChangePassword: Option[Boolean] = None,
       email: Option[Option[String]] = None,
       enabled: Option[Boolean] = None,
@@ -124,7 +125,7 @@ final class UserStore(
     )
     withConn { c =>
       val hash = BCrypt.withDefaults().hashToString(12, plaintext.toCharArray)
-      // Delegate to the shared upsert. enabled = None: a credential/role
+      // Delegate to the shared upsert. enabled = None: a credential/kind
       // rotation through this path must never re-enable a disabled user, so
       // the enabled column is left untouched on update (DB default on insert).
       // email: outer None leaves the stored value untouched (same rule).
@@ -133,7 +134,7 @@ final class UserStore(
         tenant,
         username,
         hash,
-        role,
+        kind,
         enabled = enabled,
         mustChangePassword = mustChangePassword,
         email = email,
@@ -294,7 +295,7 @@ final class UserStore(
   def userById(id: String): Option[RbacUser] =
     withConn { c =>
       val ps = c.prepareStatement(
-        "SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at " +
+        "SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at " +
           "FROM qodstate_user WHERE id = ?"
       )
       try
@@ -307,7 +308,7 @@ final class UserStore(
                 id = rs.getString("id"),
                 tenant = Option(rs.getString("tenant")),
                 username = rs.getString("username"),
-                role = rs.getString("role"),
+                kind = rs.getString("kind"),
                 enabled = rs.getBoolean("enabled"),
                 mustChangePassword = rs.getBoolean("must_change_password"),
                 email = Option(rs.getString("email")),
@@ -488,7 +489,7 @@ final class UserStore(
     // their enabled state so an all-disabled username can be distinguished
     // from a genuinely-missing one (see grantsForIdentity's doc).
     val ps = c.prepareStatement(
-      "SELECT tenant, role, enabled FROM qodstate_user WHERE username = ?"
+      "SELECT tenant, kind, enabled FROM qodstate_user WHERE username = ?"
     )
     try
       ps.setString(1, username)
@@ -511,7 +512,7 @@ final class UserStore(
 object UserStore:
 
   /** Outcome of an upsert: the persisted id and whether the row was freshly inserted (`true`) or an
-    * existing row got its password + role refreshed (`false`).
+    * existing row got its password + kind refreshed (`false`).
     */
   final case class Upsert(id: String, inserted: Boolean)
 

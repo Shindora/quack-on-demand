@@ -59,7 +59,7 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
         id = "u-1",
         tenant = None,
         username = "admin",
-        role = "admin"
+        kind = "admin"
       )
     )
     val m = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")

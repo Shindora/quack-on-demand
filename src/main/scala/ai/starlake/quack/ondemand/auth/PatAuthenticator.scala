@@ -49,7 +49,7 @@ final case class PatPrincipal(
   * caller needing more than one facet should call [[resolve]] once and read the principal.
   *
   * @param grantsFor
-  *   MUST be wired row-only: `u => List(UserGrant(u.tenant, u.role))`, the grant list
+  *   MUST be wired row-only: `u => List(UserGrant(u.tenant, u.kind))`, the grant list
   *   `AuthHandlers.mintSessionFor` builds in `Db` mode. A PAT is bound to one `qodstate_user` row,
   *   so the principal is unambiguous; an identity-keyed lookup (`UserStore.grantsForIdentity`,
   *   which matches by username across tenants) would fold in the grants of the SAME-NAMED but
@@ -95,7 +95,7 @@ final class PatAuthenticator(
 
   /** A synthetic session equivalent to what a password login would mint for this principal, so the
     * session-consuming handlers (whoami, the profile endpoints) work off a PAT unchanged. The role
-    * is the computed privilege level, not the raw `qodstate_user.role` label, matching the `admin`
+    * is the computed privilege level, not the raw `qodstate_user.kind` label, matching the `admin`
     * / `user` distinction `LoginResponse.admin` carries.
     */
   def sessionOf(token: String): Option[SessionTokenStore.Session] =
@@ -115,11 +115,11 @@ final class PatAuthenticator(
     }
 
   private def scopeFor(user: RbacUser): SessionScope =
-    val manageable = (UserGrant(user.tenant, user.role) :: grantsFor(user)).collect {
+    val manageable = (UserGrant(user.tenant, user.kind) :: grantsFor(user)).collect {
       case UserGrant(Some(t), r) if r.equalsIgnoreCase("admin") => t
     }.toSet
     SessionScope(
-      superuser = user.tenant.isEmpty && user.role.equalsIgnoreCase("admin"),
+      superuser = user.tenant.isEmpty && user.kind.equalsIgnoreCase("admin"),
       manageableTenants = manageable
     )
 

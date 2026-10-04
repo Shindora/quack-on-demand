@@ -12,9 +12,9 @@ class ProtectedWriteGuardSpec extends AnyFlatSpec with Matchers:
   import GuardOutcome._
 
   private val tenantUser =
-    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", role = "user")
+    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", kind = "user")
   private val superuser =
-    RbacUser(id = "u-0", tenant = None, username = "root", role = "admin")
+    RbacUser(id = "u-0", tenant = None, username = "root", kind = "admin")
 
   // customer has c_id (unmasked) and c_email (masked)
   private val maskEmail =

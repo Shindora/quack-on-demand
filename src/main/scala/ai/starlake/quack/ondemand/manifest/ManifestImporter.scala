@@ -631,7 +631,7 @@ object ManifestImporter:
                     tenant = tenantId,
                     username = mu.username,
                     passwordHash = hash,
-                    role = mu.role,
+                    kind = mu.kind,
                     enabled = mu.enabled,
                     mustChangePassword = mu.mustChangePassword,
                     email = effEmail

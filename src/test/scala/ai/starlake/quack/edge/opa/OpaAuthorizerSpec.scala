@@ -209,7 +209,7 @@ class OpaAuthorizerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
   // ---------- OpaPoolAccess.connect: the 6-arg RBAC overload the handshake calls ----------
 
   private def rbacUser(name: String) =
-    RbacUser(id = s"u-$name", tenant = Some("acme"), username = name, role = "user")
+    RbacUser(id = s"u-$name", tenant = Some("acme"), username = name, kind = "user")
 
   "OpaAuthorizer.connect (RBAC overload)" should "map Allow to Right(())" in:
     wm.resetAll()

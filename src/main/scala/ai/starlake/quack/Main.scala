@@ -344,7 +344,7 @@ object Main extends IOApp with LazyLogging:
     val patAuthenticator = new ai.starlake.quack.ondemand.auth.PatAuthenticator(
       patStore,
       userById = userStore.userById,
-      grantsFor = u => List(ai.starlake.quack.ondemand.state.UserGrant(u.tenant, u.role))
+      grantsFor = u => List(ai.starlake.quack.ondemand.state.UserGrant(u.tenant, u.kind))
     )
 
     val secretResolver: SecretResolver =
@@ -1002,12 +1002,12 @@ object Main extends IOApp with LazyLogging:
         Option.when(sqlAdminEnabled)(
           new ai.starlake.quack.edge.admin.AdminStatementExecutor(
             sup,
-            createUserFn = (tenantId, username, password, role) =>
+            createUserFn = (tenantId, username, password, kind) =>
               sup.createUser(
                 tenant = Some(tenantId),
                 username = username,
                 password = password,
-                role = role,
+                kind = kind,
                 userStore = userStore,
                 failIfExists = true
               ),

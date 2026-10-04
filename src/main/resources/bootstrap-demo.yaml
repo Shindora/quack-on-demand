@@ -136,7 +136,7 @@ groups:
 users:
   - username: root
     password: demo-root
-    role: admin
+    kind: admin
 
   # System superuser whose username matches the Keycloak realm user `admin`, so
   # an OAuth/OIDC login as `admin` maps to this qodstate superuser (the manager
@@ -144,7 +144,7 @@ users:
   # is only used for Basic/DB auth; OAuth logins validate against Keycloak.
   - username: admin
     password: admin
-    role: admin
+    kind: admin
 
   # alice is a tenant admin of acme (so she can sign in to the admin UI via
   # OIDC at /ui/?tenant=acme) AND keeps her analyst data-plane role for the
@@ -152,7 +152,7 @@ users:
   - tenant: acme
     username: alice
     password: demo-alice
-    role: admin
+    kind: admin
     roles: [analyst, tenant_admin]
     poolGrants:
       - { pool: bi }
@@ -160,7 +160,7 @@ users:
   - tenant: acme
     username: bob
     password: demo-bob
-    role: user
+    kind: user
     groups: [data-eng]
     poolGrants:
       - { pool: etl }
@@ -168,7 +168,7 @@ users:
   - tenant: acme
     username: dave
     password: demo-dave
-    role: user
+    kind: user
     roles: [dba]
     poolGrants:
       - { pool: etl }
@@ -176,7 +176,7 @@ users:
   - tenant: acme
     username: acme-admin
     password: demo-acme-admin
-    role: admin
+    kind: admin
     roles: [tenant_admin]
     poolGrants:
       - { pool: bi }
@@ -185,7 +185,7 @@ users:
   - tenant: globex
     username: carol
     password: demo-carol
-    role: user
+    kind: user
     roles: [cross_tenant_analyst]   # plus the `analyst` role inherited via the analysts group
     groups: [analysts]
     poolGrants:
@@ -194,7 +194,7 @@ users:
   - tenant: globex
     username: globex-admin
     password: demo-globex-admin
-    role: admin
+    kind: admin
     roles: [tenant_admin]
     poolGrants:
       - { pool: bi }

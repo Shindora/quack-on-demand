@@ -29,7 +29,7 @@ class McpScopeSpec extends AnyFlatSpec with Matchers:
 
   private def routesFor(restriction: TokenRestriction): McpRoutes =
     val principal = PatPrincipal(
-      user = RbacUser(id = "u1", tenant = Some("acme"), username = "alice", role = "user"),
+      user = RbacUser(id = "u1", tenant = Some("acme"), username = "alice", kind = "user"),
       patId = "pat-1",
       scope = SessionScope(superuser = false, manageableTenants = Set.empty),
       isAdmin = false,

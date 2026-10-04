@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Quack on Demand REST API
-  version: 0.5.3-SNAPSHOT
+  version: 0.9.10-SNAPSHOT
 paths:
   /api/scim/v2/{tenant}/Groups/{id}:
     get:
@@ -10588,7 +10588,7 @@ components:
       required:
       - username
       - password
-      - role
+      - kind
       - mustChangePassword
       properties:
         tenant:
@@ -10597,7 +10597,7 @@ components:
           type: string
         password:
           type: string
-        role:
+        kind:
           type: string
         mustChangePassword:
           type: boolean
@@ -10636,7 +10636,7 @@ components:
       required:
       - id
       - username
-      - role
+      - kind
       - enabled
       properties:
         id:
@@ -10645,7 +10645,7 @@ components:
           type: string
         username:
           type: string
-        role:
+        kind:
           type: string
         enabled:
           type: boolean
@@ -10686,7 +10686,7 @@ components:
           type: string
         password:
           type: string
-        role:
+        kind:
           type: string
         mustChangePassword:
           type: boolean

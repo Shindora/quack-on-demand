@@ -15,9 +15,9 @@ class MetadataFilterRewriterSpec extends AnyFlatSpec with Matchers:
     SchemaContext(defaultDatabase = Some("acme_tpch"), defaultSchema = Some("tpch1"))
 
   private val tenantUser =
-    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", role = "user")
+    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", kind = "user")
   private val superuser =
-    RbacUser(id = "u-0", tenant = None, username = "root", role = "admin")
+    RbacUser(id = "u-0", tenant = None, username = "root", kind = "admin")
 
   private def grant(cat: String, sch: String, tab: String, verb: String = "RO") =
     RolePermission("rp-x", "r-1", cat, sch, tab, verb)

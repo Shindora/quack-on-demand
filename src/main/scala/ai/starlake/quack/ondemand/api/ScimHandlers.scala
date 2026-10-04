@@ -264,7 +264,7 @@ final class ScimHandlers(
               val password   = str(obj, "password").getOrElse(randomPassword())
               // failIfExists: the pre-check above gives the clean 409; this closes the
               // check-then-act race so a retried/concurrent POST can never rotate an
-              // existing user's password or demote their role. active: false persists
+              // existing user's password or demote their kind. active: false persists
               // atomically -- no enabled window, nothing to roll back.
               sup
                 .createUser(

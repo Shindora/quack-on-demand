@@ -8,7 +8,7 @@ import org.scalatest.matchers.should.Matchers
 /** Attenuating an EffectiveSet: permissions and pool grants shrink, policies never do. */
 class AttenuationSpec extends AnyFlatSpec with Matchers:
 
-  private val user = RbacUser(id = "u1", tenant = Some("acme"), username = "alice", role = "user")
+  private val user = RbacUser(id = "u1", tenant = Some("acme"), username = "alice", kind = "user")
 
   private val roleA = RbacRole(id = "r-a", tenantId = "acme", name = "analyst")
   private val roleB = RbacRole(id = "r-b", tenantId = "acme", name = "reader")

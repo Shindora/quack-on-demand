@@ -5,7 +5,7 @@ import ai.starlake.quack.edge.config.DatabaseAuthConfig
 import java.sql.Connection
 
 /** Config-load-time gate for `DatabaseAuthConfig.systemQuery` / `tenantQuery`: both MUST project
-  * exactly four columns `(password_hash, role, enabled, must_change_password)`, mirroring the
+  * exactly four columns `(password_hash, kind, enabled, must_change_password)`, mirroring the
   * runtime enforcement in [[DatabaseAuthenticator]] (a result set with fewer than four columns
   * fails every login). Catching a misconfigured custom query at startup is cheaper than discovering
   * it the first time an operator wonders why disabling a user does not lock them out, or why a
@@ -38,7 +38,7 @@ object AuthQueryPreconditions:
       if n < RequiredColumns then
         Left(
           s"auth.database.$label must project $RequiredColumns columns " +
-            "(password_hash, role, enabled, must_change_password) -- the enabled and " +
+            "(password_hash, kind, enabled, must_change_password) -- the enabled and " +
             "must_change_password columns are mandatory " +
             s"(this query currently projects only $n)"
         )

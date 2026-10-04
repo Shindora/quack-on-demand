@@ -108,7 +108,7 @@ export default function UserSection({
   const SUPERUSER = '';
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [newRole,     setNewRole]     = useState<'user' | 'admin'>('user');
+  const [newKind,     setNewKind]     = useState<'user' | 'admin'>('user');
   const [newEmail,    setNewEmail]    = useState('');
   const [newTenant,   setNewTenant]   = useState<string>(tenant ?? SUPERUSER);
   // Only meaningful for db-mode tenants: an OIDC pre-provisioned user has a
@@ -179,7 +179,7 @@ export default function UserSection({
         // is NOT NULL) but the user will never authenticate via Basic
         // against it. The IdP is authoritative.
         password: newTenantIsDb ? newPassword : crypto.randomUUID(),
-        role:     newRole,
+        kind:     newKind,
         mustChangePassword: newTenantIsDb ? newMustChange : false,
         // Email-format usernames lock the email field to the username
         // (see isEmailUsername above); otherwise fall back to whatever
@@ -187,7 +187,7 @@ export default function UserSection({
         email: isEmailUsername(newUsername) ? newUsername.trim() : (newEmail.trim() || undefined),
       });
       setAdding(false);
-      setNewUsername(''); setNewPassword(''); setNewRole('user'); setNewMustChange(false); setNewEmail('');
+      setNewUsername(''); setNewPassword(''); setNewKind('user'); setNewMustChange(false); setNewEmail('');
       reload();
     } catch (e) {
       setError(errorMessage(e));
@@ -200,7 +200,7 @@ export default function UserSection({
       await api.updateUser({
         id,
         password: editPassword || null,
-        role:     editIsAdmin ? 'admin' : 'user',
+        kind:     editIsAdmin ? 'admin' : 'user',
         mustChangePassword: editPassword ? editMustChange : undefined,
         // Email-format usernames lock the email field to the username --
         // send it explicitly so a stale editEmail can't fight the server's
@@ -292,7 +292,7 @@ export default function UserSection({
                   <td>
                     <input
                       type="checkbox"
-                      checked={u.role === 'admin'}
+                      checked={u.kind === 'admin'}
                       disabled
                       title="Admin status is edited in the Edit modal"
                     />
@@ -323,7 +323,7 @@ export default function UserSection({
                         onClick={() => {
                           setEditingId(u.id);
                           setEditPassword('');
-                          setEditIsAdmin(u.role === 'admin');
+                          setEditIsAdmin(u.kind === 'admin');
                           setEditEmail(u.email ?? '');
                           setEditEmailOriginal(u.email ?? '');
                           setEditLocked(!u.enabled);
@@ -417,8 +417,8 @@ export default function UserSection({
               <label className="checkbox-label">
                 <input
                   type="checkbox"
-                  checked={newRole === 'admin'}
-                  onChange={ev => setNewRole(ev.target.checked ? 'admin' : 'user')}
+                  checked={newKind === 'admin'}
+                  onChange={ev => setNewKind(ev.target.checked ? 'admin' : 'user')}
                 />
                 {' '}Admin User
               </label>

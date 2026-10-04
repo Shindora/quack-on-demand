@@ -37,7 +37,7 @@ class UserStoreChangePasswordSpec extends AnyFlatSpec with Matchers:
       users.changePassword(None, "alice", "temp1", "real1") shouldBe Right(())
       val u = store.findUser(None, "alice").get
       u.mustChangePassword shouldBe false
-      u.role shouldBe "admin"
+      u.kind shouldBe "admin"
       u.enabled shouldBe true
       val hash = store.getPasswordHash(None, "alice").get
       BCrypt.verifyer().verify("real1".toCharArray, hash).verified shouldBe true

@@ -71,7 +71,7 @@ object BootPreflight extends LazyLogging:
     "qod_" + java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
 
   /** Cheap startup gate: when database auth is enabled, systemQuery/tenantQuery must each project
-    * (password_hash, role, enabled, must_change_password) -- exactly the shape
+    * (password_hash, kind, enabled, must_change_password) -- exactly the shape
     * DatabaseAuthenticator requires at runtime now that the tolerant short-projection branch is
     * gone. Caught here instead of at first login. Runs AFTER the Liquibase apply: the default
     * queries target qodstate_user in the control-plane database, which does not exist yet on a
@@ -187,8 +187,8 @@ object BootPreflight extends LazyLogging:
 
   /** Bootstrap admin users at startup so the DB auth backend has at least one credential. Re-hashed
     * on every boot: changing QOD_ADMIN_PASSWORD + restart rotates. All names in QOD_ADMIN_USERNAME
-    * (comma-separated) get the same password + role. Superuser scope: tenant=NULL (the
-    * qodstate_user_scope_consistency CHECK only forbids empty-string tenants).
+    * (comma-separated) get the same password + kind (from `admin.role`). Superuser scope:
+    * tenant=NULL (the qodstate_user_scope_consistency CHECK only forbids empty-string tenants).
     */
   def seedAdminUsers(userStore: UserStore, admin: AdminConfig): Unit =
     val admins = admin.usernameList
@@ -204,12 +204,12 @@ object BootPreflight extends LazyLogging:
           tenant = None,
           username = name,
           plaintext = admin.password,
-          role = admin.role,
+          kind = admin.role,
           email = Some(seedEmail)
         )
         val verb = if out.inserted then "created" else "updated"
         logger.info(
-          s"admin user $verb: $name (id=${out.id}, role=${admin.role}) in qodstate_user"
+          s"admin user $verb: $name (id=${out.id}, kind=${admin.role}) in qodstate_user"
         )
       }
 

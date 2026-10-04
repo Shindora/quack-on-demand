@@ -55,7 +55,7 @@ class PatApiAdmissionSpec
       pats = new PatStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
       // Row-only grants, the wiring PatAuthenticator's scaladoc requires: a PAT
       // is bound to one user row and must never fold in a same-named user's grants.
-      patAuth = new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.role)))
+      patAuth = new PatAuthenticator(pats, users.userById, u => List(UserGrant(u.tenant, u.kind)))
       users.upsertUser(None, SecurityFixtures.RootUsername, SecurityFixtures.RootPassword, "admin")
       users.upsertUser(
         Some(SecurityFixtures.TenantId),

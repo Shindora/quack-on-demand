@@ -161,7 +161,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
               u.tenant,
               u.username,
               "x",
-              u.role,
+              u.kind,
               enabled = u.enabled,
               mustChangePassword = true,
               email = u.email
@@ -178,7 +178,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
               u.tenant,
               u.username,
               "x",
-              u.role,
+              u.kind,
               enabled = enabled,
               mustChangePassword = u.mustChangePassword,
               email = u.email
@@ -202,7 +202,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
 
   private def adminEff(sup: PoolSupervisor): Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-admin", Some(tenantId(sup)), "boss", role = "admin"),
+      user = RbacUser("u-admin", Some(tenantId(sup)), "boss", kind = "admin"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -212,7 +212,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
 
   private def superEff: Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-root", None, "root", role = "admin"),
+      user = RbacUser("u-root", None, "root", kind = "admin"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -222,7 +222,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
 
   private def userEff(sup: PoolSupervisor): Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-plain", Some(tenantId(sup)), "carol", role = "user"),
+      user = RbacUser("u-plain", Some(tenantId(sup)), "carol", kind = "user"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -252,7 +252,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
     // role = "admin", but tenant is some OTHER tenant id, not the session's poolKey.tenant.
     val crossTenantAdmin = Some(
       EffectiveSet(
-        user = RbacUser("u-other", Some("other-tenant-id"), "eve", role = "admin"),
+        user = RbacUser("u-other", Some("other-tenant-id"), "eve", kind = "admin"),
         roles = Nil,
         groups = Nil,
         permissions = Nil,
@@ -335,7 +335,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
       tenant = Some(tid),
       username = name,
       passwordHash = "x",
-      role = "user"
+      kind = "user"
     )
 
   private def readAll(qr: QueryResult): List[List[Option[String]]] =
@@ -727,7 +727,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
         rows.map(_(1)) should contain allOf (Some("alice"), Some("bob"))
         rows.map(_(1)) should not contain Some("eve")
         val aliceRow = rows.find(_(1) == Some("alice")).get
-        aliceRow(2) shouldBe Some("user") // role
+        aliceRow(2) shouldBe Some("user") // kind
         aliceRow(3) shouldBe Some("true") // enabled
         aliceRow(4) shouldBe None         // email (seedUser sets none)
       case other => fail(s"expected rows, got $other")
@@ -753,7 +753,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
     val e = events.find(_.action == AuditActions.UserCreate).get
     e.outcome shouldBe "ok"
     e.detail.values should not contain "topsecret"
-    e.detail should contain("role" -> "user")
+    e.detail should contain("kind" -> "user")
 
   it should "fire the generic sql.admin.denied action on an authorization denial" in:
     val (sup, _, exec, events) = setupWithAudit()

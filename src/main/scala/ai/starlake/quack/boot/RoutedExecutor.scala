@@ -115,7 +115,7 @@ object RoutedExecutor:
             id = "",
             tenant = None,
             username = caller.identity,
-            role = "admin"
+            kind = "admin"
           )
           IO.pure(
             Right(

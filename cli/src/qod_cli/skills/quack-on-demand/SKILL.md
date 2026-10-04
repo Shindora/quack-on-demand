@@ -228,7 +228,7 @@ If `QOD_API_KEY` is unset (or empty), only the static-key arm is disabled: every
 
 ### Regular-user login (profile only)
 
-The admin UI isn't admin-exclusive: a tenant-scoped `role=user` principal can log in too, with the same `/api/auth/login` call plus a `tenant` (the blank/system login and OIDC SSO still require an admin grant). The resulting session is demoted to a fixed allowlist - `whoami`, `logout`, `/api/profile/usage`, `/api/profile/statements` - and gets `403 admin_required` on everything else; the UI lands such a session straight on `/profile` (change own password; view own usage + recent statements).
+The admin UI isn't admin-exclusive: a tenant-scoped `kind=user` principal can log in too, with the same `/api/auth/login` call plus a `tenant` (the blank/system login and OIDC SSO still require an admin grant). The resulting session is demoted to a fixed allowlist - `whoami`, `logout`, `/api/profile/usage`, `/api/profile/statements` - and gets `403 admin_required` on everything else; the UI lands such a session straight on `/profile` (change own password; view own usage + recent statements).
 
 ```bash
 # Log in as a regular tenant user (demo credentials from the bootstrap manifest)
@@ -242,7 +242,7 @@ qod profile statements --limit 20
 ### Personal access tokens and the MCP server
 
 PATs are long-lived bearer credentials for agents and scripts. A PAT acts with exactly
-its owner's permissions (admin PATs reach the admin surface, `role=user` PATs are
+its owner's permissions (admin PATs reach the admin surface, `kind=user` PATs are
 demoted to the profile allowlist) and is accepted wherever a session token is, on both
 `/api/*` and the MCP endpoint. Management is no longer session-only: a session can
 mint, list, revoke and delete any of the caller's own tokens, and a PAT may now mint a
@@ -517,7 +517,7 @@ qod role permission grant --role-id <roleId> --catalog acme_tpch --schema tpch1 
 qod role permission revoke <permissionId>
 
 # Users
-qod user create --tenant acme --username alice --role user   # prompts for the password
+qod user create --tenant acme --username alice --kind user   # prompts for the password
 
 # Groups
 qod group create --tenant acme --name analysts
@@ -657,7 +657,7 @@ Create with a temporary password (or reset one) that only works against
 `POST /api/auth/change-password`:
 
 ```bash
-qod user create --tenant acme --username alice --password Temp123 --role user \
+qod user create --tenant acme --username alice --password Temp123 --kind user \
   --must-change-password
 
 # reset an existing password as temporary
@@ -815,7 +815,7 @@ what the later Execute actually delivers.
   unreachable by construction), consistent with the standing
   no-privilege-escalation rule that only superusers mint superusers, via REST.
   `WITH` before `PASSWORD` is optional Postgres-style noise; `ADMIN` sets the
-  tenant-admin role label, not RBAC superuser status. `CREATE USER` is a true
+  account kind to `admin` (management rights), not RBAC superuser status. `CREATE USER` is a true
   create (`failIfExists = true`): an existing `(tenant, username)` is refused
   with `ALREADY_EXISTS`, never upserted. `DROP USER` refuses to drop the
   session's own username (self-drop guard, mirroring the REST posture). The

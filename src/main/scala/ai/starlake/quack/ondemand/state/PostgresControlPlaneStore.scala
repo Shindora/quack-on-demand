@@ -631,12 +631,12 @@ final class PostgresControlPlaneStore(
 
   def upsertUserIdentity(u: RbacUser): Unit = withConn { c =>
     val ps = c.prepareStatement(
-      """INSERT INTO qodstate_user (id, tenant, username, role, password_hash, created_at, updated_at)
+      """INSERT INTO qodstate_user (id, tenant, username, kind, password_hash, created_at, updated_at)
         |VALUES (?, ?, ?, ?, '', COALESCE(?, NOW()), NOW())
         |ON CONFLICT (id) DO UPDATE SET
         |  tenant     = EXCLUDED.tenant,
         |  username   = EXCLUDED.username,
-        |  role       = EXCLUDED.role,
+        |  kind       = EXCLUDED.kind,
         |  updated_at = NOW()""".stripMargin
     )
     try
@@ -645,7 +645,7 @@ final class PostgresControlPlaneStore(
         case Some(t) => ps.setString(2, t)
         case None    => ps.setNull(2, Types.VARCHAR)
       ps.setString(3, u.username)
-      ps.setString(4, u.role)
+      ps.setString(4, u.kind)
       u.createdAt match
         case Some(t) => ps.setTimestamp(5, Timestamp.from(t))
         case None    => ps.setNull(5, Types.TIMESTAMP_WITH_TIMEZONE)
@@ -679,7 +679,7 @@ final class PostgresControlPlaneStore(
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Boolean = true,
       mustChangePassword: Boolean = false,
       email: Option[String] = None
@@ -694,7 +694,7 @@ final class PostgresControlPlaneStore(
       tenant,
       username,
       passwordHash,
-      role,
+      kind,
       enabled = Some(enabled),
       mustChangePassword = Some(mustChangePassword),
       email = Some(email)
@@ -703,7 +703,7 @@ final class PostgresControlPlaneStore(
 
   def getUserById(id: String): Option[RbacUser] = withConn { c =>
     val ps = c.prepareStatement(
-      "SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user WHERE id = ?"
+      "SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user WHERE id = ?"
     )
     try
       ps.setString(1, id)
@@ -717,7 +717,7 @@ final class PostgresControlPlaneStore(
     val ps = tenant match
       case Some(t) =>
         val p = c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user WHERE tenant = ? AND username = ?""".stripMargin
         )
         p.setString(1, t)
@@ -725,7 +725,7 @@ final class PostgresControlPlaneStore(
         p
       case None =>
         val p = c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user WHERE tenant IS NULL AND username = ?""".stripMargin
         )
         p.setString(1, username)
@@ -741,14 +741,14 @@ final class PostgresControlPlaneStore(
     val ps = tenant match
       case Some(t) =>
         val p = c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user WHERE tenant = ? ORDER BY username""".stripMargin
         )
         p.setString(1, t)
         p
       case None =>
         c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user ORDER BY COALESCE(tenant, ''), username""".stripMargin
         )
     try
@@ -760,7 +760,7 @@ final class PostgresControlPlaneStore(
 
   def listSuperusers(): List[RbacUser] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+      """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
         |FROM qodstate_user WHERE tenant IS NULL ORDER BY username""".stripMargin
     )
     try
@@ -775,7 +775,7 @@ final class PostgresControlPlaneStore(
     // the wildcard NULL superuser row when both exist with the same
     // username. Mirrors application.conf's auth.database.query.
     val ps = c.prepareStatement(
-      """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+      """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
         |FROM qodstate_user
         |WHERE (tenant IS NULL OR tenant = ?) AND username = ?
         |ORDER BY (tenant IS NOT NULL) DESC
@@ -798,7 +798,7 @@ final class PostgresControlPlaneStore(
       id = rs.getString("id"),
       tenant = Option(rs.getString("tenant")),
       username = rs.getString("username"),
-      role = rs.getString("role"),
+      kind = rs.getString("kind"),
       enabled = rs.getBoolean("enabled"),
       mustChangePassword = rs.getBoolean("must_change_password"),
       email = Option(rs.getString("email")),
@@ -1562,7 +1562,7 @@ final class PostgresControlPlaneStore(
       ),
       users = selectAll(
         c,
-        "SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user ORDER BY COALESCE(tenant, ''), username",
+        "SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user ORDER BY COALESCE(tenant, ''), username",
         readRbacUser
       ),
       roles = selectAll(

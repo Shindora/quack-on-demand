@@ -17,7 +17,7 @@ class UserLockSpec extends AnyFlatSpec with Matchers with SecurityHttpHelpers:
   private def updateBody(id: String, enabled: Option[Boolean]): String =
     enabled match
       case Some(e) => s"""{"id":"$id","enabled":$e}"""
-      case None    => s"""{"id":"$id","role":"user"}"""
+      case None    => s"""{"id":"$id","kind":"user"}"""
 
   private def login(h: ManagerServerHarness.Harness, user: String, pass: String): Int =
     post(
@@ -165,7 +165,7 @@ class UserLockSpec extends AnyFlatSpec with Matchers with SecurityHttpHelpers:
         passwordHash = at.favre.lib.crypto.bcrypt.BCrypt
           .withDefaults()
           .hashToString(10, "root2pw".toCharArray),
-        role = "admin"
+        kind = "admin"
       )
       val root2Id = fix.store.findUser(None, "root2").get.id
       val root    = h.mintToken(SecurityFixtures.RootUsername, SecurityFixtures.RootPassword)
@@ -282,7 +282,7 @@ class UserLockSpec extends AnyFlatSpec with Matchers with SecurityHttpHelpers:
         passwordHash = at.favre.lib.crypto.bcrypt.BCrypt
           .withDefaults()
           .hashToString(10, "root2pw".toCharArray),
-        role = "admin"
+        kind = "admin"
       )
       val root2Id = fix.store.findUser(None, "root2").get.id
       val lifted  = post(
