@@ -64,7 +64,7 @@ class AdminSqlEndToEndSpec extends AnyFlatSpec with Matchers:
 
   private def adminEff(sup: PoolSupervisor): Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-admin", Some(tenantId(sup)), "boss", role = "admin"),
+      user = RbacUser("u-admin", Some(tenantId(sup)), "boss", kind = "admin"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -79,7 +79,7 @@ class AdminSqlEndToEndSpec extends AnyFlatSpec with Matchers:
       tenant = Some(tid),
       username = name,
       passwordHash = "x",
-      role = "user"
+      kind = "user"
     )
 
   "SQL admin over the router" should "mutate what the enforcement pipeline consumes" in:

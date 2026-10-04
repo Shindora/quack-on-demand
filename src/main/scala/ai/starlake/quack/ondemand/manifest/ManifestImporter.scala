@@ -20,6 +20,7 @@ import ai.starlake.quack.model.{
 }
 import ai.starlake.quack.ondemand.EncryptionKeyGen
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
   ControlPlaneStore,
   EmailPolicy,
   FederatedSourceStore,
@@ -30,6 +31,8 @@ import ai.starlake.quack.ondemand.state.{
   RolePermission,
   RoleRowPolicy
 }
+
+import java.util.Locale
 
 object ManifestImporter:
 
@@ -95,8 +98,15 @@ object ManifestImporter:
         if !knownTenants.contains(tn) then
           errs += s"user '${u.username}': tenant '$tn' not in YAML or DB"
       }
-      val rolesInTenant  = m.roles.filter(_.tenant == u.tenant.getOrElse("")).map(_.name).toSet
-      val groupsInTenant = m.groups.filter(_.tenant == u.tenant.getOrElse("")).map(_.name).toSet
+      // Every tenant carries the built-ins (seeded or healed by apply), so a tenant user may
+      // reference them without the manifest declaring them. A superuser has no tenant and
+      // therefore no built-ins.
+      val rolesInTenant =
+        m.roles.filter(_.tenant == u.tenant.getOrElse("")).map(_.name).toSet ++
+          u.tenant.map(_ => BuiltinRbac.RoleNames).getOrElse(Set.empty)
+      val groupsInTenant =
+        m.groups.filter(_.tenant == u.tenant.getOrElse("")).map(_.name).toSet ++
+          u.tenant.map(_ => BuiltinRbac.GroupNames).getOrElse(Set.empty)
       u.roles.foreach { r =>
         if !rolesInTenant.contains(r) then
           errs += s"user '${u.username}' references role '$r' not defined in tenant '${u.tenant.getOrElse("(superuser)")}'"
@@ -114,11 +124,27 @@ object ManifestImporter:
     m.groups.foreach { g =>
       if !knownTenants.contains(g.tenant) then
         errs += s"group '${g.name}': tenant '${g.tenant}' not in YAML or DB"
-      val rolesInTenant = m.roles.filter(_.tenant == g.tenant).map(_.name).toSet
+      val rolesInTenant =
+        m.roles.filter(_.tenant == g.tenant).map(_.name).toSet ++ BuiltinRbac.RoleNames
       g.roles.foreach { rn =>
         if !rolesInTenant.contains(rn) then
           errs += s"group '${g.name}' references role '$rn' not defined in tenant '${g.tenant}'"
       }
+    }
+
+    // Reserved `qod_` names: the importer writes the store directly (no supervisor guard), so it
+    // refuses here anything but a built-in in its exact built-in shape. Such an entry is a no-op
+    // on apply; the built-in rows themselves are seeded or healed by the tenant pass.
+    m.roles.foreach { r =>
+      if BuiltinRbac.isReserved(r.name) && !isExactBuiltinRole(r) then
+        errs += s"role '${r.name}' in tenant '${r.tenant}': the qod_ prefix is reserved for " +
+          "built-ins, and a built-in may only appear in its exact built-in shape"
+    }
+    m.groups.foreach { g =>
+      val ok = BuiltinRbac.GroupNames.contains(g.name) && g.roles.isEmpty
+      if BuiltinRbac.isReserved(g.name) && !ok then
+        errs += s"group '${g.name}' in tenant '${g.tenant}': the qod_ prefix is reserved for " +
+          "built-ins, and a built-in group carries no roles"
     }
 
     // Pools reference their tenant-db by name (sibling check, no DB lookup needed)
@@ -162,6 +188,18 @@ object ManifestImporter:
     }
 
     if errs.isEmpty then Right(()) else Left(errs.toList)
+
+  /** A manifest role that names a built-in AND carries exactly its built-in content:
+    * `qod_no_tables` holds nothing, `qod_all_tables` holds the single `* * * ALL` permission, and
+    * neither carries a column or row policy. The description is not compared (it is never written).
+    */
+  private def isExactBuiltinRole(r: ManifestRole): Boolean =
+    r.columnPolicies.isEmpty && r.rowPolicies.isEmpty && (r.name match
+      case BuiltinRbac.NoTables  => r.permissions.isEmpty
+      case BuiltinRbac.AllTables =>
+        r.permissions.map(p => (p.catalog, p.schema, p.table, p.verb.toUpperCase(Locale.ROOT))) ==
+          List(("*", "*", "*", "ALL"))
+      case _ => false)
 
   // ------------------------------------------------------------------
   // apply
@@ -247,6 +285,24 @@ object ManifestImporter:
       def groupsOf(tid: String): collection.Map[String, RbacGroup] =
         groupsByTenant.getOrElse(tid, scala.collection.mutable.Map.empty)
 
+      // Built-ins: this importer writes the store directly, so it is the path that gives a
+      // manifest-created tenant its built-ins (demo bootstrap runs after the boot backfill) and
+      // heals a tenant that predates them. ensureBuiltins may also rename a user-made row that
+      // held a built-in name, so the tenant's local role/group maps are reloaded from the store
+      // rather than patched. Once per tenant per apply.
+      val builtinsEnsured                       = scala.collection.mutable.Set.empty[String]
+      def ensureBuiltinsOnce(tid: String): Unit =
+        if builtinsEnsured.add(tid) then
+          store.ensureBuiltins(tid)
+          rolesByTenant.update(
+            tid,
+            scala.collection.mutable.Map.from(store.listRoles(tid).map(r => r.name -> r))
+          )
+          groupsByTenant.update(
+            tid,
+            scala.collection.mutable.Map.from(store.listGroups(tid).map(g => g.name -> g))
+          )
+
       // 1. Snapshot existing password hashes for every user mentioned in
       //    the manifest so the "no password field" path can carry them
       //    forward.
@@ -283,7 +339,7 @@ object ManifestImporter:
           // The tenant id IS the slug name; no opaque surrogate. displayName
           // falls back to the slug when the manifest leaves it blank.
           val newId = Names.normalize(mt.name, "tenant id")
-          store.upsertTenant(
+          store.createTenantWithBuiltins(
             Tenant(
               id = newId,
               displayName = if mt.displayName.trim.nonEmpty then mt.displayName.trim else newId,
@@ -291,10 +347,13 @@ object ManifestImporter:
               authProvider = mt.authProvider,
               authConfig = mt.authConfig,
               acl = resolvedAcl
-            )
+            ),
+            BuiltinRbac.rowsFor(newId)
           )
           newId
         }
+        // A fresh tenant was seeded above; an existing one is healed here (idempotent).
+        ensureBuiltinsOnce(tenantId)
 
         // Existing tenant: refresh top-level fields. upsertTenant never touches an existing
         // row's acl, so a manifest that carries one writes it explicitly (column-scoped); an
@@ -499,101 +558,113 @@ object ManifestImporter:
         }
       }
 
+      // Tenants the manifest references but does not declare (already in the store) get healed
+      // too, so a user/group naming a built-in always resolves.
+      (m.roles.map(_.tenant) ++ m.groups.map(_.tenant) ++ m.users.flatMap(_.tenant)).distinct
+        .flatMap(tenantIdFor(store, _))
+        .foreach(ensureBuiltinsOnce)
+
       // 3. Roles + permissions (per-tenant). Roles whose tenant is in the
       //    YAML or pre-existing in the DB are valid; validation already
       //    rejected the rest.
       m.roles.foreach { mr =>
-        tenantIdFor(store, mr.tenant) match
-          case None =>
-            errs += s"role '${mr.name}': tenant '${mr.tenant}' not found after tenant pass"
-          case Some(tenantId) =>
-            val localRoles = rolesByTenant.getOrElseUpdate(
-              tenantId,
-              scala.collection.mutable.Map.empty
-            )
-            val existing = localRoles.get(mr.name)
-            val roleId   = existing.map(_.id).getOrElse(Names.newSurrogateId("r"))
-            val upserted = RbacRole(
-              id = roleId,
-              tenantId = tenantId,
-              name = mr.name,
-              description = mr.description.filter(_.nonEmpty)
-            )
-            store.upsertRole(upserted)
-            localRoles.put(mr.name, upserted)
-            // Replace permissions: delete every existing then re-insert.
-            store.listRolePermissions(roleId).foreach(p => store.deleteRolePermission(p.id))
-            mr.permissions.foreach { perm =>
-              store.insertRolePermission(
-                RolePermission(
-                  id = Names.newSurrogateId("rp"),
-                  roleId = roleId,
-                  catalogName = perm.catalog,
-                  schemaName = perm.schema,
-                  tableName = perm.table,
-                  verb = perm.verb
-                )
+        // validate() admitted a built-in name only in its exact shape: nothing to write.
+        if BuiltinRbac.RoleNames.contains(mr.name) then ()
+        else
+          tenantIdFor(store, mr.tenant) match
+            case None =>
+              errs += s"role '${mr.name}': tenant '${mr.tenant}' not found after tenant pass"
+            case Some(tenantId) =>
+              val localRoles = rolesByTenant.getOrElseUpdate(
+                tenantId,
+                scala.collection.mutable.Map.empty
               )
-            }
-            // Replace column policies: delete every existing then re-insert.
-            store.listColumnPolicies(roleId).foreach(p => store.deleteColumnPolicy(p.id))
-            mr.columnPolicies.foreach { mcp =>
-              store.insertColumnPolicy(
-                RoleColumnPolicy(
-                  id = Names.newSurrogateId("cp"),
-                  roleId = roleId,
-                  catalogName = mcp.catalog,
-                  schemaName = mcp.schema,
-                  tableName = mcp.table,
-                  columnName = mcp.column,
-                  action = mcp.action,
-                  transformSql = mcp.transformSql
-                )
+              val existing = localRoles.get(mr.name)
+              val roleId   = existing.map(_.id).getOrElse(Names.newSurrogateId("r"))
+              val upserted = RbacRole(
+                id = roleId,
+                tenantId = tenantId,
+                name = mr.name,
+                description = mr.description.filter(_.nonEmpty)
               )
-            }
-            // Replace row policies: delete every existing then re-insert.
-            store.listRowPolicies(roleId).foreach(p => store.deleteRowPolicy(p.id))
-            mr.rowPolicies.foreach { mrp =>
-              store.insertRowPolicy(
-                RoleRowPolicy(
-                  id = Names.newSurrogateId("rp"),
-                  roleId = roleId,
-                  catalogName = mrp.catalog,
-                  schemaName = mrp.schema,
-                  tableName = mrp.table,
-                  predicateSql = mrp.predicateSql
+              store.upsertRole(upserted)
+              localRoles.put(mr.name, upserted)
+              // Replace permissions: delete every existing then re-insert.
+              store.listRolePermissions(roleId).foreach(p => store.deleteRolePermission(p.id))
+              mr.permissions.foreach { perm =>
+                store.insertRolePermission(
+                  RolePermission(
+                    id = Names.newSurrogateId("rp"),
+                    roleId = roleId,
+                    catalogName = perm.catalog,
+                    schemaName = perm.schema,
+                    tableName = perm.table,
+                    verb = perm.verb
+                  )
                 )
-              )
-            }
+              }
+              // Replace column policies: delete every existing then re-insert.
+              store.listColumnPolicies(roleId).foreach(p => store.deleteColumnPolicy(p.id))
+              mr.columnPolicies.foreach { mcp =>
+                store.insertColumnPolicy(
+                  RoleColumnPolicy(
+                    id = Names.newSurrogateId("cp"),
+                    roleId = roleId,
+                    catalogName = mcp.catalog,
+                    schemaName = mcp.schema,
+                    tableName = mcp.table,
+                    columnName = mcp.column,
+                    action = mcp.action,
+                    transformSql = mcp.transformSql
+                  )
+                )
+              }
+              // Replace row policies: delete every existing then re-insert.
+              store.listRowPolicies(roleId).foreach(p => store.deleteRowPolicy(p.id))
+              mr.rowPolicies.foreach { mrp =>
+                store.insertRowPolicy(
+                  RoleRowPolicy(
+                    id = Names.newSurrogateId("rp"),
+                    roleId = roleId,
+                    catalogName = mrp.catalog,
+                    schemaName = mrp.schema,
+                    tableName = mrp.table,
+                    predicateSql = mrp.predicateSql
+                  )
+                )
+              }
       }
 
       // 4. Groups + group-role memberships (per-tenant).
       m.groups.foreach { mg =>
-        tenantIdFor(store, mg.tenant) match
-          case None =>
-            errs += s"group '${mg.name}': tenant '${mg.tenant}' not found after tenant pass"
-          case Some(tenantId) =>
-            val localGroups = groupsByTenant.getOrElseUpdate(
-              tenantId,
-              scala.collection.mutable.Map.empty
-            )
-            val existing = localGroups.get(mg.name)
-            val groupId  = existing.map(_.id).getOrElse(Names.newSurrogateId("g"))
-            val upserted = RbacGroup(
-              id = groupId,
-              tenantId = tenantId,
-              name = mg.name,
-              description = mg.description.filter(_.nonEmpty)
-            )
-            store.upsertGroup(upserted)
-            localGroups.put(mg.name, upserted)
-            val tenantRoles = rolesOf(tenantId)
-            val keepRoleIds =
-              mg.roles.flatMap(rn => tenantRoles.get(rn).map(_.id)).toSet
-            store.listRolesForGroup(groupId).foreach { rid =>
-              if !keepRoleIds.contains(rid) then store.removeGroupRole(groupId, rid)
-            }
-            keepRoleIds.foreach(rid => store.addGroupRole(groupId, rid))
+        // validate() admitted a built-in name only with no roles: nothing to write.
+        if BuiltinRbac.GroupNames.contains(mg.name) then ()
+        else
+          tenantIdFor(store, mg.tenant) match
+            case None =>
+              errs += s"group '${mg.name}': tenant '${mg.tenant}' not found after tenant pass"
+            case Some(tenantId) =>
+              val localGroups = groupsByTenant.getOrElseUpdate(
+                tenantId,
+                scala.collection.mutable.Map.empty
+              )
+              val existing = localGroups.get(mg.name)
+              val groupId  = existing.map(_.id).getOrElse(Names.newSurrogateId("g"))
+              val upserted = RbacGroup(
+                id = groupId,
+                tenantId = tenantId,
+                name = mg.name,
+                description = mg.description.filter(_.nonEmpty)
+              )
+              store.upsertGroup(upserted)
+              localGroups.put(mg.name, upserted)
+              val tenantRoles = rolesOf(tenantId)
+              val keepRoleIds =
+                mg.roles.flatMap(rn => tenantRoles.get(rn).map(_.id)).toSet
+              store.listRolesForGroup(groupId).foreach { rid =>
+                if !keepRoleIds.contains(rid) then store.removeGroupRole(groupId, rid)
+              }
+              keepRoleIds.foreach(rid => store.addGroupRole(groupId, rid))
       }
 
       // 5. Users (with password snapshot fallback).
@@ -631,7 +702,7 @@ object ManifestImporter:
                     tenant = tenantId,
                     username = mu.username,
                     passwordHash = hash,
-                    role = mu.role,
+                    kind = mu.kind,
                     enabled = mu.enabled,
                     mustChangePassword = mu.mustChangePassword,
                     email = effEmail

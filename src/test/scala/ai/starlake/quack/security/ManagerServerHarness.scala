@@ -71,7 +71,7 @@ object ManagerServerHarness:
       schemaName = "main",
       dataPath = ""
     ),
-    admin = AdminConfig(username = "", password = "", role = "admin"),
+    admin = AdminConfig(username = "", password = "", kind = "admin"),
     k8s = K8sConfig(
       namespace = "default",
       image = "",
@@ -164,7 +164,7 @@ object ManagerServerHarness:
           |  tenant               TEXT,
           |  username             TEXT NOT NULL,
           |  password_hash        TEXT NOT NULL,
-          |  role                 TEXT NOT NULL DEFAULT 'user',
+          |  kind                 TEXT NOT NULL DEFAULT 'user',
           |  enabled              BOOLEAN NOT NULL DEFAULT true,
           |  email                TEXT,
           |  must_change_password BOOLEAN,

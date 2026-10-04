@@ -48,7 +48,7 @@ class PostgresAclValidatorVerbsSpec extends AnyFlatSpec with Matchers:
         id        = s"u-$username",
         tenant    = tenant,
         username  = username,
-        role      = "testrole",
+        kind      = "testrole",
         createdAt = Some(Instant.now()),
         updatedAt = Some(Instant.now())
       ),

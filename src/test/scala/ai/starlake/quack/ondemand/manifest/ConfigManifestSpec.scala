@@ -50,7 +50,7 @@ class ConfigManifestSpec extends AnyFlatSpec with Matchers:
         tenant = Some("tpch"),
         username = "alice",
         password = None,
-        role = "user",
+        kind = "user",
         enabled = true,
         roles = List("reader"),
         groups = Nil,
@@ -124,7 +124,7 @@ class ConfigManifestSpec extends AnyFlatSpec with Matchers:
     user.tenant shouldBe None
     user.username shouldBe "admin"
     user.password shouldBe None
-    user.role shouldBe "user"
+    user.kind shouldBe "user"
     user.enabled shouldBe true
     user.roles shouldBe empty
     user.groups shouldBe empty

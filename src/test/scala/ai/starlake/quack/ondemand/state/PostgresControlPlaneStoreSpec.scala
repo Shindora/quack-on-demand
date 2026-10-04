@@ -528,7 +528,7 @@ class PostgresControlPlaneStoreSpec extends AnyFlatSpec with Matchers:
       store.upsertTenant(tenant)
       store.upsertRole(role)
       store.upsertGroup(group)
-      val user = RbacUser(id = "u-1", tenant = Some("tenant-1"), username = "alice", role = "user")
+      val user = RbacUser(id = "u-1", tenant = Some("tenant-1"), username = "alice", kind = "user")
       store.upsertUserIdentity(user)
 
       store.addUserGroup("u-1", "g-1")
@@ -550,7 +550,7 @@ class PostgresControlPlaneStoreSpec extends AnyFlatSpec with Matchers:
   // ---------- RBAC: users ----------
 
   "RBAC: users" should "round-trip a superuser (tenant = NULL)" in withStore { store =>
-    val u = RbacUser(id = "u-root", tenant = None, username = "root", role = "admin")
+    val u = RbacUser(id = "u-root", tenant = None, username = "root", kind = "admin")
     store.upsertUserIdentity(u)
     val got = store.getUserById("u-root")
     got.map(_.copy(createdAt = None, updatedAt = None)) shouldBe Some(u)
@@ -733,3 +733,25 @@ class PostgresControlPlaneStoreSpec extends AnyFlatSpec with Matchers:
     store.listSnapshotTags("tenant-1", "tenant-1_db1") shouldBe Nil
     store.deleteSnapshotTag("tenant-1", "tenant-1_db1", "pre-migration") shouldBe None
   }
+
+  "createTenantWithBuiltins" should "store exactly the four built-ins and their two grants" in
+    withStore { store =>
+      store.createTenantWithBuiltins(tenant, BuiltinRbac.rowsFor(tenant.id))
+      val roles  = store.listRoles(tenant.id)
+      val groups = store.listGroups(tenant.id)
+      roles.filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.RoleNames
+      groups.filter(_.builtin).map(_.name).toSet shouldBe BuiltinRbac.GroupNames
+      roles.size shouldBe 2
+      groups.size shouldBe 2
+      val allTables = store.findRole(tenant.id, BuiltinRbac.AllTables).get
+      store
+        .listRolePermissions(allTables.id)
+        .map(p => (p.catalogName, p.schemaName, p.tableName, p.verb)) shouldBe
+        List(("*", "*", "*", "ALL"))
+      val noTables = store.findRole(tenant.id, BuiltinRbac.NoTables).get
+      store.listRolePermissions(noTables.id) shouldBe Nil
+      val allPools = store.findGroup(tenant.id, BuiltinRbac.AllPools).get
+      store.listPoolPermissionsForGroup(allPools.id).map(_.poolId) shouldBe List(None)
+      val noPools = store.findGroup(tenant.id, BuiltinRbac.NoPools).get
+      store.listPoolPermissionsForGroup(noPools.id) shouldBe Nil
+    }

@@ -4,6 +4,7 @@ package ai.starlake.quack.security
 import ai.starlake.quack.edge.StatementRecord
 import ai.starlake.quack.model.{Pool, RoleDistribution}
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
   InMemoryControlPlaneStore,
   PoolPermission,
   RbacGroup,
@@ -113,14 +114,14 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
       tenant = Some(GlobexTenantId),
       username = CarolUser,
       passwordHash = bcryptHash(CarolPassword),
-      role = "user"
+      kind = "user"
     )
     // dave -- globex tenant admin (mirrors alice in acme: admin role label + role membership).
     val daveId = s.upsertUserWithHash(
       tenant = Some(GlobexTenantId),
       username = DaveUser,
       passwordHash = bcryptHash(DavePassword),
-      role = "admin"
+      kind = "admin"
     )
     s.addUserRole(daveId, GlobexRoleId)
     carolId
@@ -182,6 +183,24 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
       val resp = post(h.httpClient, s"${h.baseUrl}/api/role/delete", body, apiKey = Some(token))
       withClue(s"missing-id -> /role/delete body: ${resp.body()}") {
         resp.statusCode() shouldBe 404
+      }
+    finally h.shutdown()
+  }
+
+  it should "409 builtin_protected when the role is a built-in, even for a superuser" in {
+    val fix = SecurityFixtures.freshStore()
+    addTenantB(fix)
+    // The store seeds the built-ins with `builtin = true` (upsertRole never can).
+    fix.store.ensureBuiltins(GlobexTenantId)
+    val builtinId = fix.store.findRole(GlobexTenantId, BuiltinRbac.AllTables).get.id
+    val h         = ManagerServerHarness.boot(fix.store, staticApiKey = None)
+    try
+      val token = h.mintToken(SecurityFixtures.RootUsername, SecurityFixtures.RootPassword)
+      val body  = s"""{"id":"$builtinId"}"""
+      val resp  = post(h.httpClient, s"${h.baseUrl}/api/role/delete", body, apiKey = Some(token))
+      withClue(s"superuser -> /role/delete on a built-in body: ${resp.body()}") {
+        resp.statusCode() shouldBe 409
+        errorCode(resp.body()) shouldBe Some("builtin_protected")
       }
     finally h.shutdown()
   }
@@ -322,7 +341,7 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
         Some(SecurityFixtures.TenantId)
       )
       val body =
-        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","role":"admin"}"""
+        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","kind":"admin"}"""
       val resp = post(h.httpClient, s"${h.baseUrl}/api/user/create", body, apiKey = Some(token))
       expectForbidden(resp, "tenant-A admin -> /user/create in tenant-B")
     finally h.shutdown()
@@ -336,9 +355,81 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
         SecurityFixtures.AlicePassword,
         Some(SecurityFixtures.TenantId)
       )
-      val body = """{"tenant":null,"username":"mallory","password":"pw","role":"admin"}"""
+      val body = """{"tenant":null,"username":"mallory","password":"pw","kind":"admin"}"""
       val resp = post(h.httpClient, s"${h.baseUrl}/api/user/create", body, apiKey = Some(token))
       expectForbidden(resp, "tenant-A admin -> /user/create with tenant=null (superuser)")
+    finally h.shutdown()
+  }
+
+  it should "answer 400 roles_required for an explicitly empty roles list" in {
+    val (h, _, _) = bootWithTwoTenants()
+    try
+      val token = h.mintToken(
+        SecurityFixtures.AliceUsername,
+        SecurityFixtures.AlicePassword,
+        Some(SecurityFixtures.TenantId)
+      )
+      val body =
+        s"""{"tenant":"${SecurityFixtures.TenantId}","username":"newbie","password":"pw","roles":[]}"""
+      val resp = post(h.httpClient, s"${h.baseUrl}/api/user/create", body, apiKey = Some(token))
+      withClue(resp.body()) {
+        resp.statusCode() shouldBe 400
+        errorCode(resp.body()) shouldBe Some("roles_required")
+      }
+    finally h.shutdown()
+  }
+
+  "user/create and user/update" should "refuse the legacy `role` key with a 400 naming `kind`" in {
+    val fix     = SecurityFixtures.freshStore()
+    val carolId = addTenantB(fix)
+    // The default memberships of a create resolve against tenant A's built-ins.
+    fix.store.ensureBuiltins(SecurityFixtures.TenantId)
+    val h = ManagerServerHarness.boot(fix.store, staticApiKey = None)
+    try
+      val token = h.mintToken(
+        SecurityFixtures.AliceUsername,
+        SecurityFixtures.AlicePassword,
+        Some(SecurityFixtures.TenantId)
+      )
+      val tid    = SecurityFixtures.TenantId
+      val legacy = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/create",
+        s"""{"tenant":"$tid","username":"oldclient","password":"pw","role":"admin"}""",
+        apiKey = Some(token)
+      )
+      withClue(legacy.body()) {
+        legacy.statusCode() shouldBe 400
+        legacy.body() should include("kind")
+      }
+      val legacyUpd = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/update",
+        s"""{"id":"$carolId","role":"admin"}""",
+        apiKey = Some(token)
+      )
+      withClue(legacyUpd.body()) {
+        legacyUpd.statusCode() shouldBe 400
+        legacyUpd.body() should include("kind")
+      }
+      // The renamed field still works on both endpoints.
+      val created = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/create",
+        s"""{"tenant":"$tid","username":"newclient","password":"pw","kind":"user"}""",
+        apiKey = Some(token)
+      )
+      withClue(created.body())(created.statusCode() shouldBe 200)
+      val newId = parse(created.body()).toOption
+        .flatMap(_.hcursor.get[String]("id").toOption)
+        .getOrElse(fail(s"no id in create response: ${created.body()}"))
+      val updated = post(
+        h.httpClient,
+        s"${h.baseUrl}/api/user/update",
+        s"""{"id":"$newId","kind":"admin"}""",
+        apiKey = Some(token)
+      )
+      withClue(updated.body())(updated.statusCode() shouldBe 200)
     finally h.shutdown()
   }
 
@@ -652,7 +743,7 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
         Some(SecurityFixtures.TenantId)
       )
       val body =
-        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","role":"user"}"""
+        s"""{"tenant":"$GlobexTenantId","username":"mallory","password":"pw","kind":"user"}"""
       val resp =
         postWithCookie(h.httpClient, s"${h.baseUrl}/api/user/create", body, cookieToken = token)
       expectForbidden(resp, "tenant-A admin (cookie) -> /api/user/create in tenant-B")

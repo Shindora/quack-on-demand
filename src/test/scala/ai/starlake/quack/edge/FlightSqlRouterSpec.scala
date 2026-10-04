@@ -200,7 +200,7 @@ class FlightSqlRouterSpec extends AnyFlatSpec with Matchers:
     val tenantId = router.supervisor.getTenant(poolKey.tenant).get.id
     router.supervisor.createRole(tenantId, "analyst").unsafeRunSync()
     val superuserEff = ai.starlake.quack.ondemand.rbac.EffectiveSet(
-      ai.starlake.quack.ondemand.state.RbacUser("u-root", None, "root", role = "admin"),
+      ai.starlake.quack.ondemand.state.RbacUser("u-root", None, "root", kind = "admin"),
       Nil,
       Nil,
       Nil,
@@ -230,7 +230,7 @@ class FlightSqlRouterSpec extends AnyFlatSpec with Matchers:
       adminExecutor = Some(exec)
     )
     val superuserEff = ai.starlake.quack.ondemand.rbac.EffectiveSet(
-      ai.starlake.quack.ondemand.state.RbacUser("u-root", None, "root", role = "admin"),
+      ai.starlake.quack.ondemand.state.RbacUser("u-root", None, "root", kind = "admin"),
       Nil,
       Nil,
       Nil,

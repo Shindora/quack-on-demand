@@ -83,6 +83,24 @@ class QuackProtocolSpec extends AnyFunSpec with Matchers:
       finally allocator.close()
     }
 
+    it("fails the IO non-fatally, before any POST, when the native cannot load") {
+      val transport = FakeTransport(Iterator.empty)
+      val allocator = new RootAllocator()
+      val broken    = QuackNativeSupport
+        .probe(() => throw new ExceptionInInitializerError(new UnsatisfiedLinkError("boom")))
+        .get
+      try
+        val protocol = new QuackProtocol(transport, allocator)
+        val got      = protocol.open(endpoint, token, () => throw broken).attempt.unsafeRunSync()
+        got.isLeft shouldBe true
+        val e = got.left.toOption.get
+        e shouldBe a[IllegalStateException]
+        scala.util.control.NonFatal(e) shouldBe true
+        e.getCause.getMessage shouldBe "boom"
+        transport.postCount.get() shouldBe 0
+      finally allocator.close()
+    }
+
   describe("execute"):
     it("streams a single-batch PREPARE_RESPONSE (needsMoreFetch=false) to one INTEGER row of 42") {
       val uuid      = new java.math.BigInteger("0123456789ABCDEF0123456789ABCDEF", 16)

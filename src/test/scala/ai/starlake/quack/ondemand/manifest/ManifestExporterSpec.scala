@@ -9,6 +9,11 @@ import java.time.Instant
 
 class ManifestExporterSpec extends AnyFlatSpec with Matchers:
 
+  private def exportOk(
+      r: Either[ManifestExporter.ReservedNameRows, ConfigManifest]
+  ): ConfigManifest =
+    r.fold(e => fail(e.message), identity)
+
   private def populated: InMemoryControlPlaneStore =
     val s = new InMemoryControlPlaneStore()
     s.upsertTenant(Tenant(id = "tpch", displayName = "tpch"))
@@ -39,11 +44,13 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
 
   "ManifestExporter" should "emit a v1 manifest with the live tenants/pools" in {
     val store = populated
-    val m     = ManifestExporter.build(
-      store,
-      exportedAt = Instant.EPOCH,
-      managerVersion = "0.2.0",
-      hostname = "test"
+    val m     = exportOk(
+      ManifestExporter.build(
+        store,
+        exportedAt = Instant.EPOCH,
+        managerVersion = "0.2.0",
+        hostname = "test"
+      )
     )
     m.apiVersion shouldBe ConfigManifest.ApiVersion
     m.kind shouldBe ConfigManifest.Kind
@@ -59,10 +66,10 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
         id = "u-1",
         tenant = None,
         username = "admin",
-        role = "admin"
+        kind = "admin"
       )
     )
-    val m = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")
+    val m = exportOk(ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test"))
     m.users.find(_.username == "admin").get.password shouldBe None
   }
 
@@ -84,7 +91,7 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
         encrypted = true
       )
     )
-    val m   = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")
+    val m   = exportOk(ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test"))
     val mtd = m.tenants.head.tenantDbs.find(_.name == "tpch_secure").get
     mtd.encrypted shouldBe true
     mtd.metastore.keySet should not contain "encryptionKey"
@@ -101,7 +108,7 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
         acl = TenantAcl(Some("opa"), Some("http://opa"), None, Some("tok"))
       )
     )
-    val m   = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")
+    val m   = exportOk(ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test"))
     val acl = m.tenants.find(_.name == "acme").flatMap(_.acl).get
     acl.mode shouldBe Some("opa")
     acl.opaUrl shouldBe Some("http://opa")
@@ -111,6 +118,6 @@ class ManifestExporterSpec extends AnyFlatSpec with Matchers:
   it should "omit acl entirely for a tenant with no ACL override" in {
     val store = new InMemoryControlPlaneStore()
     store.upsertTenant(Tenant(id = "acme", displayName = "acme"))
-    val m = ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test")
+    val m = exportOk(ManifestExporter.build(store, Instant.EPOCH, "0.2.0", "test"))
     m.tenants.find(_.name == "acme").flatMap(_.acl) shouldBe None
   }

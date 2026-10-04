@@ -251,6 +251,18 @@ object AdminSqlParser:
       else if optKw("GROUP") then ident("group name").map(Principal.Group.apply)
       else Left(s"expected USER or GROUP, found '${if eof then "<end>" else toks(i).raw}'")
 
+    /** One or more comma-separated identifiers. */
+    private def identList(what: String): Either[String, List[String]] =
+      ident(what).flatMap { first =>
+        val out                  = scala.collection.mutable.ListBuffer(first)
+        var fail: Option[String] = None
+        while fail.isEmpty && optKw(",") do
+          ident(what) match
+            case Right(n)  => out += n
+            case Left(err) => fail = Some(err)
+        fail.toLeft(out.toList)
+      }
+
     /** Comma-separated privilege list, mapped onto the stored verb space. */
     private def privileges(): Either[String, String] =
       var privs                = Set.empty[String]
@@ -455,7 +467,11 @@ object AdminSqlParser:
           pw <- stringLiteral("password")
           _  <- if pw.isEmpty then Left("password must not be empty") else Right(())
           isAdmin = optKw("ADMIN")
-          out <- end(AdminCommand.CreateUser(name, pw, isAdmin))
+          // ROLES before GROUPS, each at most once: a repeated or out-of-order clause is left
+          // as trailing input and refused by end().
+          roles  <- if optKw("ROLES") then identList("role name").map(Some(_)) else Right(None)
+          groups <- if optKw("GROUPS") then identList("group name").map(Some(_)) else Right(None)
+          out    <- end(AdminCommand.CreateUser(name, pw, isAdmin, roles, groups))
         yield out
       else
         val orReplaceE: Either[String, Boolean] =

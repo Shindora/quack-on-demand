@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+- **BREAKING: the user account field `role` is now `kind` on every surface.** The
+  `qodstate_user.role` column (admin | user, the management-rights flag, never an RBAC role) is
+  renamed `kind` by Liquibase `0045`. REST `user/create`, `user/update` and `user/list` carry
+  `kind`, and a request still sending `role` is refused with 400 naming the new field instead of
+  being silently read as `kind=user`. The CLI takes `--kind`, and `qod user create --role` now
+  names an RBAC role to attach. MCP takes `kind`. A manifest user entry uses the key `kind`, and
+  the old key is refused. The SQL dialect is unchanged (`ADMIN`). The boot config `admin.role` /
+  `QOD_ADMIN_ROLE` is renamed `admin.kind` / `QOD_ADMIN_KIND`; the old env var is now ignored. A
+  custom `QOD_AUTH_DB_SYSTEM_QUERY` or `QOD_AUTH_DB_TENANT_QUERY` that selects `role` from
+  `qodstate_user` must select `kind`, or boot fails. The session JWT `role` claim and the login
+  and whoami responses are unchanged.
+
+- **Upgrade: stop every manager replica, then start them all on this version.** There is no rolling
+  upgrade across this release: once Liquibase `0045` renames the column, a replica still on the
+  previous version can no longer authenticate anyone, because its auth queries select `role`.
+
+- **Every tenant now carries four protected built-in roles and groups.** The role `qod_all_tables`
+  holds one permission, `ALL` on `*.*.*`; the role `qod_no_tables` holds nothing; the group
+  `qod_all_pools` holds one tenant-wide pool grant (every pool of the tenant); the group
+  `qod_no_pools` holds nothing. Their definition (delete, permissions, column and row policies,
+  role bindings, pool grants) is refused with 409 `builtin_protected`, while adding and removing
+  users stays allowed. The `qod_` name prefix is reserved for them, case-insensitively: creating a
+  role or group with it answers 400 `reserved_name`. They are seeded on tenant create, on manifest
+  import, and by a boot backfill for existing tenants, which renames any user-made row already
+  holding a built-in name to `<name>_renamed` and folds a pristine legacy `admin` role (exactly
+  `ALL` on `*.*.*`, no policies) into `qod_all_tables`, moving its users and groups over. New
+  tenants no longer get an `admin` role.
+
+- **Roles and groups are chosen when a user is created.** REST, CLI (`--role` / `--group`,
+  repeatable), MCP, the SQL dialect (`CREATE USER ... ROLES r1, r2 GROUPS g1`) and the admin UI
+  take the lists of role and group names. An omitted list defaults to `qod_all_tables` and
+  `qod_all_pools`, which gives the new user full data access to every table and every pool of the
+  tenant; pass narrower lists (for example `qod_no_tables` / `qod_no_pools`) to start from
+  nothing. An explicitly empty list is refused (400 `roles_required` / `groups_required`), as is an
+  unknown name. Superusers take no lists, and SCIM provisioning and manifest import attach no
+  defaults.
+
+- **Manifest export refuses while any tenant holds a user-made `qod_` role or group.** Such a row
+  (left from before the prefix was reserved, or renamed `<name>_renamed` by the boot backfill,
+  which keeps the prefix) cannot be replayed by an import, so the whole export answers 400
+  `reserved_name` and lists the offending rows instead of producing a manifest that fails later.
+  Rename those rows by hand, then export again.
+
+- **Tests run from a git worktree.** A forked `sbt test` in a worktree now finds libduckdb through
+  the main checkout's `.duckdb` cache, and a native library that cannot load fails the statement
+  with an error instead of hanging the suite.
+
 ## 0.9.9
 
 - **Security: a personal access token on the catalog endpoints no longer runs as superuser.**

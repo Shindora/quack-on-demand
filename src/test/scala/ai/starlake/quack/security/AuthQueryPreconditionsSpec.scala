@@ -12,7 +12,7 @@ import java.sql.DriverManager
 import scala.util.Try
 
 /** Config-load-time gate for `DatabaseAuthConfig.systemQuery` / `tenantQuery`: both queries must
-  * project exactly four columns `(password_hash, role, enabled, must_change_password)`. This
+  * project exactly four columns `(password_hash, kind, enabled, must_change_password)`. This
   * mirrors, at startup, the runtime enforcement pinned by `UserEnabledAuthSpec` ("reject
   * authentication when a legacy custom query does not project the enabled column") and by
   * `MustChangePasswordAuthSpec` ("hard-fail a legacy 3-column operator query").
@@ -22,9 +22,9 @@ class AuthQueryPreconditionsSpec extends AnyFlatSpec with Matchers:
   TestPostgres.dropStrayTestDatabases("qodaqp")
 
   private val FourColumnQuery =
-    "SELECT password_hash, role, enabled, must_change_password FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
+    "SELECT password_hash, kind, enabled, must_change_password FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
   private val ThreeColumnQuery =
-    "SELECT password_hash, role, enabled FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
+    "SELECT password_hash, kind, enabled FROM qodstate_user WHERE tenant IS NULL AND username = ? LIMIT 1"
 
   private def config(systemQuery: String, tenantQuery: String) =
     DatabaseAuthConfig(

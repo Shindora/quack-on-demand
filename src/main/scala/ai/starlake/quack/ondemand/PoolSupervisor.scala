@@ -18,7 +18,7 @@ import ai.starlake.quack.model.{
   TenantDb,
   TenantDbKind
 }
-import ai.starlake.quack.ondemand.rbac.RbacResolver
+import ai.starlake.quack.ondemand.rbac.{RbacResolver, UserMemberships}
 import ai.starlake.quack.ondemand.fleet.MissingSlots
 import ai.starlake.quack.ondemand.runtime.{
   NoFreeServer,
@@ -27,6 +27,7 @@ import ai.starlake.quack.ondemand.runtime.{
   QuackBackend
 }
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
   ControlPlaneStore,
   DbAdmin,
   EmailPolicy,
@@ -46,6 +47,7 @@ import cats.syntax.all._
 import org.slf4j.LoggerFactory
 
 import scala.collection.concurrent.TrieMap
+import scala.util.Try
 
 /** Patch for [[PoolSupervisor.updateTenantDb]]. Absent fields unchanged; present fields replace.
   * Map fields carry over response-redacted keys ([[TenantDb.SecretKeys]]) the incoming map omits
@@ -1442,27 +1444,16 @@ final class PoolSupervisor(
               id = id,
               displayName = if t.displayName.trim.nonEmpty then t.displayName.trim else id
             )
-            // Every new tenant gets a built-in `admin` role with a wildcard ALL permission,
-            // inserted in the same transaction as the tenant row so a partial failure leaves no
-            // orphans. BootstrapAccessSeeder wires the bootstrap admin superuser to it at boot.
-            val adminRole = RbacRole(
-              id = newId("r"),
-              tenantId = withId.id,
-              name = PoolSupervisor.AdminRoleName,
-              description = Some(s"Built-in admin role for tenant ${withId.displayName}")
-            )
-            val adminPerm = RolePermission(
-              id = newId("rp"),
-              roleId = adminRole.id,
-              catalogName = RolePermission.Wildcard,
-              schemaName = RolePermission.Wildcard,
-              tableName = RolePermission.Wildcard,
-              verb = "ALL"
-            )
-            store.createTenantWithAdminRole(withId, adminRole, adminPerm)
+            // Every new tenant gets the four protected built-ins (BuiltinRbac), in the same
+            // transaction as the tenant row so a partial failure leaves no orphans.
+            val builtins = BuiltinRbac.rowsFor(withId.id)
+            store.createTenantWithBuiltins(withId, builtins)
             tenants.put(withId.id, withId)
-            rbacResolver.putRole(adminRole)
-            rbacResolver.putRolePermission(adminPerm)
+            builtins.roles.foreach(rbacResolver.putRole)
+            builtins.groups.foreach(rbacResolver.putGroup)
+            builtins.permissions.foreach(rbacResolver.putRolePermission)
+            builtins.poolGrants.foreach(rbacResolver.putPoolPermission)
+            invalidateEffectiveCache()
             publish.topologyChanged()
             events.emit(ManagerEvent.TenantCreated(withId.id))
             Right(withId)
@@ -2813,15 +2804,18 @@ final class PoolSupervisor(
       tenant: Option[String],
       username: String,
       password: String,
-      role: String = "user",
+      kind: String = "user",
       userStore: ai.starlake.quack.ondemand.state.UserStore,
+      // Required, no default: every creation path states whether the built-in defaults apply
+      // (Requested) or membership is left to an IdP (IdpManaged).
+      memberships: UserMemberships,
       mustChangePassword: Boolean = false,
       email: Option[String] = None,
       // enabled = false persists the row disabled from the first write (SCIM
       // creates with active: false), atomically -- no enabled window.
       enabled: Boolean = true,
       // failIfExists = true makes this a true CREATE: an existing (tenant,
-      // username) row is refused untouched (no password rotation, no role
+      // username) row is refused untouched (no password rotation, no kind
       // change) instead of upserted. SCIM provisioning retries depend on it.
       failIfExists: Boolean = false
   ): IO[Either[SupervisorError, RbacUser]] = IO.blocking {
@@ -2849,39 +2843,166 @@ final class PoolSupervisor(
             EmailPolicy.resolve(username, email) match
               case Left(msg)       => Left(SupervisorError.InvalidEmail(msg))
               case Right(effEmail) =>
-                // Create always sets email, even to None (clearing is not meaningful on a
-                // brand-new row, but a fresh insert with no email is the common case).
-                val out = userStore.upsertUser(
-                  resolvedTenantId,
-                  username,
-                  password,
-                  role,
-                  mustChangePassword = Some(mustChangePassword),
-                  email = Some(effEmail),
-                  enabled = Option.when(!enabled)(false),
-                  insertOnly = failIfExists
-                )
-                if failIfExists && !out.inserted then
-                  Left(SupervisorError.InvalidArgument(s"user already exists: $username"))
-                else
-                  val u = RbacUser(
-                    out.id,
-                    resolvedTenantId,
-                    username,
-                    role,
-                    enabled = enabled,
-                    mustChangePassword = mustChangePassword,
-                    email = effEmail
-                  )
-                  store.upsertUserIdentity(u)
-                  Right(u)
+                // An upsert over an existing row (REST create without failIfExists) attaches
+                // only the lists the caller named: the built-in defaults are for a fresh user
+                // and must never widen an existing user's access, so they are not even
+                // resolved for an existing row (a tenant missing a built-in cannot refuse it).
+                val existedBefore =
+                  !failIfExists && store.findUser(resolvedTenantId, username).isDefined
+                // Names are resolved before anything is written: a refused membership leaves
+                // no user row behind.
+                resolveMemberships(resolvedTenantId, memberships, applyDefaults = !existedBefore)
+                  .flatMap { resolved =>
+                    // Create always sets email, even to None (clearing is not meaningful on a
+                    // brand-new row, but a fresh insert with no email is the common case).
+                    val out = userStore.upsertUser(
+                      resolvedTenantId,
+                      username,
+                      password,
+                      kind,
+                      mustChangePassword = Some(mustChangePassword),
+                      email = Some(effEmail),
+                      enabled = Option.when(!enabled)(false),
+                      insertOnly = failIfExists
+                    )
+                    if failIfExists && !out.inserted then
+                      Left(SupervisorError.InvalidArgument(s"user already exists: $username"))
+                    else
+                      // Race guards: a row seen as existing but deleted meanwhile is a fresh
+                      // insert and gets its defaults now; a row seen as fresh but created
+                      // concurrently keeps only the explicit lists.
+                      val toAttach: Either[SupervisorError, (List[RbacRole], List[RbacGroup])] =
+                        if out.inserted && existedBefore then
+                          resolveMemberships(resolvedTenantId, memberships, applyDefaults = true)
+                        else if out.inserted then Right(resolved)
+                        else
+                          memberships match
+                            case UserMemberships.Requested(r, g) =>
+                              Right(
+                                (
+                                  if r.isDefined then resolved._1 else Nil,
+                                  if g.isDefined then resolved._2 else Nil
+                                )
+                              )
+                            case UserMemberships.IdpManaged => Right((Nil, Nil))
+                      val attached: Either[SupervisorError, (List[RbacRole], List[RbacGroup])] =
+                        toAttach.flatMap { case (attachRoles, attachGroups) =>
+                          if attachRoles.isEmpty && attachGroups.isEmpty then
+                            Right((attachRoles, attachGroups))
+                          else
+                            Try(
+                              store.addUserMemberships(
+                                out.id,
+                                attachRoles.map(_.id),
+                                attachGroups.map(_.id)
+                              )
+                            ).toEither.left
+                              .map { t =>
+                                logger.error(
+                                  s"createUser: could not attach memberships to user ${out.id}",
+                                  t
+                                )
+                                SupervisorError.Internal("could not attach memberships")
+                              }
+                              .map(_ => (attachRoles, attachGroups))
+                        }
+                      attached match
+                        case Left(err) =>
+                          // User rows and edges live in two connection pools, so they cannot
+                          // share a transaction: undo the user row we just inserted.
+                          if out.inserted then
+                            Try(store.deleteUser(out.id)).failed.foreach(e =>
+                              logger.error(
+                                s"createUser: could not remove user ${out.id} after a failed " +
+                                  s"membership attach: ${e.getMessage}",
+                                e
+                              )
+                            )
+                          Left(err)
+                        case Right((attachRoles, attachGroups)) =>
+                          if attachRoles.nonEmpty || attachGroups.nonEmpty then
+                            invalidateEffectiveCache()
+                          val u = RbacUser(
+                            out.id,
+                            resolvedTenantId,
+                            username,
+                            kind,
+                            enabled = enabled,
+                            mustChangePassword = mustChangePassword,
+                            email = effEmail
+                          )
+                          store.upsertUserIdentity(u)
+                          Right(u)
+                  }
     }
   }
+
+  /** Names -> rows for a user create, before anything is written. */
+  private def resolveMemberships(
+      tenantId: Option[String],
+      m: UserMemberships,
+      // false for an existing row: an omitted list then attaches nothing, so its default is
+      // not resolved (and cannot be refused).
+      applyDefaults: Boolean
+  ): Either[SupervisorError, (List[RbacRole], List[RbacGroup])] =
+    m match
+      case UserMemberships.IdpManaged               => Right((Nil, Nil))
+      case UserMemberships.Requested(roles, groups) =>
+        tenantId match
+          case None =>
+            if roles.isDefined || groups.isDefined then
+              Left(
+                SupervisorError.InvalidMembership(
+                  "memberships_not_applicable",
+                  "roles and groups do not apply to a superuser"
+                )
+              )
+            else Right((Nil, Nil))
+          case Some(tid) =>
+            def names(requested: Option[List[String]], defaults: List[String]): List[String] =
+              requested.getOrElse(if applyDefaults then defaults else Nil).distinct
+            val roleNames  = names(roles, BuiltinRbac.DefaultRoles)
+            val groupNames = names(groups, BuiltinRbac.DefaultGroups)
+            // Only an explicit empty list is refused (the defaults are never empty).
+            if roles.exists(_.isEmpty) then
+              Left(
+                SupervisorError.InvalidMembership(
+                  "roles_required",
+                  "a tenant user needs at least one role"
+                )
+              )
+            else if groups.exists(_.isEmpty) then
+              Left(
+                SupervisorError.InvalidMembership(
+                  "groups_required",
+                  "a tenant user needs at least one group"
+                )
+              )
+            else
+              val byRole  = store.listRoles(tid).map(r => r.name -> r).toMap
+              val byGroup = store.listGroups(tid).map(g => g.name -> g).toMap
+              val badRole = roleNames.filterNot(byRole.contains)
+              val badGrp  = groupNames.filterNot(byGroup.contains)
+              if badRole.nonEmpty then
+                Left(
+                  SupervisorError.InvalidMembership(
+                    "unknown_role",
+                    s"unknown role(s) in tenant '$tid': ${badRole.mkString(", ")}"
+                  )
+                )
+              else if badGrp.nonEmpty then
+                Left(
+                  SupervisorError.InvalidMembership(
+                    "unknown_group",
+                    s"unknown group(s) in tenant '$tid': ${badGrp.mkString(", ")}"
+                  )
+                )
+              else Right((roleNames.map(byRole), groupNames.map(byGroup)))
 
   def updateUserPassword(
       userId: String,
       password: Option[String],
-      role: Option[String],
+      kind: Option[String],
       userStore: ai.starlake.quack.ondemand.state.UserStore,
       mustChangePassword: Option[Boolean] = None,
       email: Option[Option[String]] = None,
@@ -2907,17 +3028,17 @@ final class PoolSupervisor(
           emailCheck match
             case Left(err)       => Left(err)
             case Right(effEmail) =>
-              val newRole = role.getOrElse(u.role)
+              val newKind = kind.getOrElse(u.kind)
               // A rotation always writes the flag: the requested value, or false when
               // absent -- an unflagged admin reset hands out a normal password and
-              // clears any pending must-change state. Role-only updates leave it alone.
+              // clears any pending must-change state. Kind-only updates leave it alone.
               val newFlag = password.map { pw =>
                 val flag = mustChangePassword.getOrElse(false)
                 userStore.upsertUser(
                   u.tenant,
                   u.username,
                   pw,
-                  newRole,
+                  newKind,
                   mustChangePassword = Some(flag),
                   email = effEmail
                 )
@@ -2953,7 +3074,7 @@ final class PoolSupervisor(
                         u.tenant,
                         u.username,
                         hash,
-                        newRole,
+                        newKind,
                         enabled = enabled.getOrElse(u.enabled),
                         mustChangePassword = effMustChangePassword,
                         email = effEmail.getOrElse(u.email)
@@ -2972,12 +3093,12 @@ final class PoolSupervisor(
               rewriteOk match
                 case Left(err) => Left(err)
                 case Right(()) =>
-                  // upsertUserIdentity only writes (tenant, username, role) on conflict,
+                  // upsertUserIdentity only writes (tenant, username, kind) on conflict,
                   // so the flag/email/enabled just persisted above survive; carry them
                   // on the returned value.
                   val updated =
                     u.copy(
-                      role = newRole,
+                      kind = newKind,
                       mustChangePassword = effMustChangePassword,
                       email = effEmail.getOrElse(u.email),
                       enabled = enabled.getOrElse(u.enabled)
@@ -3010,15 +3131,48 @@ final class PoolSupervisor(
 
   // ---------- RBAC: roles ----------
 
+  /** Built-in roles and groups ([[state.BuiltinRbac]]) are frozen: their own definition (delete,
+    * permissions, policies, role bindings, pool grants) is refused here, while user memberships
+    * stay editable. Each guard runs after the existence check so a missing id still 404s.
+    *
+    * The decision reads the store row, never the in-memory resolver: under HA a replica whose
+    * resolver has not yet refreshed after a peer's createTenant would otherwise see no built-in
+    * flag and let the definition be stripped.
+    */
+  private def builtinRoleError(roleId: String): Option[SupervisorError] =
+    store
+      .getRole(roleId)
+      .filter(_.builtin)
+      .map(r =>
+        SupervisorError.BuiltinProtected(s"role '${r.name}' is built-in and cannot be modified")
+      )
+
+  private def builtinGroupError(groupId: String): Option[SupervisorError] =
+    store
+      .getGroup(groupId)
+      .filter(_.builtin)
+      .map(g =>
+        SupervisorError.BuiltinProtected(s"group '${g.name}' is built-in and cannot be modified")
+      )
+
+  private def reservedNameError(kind: String, name: String): Option[SupervisorError] =
+    Option.when(state.BuiltinRbac.isReserved(name))(
+      SupervisorError.ReservedName(
+        s"$kind name '$name' uses the reserved prefix '${state.BuiltinRbac.ReservedPrefix}'"
+      )
+    )
+
   def createRole(
       tenantId: String,
       name: String,
       description: Option[String] = None
   ): IO[Either[SupervisorError, RbacRole]] = IO.blocking {
     withCacheRecovery("createRole") {
+      val reserved = reservedNameError("role", name)
       if name.isEmpty then Left(SupervisorError.InvalidArgument("role name must be non-empty"))
       else if !tenants.contains(tenantId) then
         Left(SupervisorError.NotFound(s"tenant not found: $tenantId"))
+      else if reserved.isDefined then Left(reserved.get)
       else if store.findRole(tenantId, name).isDefined then
         Left(SupervisorError.AlreadyExists(s"role '$name' already exists in tenant '$tenantId'"))
       else
@@ -3035,10 +3189,13 @@ final class PoolSupervisor(
       rbacResolver.role(id) match
         case None    => Left(SupervisorError.NotFound(s"role not found: $id"))
         case Some(_) =>
-          store.deleteRole(id)
-          rbacResolver.removeRole(id)
-          invalidateEffectiveCache()
-          Right(())
+          builtinRoleError(id) match
+            case Some(err) => Left(err)
+            case None      =>
+              store.deleteRole(id)
+              rbacResolver.removeRole(id)
+              invalidateEffectiveCache()
+              Right(())
     }
   }
 
@@ -3052,7 +3209,8 @@ final class PoolSupervisor(
       verb: String
   ): IO[Either[SupervisorError, RolePermission]] = IO.blocking {
     withCacheRecovery("grantRolePermission") {
-      val upper = verb.toUpperCase(Locale.ROOT)
+      val builtin = builtinRoleError(roleId)
+      val upper   = verb.toUpperCase(Locale.ROOT)
       if !RolePermission.ValidVerbs.contains(upper) then
         Left(
           SupervisorError.InvalidArgument(
@@ -3061,6 +3219,7 @@ final class PoolSupervisor(
         )
       else if rbacResolver.role(roleId).isEmpty then
         Left(SupervisorError.NotFound(s"role not found: $roleId"))
+      else if builtin.isDefined then Left(builtin.get)
       else
         val p         = RolePermission(newId("rp"), roleId, catalog, schema, table, upper)
         val persisted = store.insertRolePermission(p)
@@ -3072,7 +3231,9 @@ final class PoolSupervisor(
 
   def revokeRolePermission(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("revokeRolePermission") {
-      if store.deleteRolePermission(id) then
+      val builtin = store.getRolePermission(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deleteRolePermission(id) then
         rbacResolver.removeRolePermission(id)
         invalidateEffectiveCache()
         Right(())
@@ -3102,7 +3263,9 @@ final class PoolSupervisor(
   ): IO[Either[SupervisorError, state.RoleColumnPolicy]] = IO.blocking {
     withCacheRecovery("createColumnPolicy") {
       val normalisedTransform = transformSql.map(_.trim).filter(_.nonEmpty)
-      if !state.RoleColumnPolicy.ValidActions.contains(action) then
+      val builtin             = builtinRoleError(roleId)
+      if builtin.isDefined then Left(builtin.get)
+      else if !state.RoleColumnPolicy.ValidActions.contains(action) then
         Left(
           SupervisorError.InvalidArgument(
             s"action must be one of ${state.RoleColumnPolicy.ValidActions.mkString(", ")}"
@@ -3155,7 +3318,9 @@ final class PoolSupervisor(
   ): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("updateColumnPolicy") {
       val normalisedTransform = transformSql.map(_.trim).filter(_.nonEmpty)
-      if !state.RoleColumnPolicy.ValidActions.contains(action) then
+      val builtin             = store.getColumnPolicy(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if !state.RoleColumnPolicy.ValidActions.contains(action) then
         Left(
           SupervisorError.InvalidArgument(
             s"action must be one of ${state.RoleColumnPolicy.ValidActions.mkString(", ")}"
@@ -3196,7 +3361,9 @@ final class PoolSupervisor(
 
   def deleteColumnPolicy(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("deleteColumnPolicy") {
-      if store.deleteColumnPolicy(id) then { invalidateEffectiveCache(); Right(()) }
+      val builtin = store.getColumnPolicy(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deleteColumnPolicy(id) then { invalidateEffectiveCache(); Right(()) }
       else Left(SupervisorError.NotFound(s"column policy $id not found"))
     }
   }
@@ -3217,40 +3384,48 @@ final class PoolSupervisor(
       predicateSql: String
   ): IO[Either[SupervisorError, state.RoleRowPolicy]] = IO.blocking {
     withCacheRecovery("createRowPolicy") {
-      ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
-        case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
-          Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
-        case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
-          val p = state.RoleRowPolicy(
-            id = newId("rp"),
-            roleId = roleId,
-            catalogName = catalogName,
-            schemaName = schemaName,
-            tableName = tableName,
-            predicateSql = canon
-          )
-          val persisted = store.insertRowPolicy(p)
-          invalidateEffectiveCache()
-          Right(persisted)
+      builtinRoleError(roleId) match
+        case Some(err) => Left(err)
+        case None      =>
+          ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
+            case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
+              Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
+            case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
+              val p = state.RoleRowPolicy(
+                id = newId("rp"),
+                roleId = roleId,
+                catalogName = catalogName,
+                schemaName = schemaName,
+                tableName = tableName,
+                predicateSql = canon
+              )
+              val persisted = store.insertRowPolicy(p)
+              invalidateEffectiveCache()
+              Right(persisted)
     }
   }
 
   def updateRowPolicy(id: String, predicateSql: String): IO[Either[SupervisorError, Unit]] =
     IO.blocking {
       withCacheRecovery("updateRowPolicy") {
-        ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
-          case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
-            Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
-          case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
-            val ok = store.updateRowPolicy(id, canon)
-            if ok then { invalidateEffectiveCache(); Right(()) }
-            else Left(SupervisorError.NotFound(s"row policy $id not found"))
+        store.getRowPolicy(id).flatMap(p => builtinRoleError(p.roleId)) match
+          case Some(err) => Left(err)
+          case None      =>
+            ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
+              case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
+                Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
+              case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
+                val ok = store.updateRowPolicy(id, canon)
+                if ok then { invalidateEffectiveCache(); Right(()) }
+                else Left(SupervisorError.NotFound(s"row policy $id not found"))
       }
     }
 
   def deleteRowPolicy(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("deleteRowPolicy") {
-      if store.deleteRowPolicy(id) then { invalidateEffectiveCache(); Right(()) }
+      val builtin = store.getRowPolicy(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deleteRowPolicy(id) then { invalidateEffectiveCache(); Right(()) }
       else Left(SupervisorError.NotFound(s"row policy $id not found"))
     }
   }
@@ -3266,9 +3441,11 @@ final class PoolSupervisor(
       description: Option[String] = None
   ): IO[Either[SupervisorError, RbacGroup]] = IO.blocking {
     withCacheRecovery("createGroup") {
+      val reserved = reservedNameError("group", name)
       if name.isEmpty then Left(SupervisorError.InvalidArgument("group name must be non-empty"))
       else if !tenants.contains(tenantId) then
         Left(SupervisorError.NotFound(s"tenant not found: $tenantId"))
+      else if reserved.isDefined then Left(reserved.get)
       else if store.findGroup(tenantId, name).isDefined then
         Left(SupervisorError.AlreadyExists(s"group '$name' already exists in tenant '$tenantId'"))
       else
@@ -3285,10 +3462,13 @@ final class PoolSupervisor(
       rbacResolver.group(id) match
         case None    => Left(SupervisorError.NotFound(s"group not found: $id"))
         case Some(_) =>
-          store.deleteGroup(id)
-          rbacResolver.removeGroup(id)
-          invalidateEffectiveCache()
-          Right(())
+          builtinGroupError(id) match
+            case Some(err) => Left(err)
+            case None      =>
+              store.deleteGroup(id)
+              rbacResolver.removeGroup(id)
+              invalidateEffectiveCache()
+              Right(())
     }
   }
 
@@ -3372,20 +3552,26 @@ final class PoolSupervisor(
               )
             )
           case (Some(_), Some(_)) =>
-            store.addGroupRole(groupId, roleId)
-            rbacResolver.addGroupRoleEdge(groupId, roleId)
-            invalidateEffectiveCache()
-            Right(())
+            builtinGroupError(groupId) match
+              case Some(err) => Left(err)
+              case None      =>
+                store.addGroupRole(groupId, roleId)
+                rbacResolver.addGroupRoleEdge(groupId, roleId)
+                invalidateEffectiveCache()
+                Right(())
       }
     }
 
   def removeGroupRole(groupId: String, roleId: String): IO[Either[SupervisorError, Unit]] =
     IO.blocking {
       withCacheRecovery("removeGroupRole") {
-        store.removeGroupRole(groupId, roleId)
-        rbacResolver.removeGroupRoleEdge(groupId, roleId)
-        invalidateEffectiveCache()
-        Right(())
+        builtinGroupError(groupId) match
+          case Some(err) => Left(err)
+          case None      =>
+            store.removeGroupRole(groupId, roleId)
+            rbacResolver.removeGroupRoleEdge(groupId, roleId)
+            invalidateEffectiveCache()
+            Right(())
       }
     }
 
@@ -3469,6 +3655,7 @@ final class PoolSupervisor(
                   SupervisorError.InvalidArgument("principal does not belong to the target tenant")
                 )
             }
+            .orElse(groupId.flatMap(builtinGroupError))
 
       problem match
         case Some(err) => Left(err)
@@ -3483,7 +3670,10 @@ final class PoolSupervisor(
 
   def revokePoolPermission(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("revokePoolPermission") {
-      if store.deletePoolPermission(id) then
+      val builtin =
+        store.getPoolPermission(id).flatMap(_.groupId).flatMap(builtinGroupError)
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deletePoolPermission(id) then
         rbacResolver.removePoolPermission(id)
         invalidateEffectiveCache()
         Right(())
@@ -3779,7 +3969,6 @@ final class PoolSupervisor(
     }
 
 object PoolSupervisor:
-  val AdminRoleName: String = "admin"
 
   /** Concatenate per-pool [[ai.starlake.quack.ondemand.PoolState.initSql]] with the federation blob
     * for shipment as a single `extraSetupSql` to spawn-quack-node.sh. Order: `initSql` FIRST

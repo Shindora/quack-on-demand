@@ -39,16 +39,25 @@ trait ControlPlaneStore:
   def listTenants(): List[Tenant]
   def deleteTenant(id: String): Unit
 
-  /** Bootstrap a new tenant atomically: insert the tenant row, its built-in `admin` role, and the
-    * `*.*.* ALL` permission attached to that role -- all three in a single transaction so a partial
-    * failure leaves no orphan role / permission rows. Caller picks the role / permission ids.
-    * Throws on uniqueness violation.
+  /** Bootstrap a new tenant atomically: the tenant row plus every [[BuiltinRbac]] row (roles,
+    * groups, the role permission, the tenant-wide pool grant) in one transaction, so a partial
+    * failure leaves no orphans. Throws on uniqueness violation.
     */
-  def createTenantWithAdminRole(
-      tenant: Tenant,
-      adminRole: RbacRole,
-      adminPermission: RolePermission
-  ): Unit
+  def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit
+
+  /** Idempotently make `tenantId` carry every [[BuiltinRbac]] row, in one transaction: a
+    * NON-built-in role/group already holding a built-in name is renamed `<name>_renamed`, missing
+    * built-ins are inserted, a missing `qod_all_tables` permission or `qod_all_pools` pool grant is
+    * restored. Safe to run concurrently from several HA replicas. Returns the rows as stored
+    * (existing ids preserved), with `changed` set when any row was written.
+    */
+  def ensureBuiltins(tenantId: String): BuiltinRbac.Rows
+
+  /** Fold a pristine legacy `admin` role (non-built-in, exactly one `* * * ALL` permission, no
+    * column or row policy) into the tenant's `qod_all_tables`: its user and group edges move over,
+    * then it is deleted. One transaction. Returns true when a role was folded.
+    */
+  def foldLegacyAdminRole(tenantId: String): Boolean
 
   def upsertTenantDb(t: TenantDb): Unit
   def listTenantDbs(tenantId: String): List[TenantDb]
@@ -196,7 +205,7 @@ trait ControlPlaneStore:
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Boolean = true,
       mustChangePassword: Boolean = false,
       email: Option[String] = None
@@ -276,6 +285,9 @@ trait ControlPlaneStore:
   def listGroupsByUsers(userIds: List[String]): Map[String, Set[String]]
 
   def addUserRole(userId: String, roleId: String): Unit
+
+  /** Every user->role and user->group edge for a freshly created user, in one transaction. */
+  def addUserMemberships(userId: String, roleIds: List[String], groupIds: List[String]): Unit
   def removeUserRole(userId: String, roleId: String): Boolean
   def listDirectRolesForUser(userId: String): List[String]
 

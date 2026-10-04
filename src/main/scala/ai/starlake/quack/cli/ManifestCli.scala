@@ -14,9 +14,13 @@ object ManifestCli:
   private val Yaml = Printer.builder.withDropNullKeys(true).build()
 
   def exportTo(store: ControlPlaneStore, out: PrintStream): Int =
-    val m = ManifestExporter.build(store, Instant.now, managerVersion = "cli", hostname = "cli")
-    out.print(Yaml.pretty(m.asJson))
-    0
+    ManifestExporter.build(store, Instant.now, managerVersion = "cli", hostname = "cli") match
+      case Left(refused) =>
+        System.err.println(s"error: ${refused.message}")
+        1
+      case Right(m) =>
+        out.print(Yaml.pretty(m.asJson))
+        0
 
   /** `requireEncryption` mirrors `quack-on-demand.requireEncryption`: this offline path creates
     * tenant-db rows against the very same control plane the manager serves, so it honours the same

@@ -34,7 +34,11 @@ final class MembershipHandlers(
       val code = err match
         case SupervisorError.NotFound(_) => StatusCode.NotFound
         case _                           => StatusCode.BadRequest
-      Left((code, ErrorResponse("invalid_membership", err.message)))
+      Left(
+        SupervisorErrorHttp
+          .special(err)
+          .getOrElse((code, ErrorResponse("invalid_membership", err.message)))
+      )
   }
 
   private def gateOnUser(apiKey: Option[String], userId: String)(

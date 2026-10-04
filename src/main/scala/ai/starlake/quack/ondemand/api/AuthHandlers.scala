@@ -507,7 +507,7 @@ final class AuthHandlers(
         // Identity from the IdP; qodstate_user is authoritative for role + tenants.
         grantsForIdentity(profile.username, profile.claims.get("email"))
 
-    val superuser = grants.exists(g => g.tenant.isEmpty && g.role.equalsIgnoreCase("admin"))
+    val superuser = grants.exists(g => g.tenant.isEmpty && g.kind.equalsIgnoreCase("admin"))
     val manageableTenants: Set[String] = grants.collect {
       case UserGrant(Some(t), r) if r.equalsIgnoreCase("admin") => t
     }.toSet

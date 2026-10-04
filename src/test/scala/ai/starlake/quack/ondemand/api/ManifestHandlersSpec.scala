@@ -5,7 +5,8 @@ import ai.starlake.quack.ondemand.PoolSupervisor
 import ai.starlake.quack.ondemand.manifest.ConfigManifest
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
-import ai.starlake.quack.ondemand.state.InMemoryControlPlaneStore
+import ai.starlake.quack.model.Tenant
+import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, RbacGroup}
 import cats.effect.unsafe.implicits.global
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -31,6 +32,17 @@ class ManifestHandlersSpec extends AnyFlatSpec with Matchers:
     val yaml     = handlers.exportYaml(None)((_: String) => None).unsafeRunSync().toOption.get
     yaml should include("apiVersion: quack-on-demand/v1")
     yaml should include("kind: ConfigManifest")
+  }
+
+  it should "refuse with 400 reserved_name when a user-made row uses the qod_ prefix" in {
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(Tenant(id = "acme", displayName = "acme"))
+    store.upsertGroup(RbacGroup(id = "g-legacy", tenantId = "acme", name = "qod_readers"))
+    val res           = newHandlers(store).exportYaml(None)((_: String) => None).unsafeRunSync()
+    val (status, err) = res.left.toOption.get
+    status.code shouldBe 400
+    err.error shouldBe "reserved_name"
+    err.message should include("acme/group/qod_readers")
   }
 
   "ManifestHandlers.import" should "reject invalid apiVersion with 400" in {

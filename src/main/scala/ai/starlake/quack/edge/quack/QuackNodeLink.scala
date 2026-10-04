@@ -2,6 +2,7 @@ package ai.starlake.quack.edge.quack
 
 import ai.starlake.quack.edge.adapter.{
   QuackNativeBridge,
+  QuackNativeSupport,
   QuackProtocol,
   QuackTransport,
   QuackWireError
@@ -144,10 +145,14 @@ object QuackNodeLink:
     * purpose: an UnsatisfiedLinkError is a LinkageError, which `Try` treats as fatal.
     */
   def nativeNeedsMore(resp: Array[Byte]): Option[Boolean] =
-    try Some(QuackNativeBridge.needsMoreFetch(resp))
+    try
+      QuackNativeSupport.requireLoaded()
+      Some(QuackNativeBridge.needsMoreFetch(resp))
     catch case _: Throwable => None
 
   /** The result uuid of a node PREPARE_RESPONSE through the bridge, or None (same rule). */
   def nativeResultUuid(resp: Array[Byte]): Option[QuackWire.Hugeint] =
-    try Some(hugeintOf(QuackNativeBridge.extractResultUuid(resp)))
+    try
+      QuackNativeSupport.requireLoaded()
+      Some(hugeintOf(QuackNativeBridge.extractResultUuid(resp)))
     catch case _: Throwable => None

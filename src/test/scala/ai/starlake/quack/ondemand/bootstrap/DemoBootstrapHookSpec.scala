@@ -2,7 +2,7 @@
 package ai.starlake.quack.ondemand.bootstrap
 
 import ai.starlake.quack.model.Tenant
-import ai.starlake.quack.ondemand.state.InMemoryControlPlaneStore
+import ai.starlake.quack.ondemand.state.{BuiltinRbac, InMemoryControlPlaneStore}
 import cats.effect.unsafe.implicits.global
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -25,7 +25,7 @@ class DemoBootstrapHookSpec extends AnyFlatSpec with Matchers:
        |users:
        |  - username: root
        |    password: demo-root
-       |    role: admin
+       |    kind: admin
        |""".stripMargin
 
   private def emptyEnv: String => Option[String]                      = _ => None
@@ -62,6 +62,12 @@ class DemoBootstrapHookSpec extends AnyFlatSpec with Matchers:
     val read  = (_: String) => Success(ValidYaml)
     DemoBootstrapHook.run(env, read, store, requireEncryption = false).unsafeRunSync()
     store.listTenants().map(_.id).toSet shouldBe Set("acme", "globex")
+    // Demo tenants are created after the boot backfill ran, so the importer is what seeds them.
+    val builtins = BuiltinRbac.RoleNames ++ BuiltinRbac.GroupNames
+    Set("acme", "globex").foreach { t =>
+      (store.listRoles(t).filter(_.builtin).map(_.name) ++
+        store.listGroups(t).filter(_.builtin).map(_.name)).toSet shouldBe builtins
+    }
   }
 
   it should "skip import when a demo tenant already exists" in {

@@ -59,6 +59,7 @@ import ai.starlake.quack.ondemand.federation.{FederationBlobBuilder, SecretResol
 import ai.starlake.quack.ondemand.state.FederatedSourceStore
 import ai.starlake.quack.ondemand.runtime._
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbacBackfill,
   ControlPlaneStore,
   LiquibaseRunner,
   PatStore,
@@ -344,7 +345,7 @@ object Main extends IOApp with LazyLogging:
     val patAuthenticator = new ai.starlake.quack.ondemand.auth.PatAuthenticator(
       patStore,
       userById = userStore.userById,
-      grantsFor = u => List(ai.starlake.quack.ondemand.state.UserGrant(u.tenant, u.role))
+      grantsFor = u => List(ai.starlake.quack.ondemand.state.UserGrant(u.tenant, u.kind))
     )
 
     val secretResolver: SecretResolver =
@@ -460,6 +461,10 @@ object Main extends IOApp with LazyLogging:
       else PoolLocker.inProcess()
     val publisher =
       if haOn then new PgStateChangePublisher(store) else StateChangePublisher.noop
+    // Built-in roles/groups for tenants created before they existed (or by any path that bypassed
+    // seeding). Must run before the supervisor below snapshots the RBAC graph; it NOTIFYs peers
+    // (HA) when it changed anything, so replicas already running pick the new rows up.
+    BuiltinRbacBackfill.run(store, publisher)
     val moduleEventBus = new ai.starlake.quack.ondemand.module.ModuleEventBus(modules)
     val singletonTasks = new ai.starlake.quack.ondemand.module.SingletonTasksImpl
     // Constructed before the supervisor so its teardown hook can clear a torn-down
@@ -1002,13 +1007,16 @@ object Main extends IOApp with LazyLogging:
         Option.when(sqlAdminEnabled)(
           new ai.starlake.quack.edge.admin.AdminStatementExecutor(
             sup,
-            createUserFn = (tenantId, username, password, role) =>
+            createUserFn = (tenantId, username, password, kind, memberships) =>
               sup.createUser(
                 tenant = Some(tenantId),
                 username = username,
                 password = password,
-                role = role,
+                kind = kind,
                 userStore = userStore,
+                // From the dialect's ROLES / GROUPS clauses; an absent clause is None and
+                // the supervisor applies the built-in default for it.
+                memberships = memberships,
                 failIfExists = true
               ),
             // Same per-(tenant, username) rotation path REST user/update uses

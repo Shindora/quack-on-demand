@@ -80,7 +80,7 @@ object OpaEdgeFixtures:
       tenant = Some(SecurityFixtures.GlobexTenantId),
       username = CarolUsername,
       passwordHash = BCrypt.withDefaults().hashToString(10, CarolPassword.toCharArray),
-      role = "user"
+      kind = "user"
     )
     // Connect permission only (gate 4 of a qod tenant): no role, so no table grant at all.
     s.insertPoolPermission(

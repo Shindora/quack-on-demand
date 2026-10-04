@@ -55,7 +55,7 @@ class HandlerAuditSpec extends AnyFlatSpec with Matchers with OptionValues:
           |  tenant        TEXT,
           |  username      TEXT NOT NULL,
           |  password_hash TEXT NOT NULL,
-          |  role          TEXT NOT NULL DEFAULT 'user',
+          |  kind          TEXT NOT NULL DEFAULT 'user',
           |  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           |  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
           |)""".stripMargin

@@ -22,7 +22,7 @@ class McpProtocolSpec extends AnyFlatSpec with Matchers:
 
   private def principal(role: String, admin: Boolean): PatPrincipal =
     PatPrincipal(
-      user = RbacUser(id = "u1", tenant = Some("acme"), username = "alice", role = role),
+      user = RbacUser(id = "u1", tenant = Some("acme"), username = "alice", kind = role),
       patId = "pat-1",
       scope = SessionScope(
         superuser = false,

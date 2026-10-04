@@ -265,34 +265,34 @@ CASES = [
     (["user", "list"], "GET", "/api/user/list", {}, None),
     (["user", "list", "--tenant", "acme"], "GET", "/api/user/list", {"tenant": "acme"}, None),
     (
-        ["user", "create", "--tenant", "acme", "--username", "bob", "--password", "pw", "--role", "admin"],
+        ["user", "create", "--tenant", "acme", "--username", "bob", "--password", "pw", "--kind", "admin"],
         "POST", "/api/user/create", {},
-        {"tenant": "acme", "username": "bob", "password": "pw", "role": "admin", "mustChangePassword": False, "email": None},
+        {"tenant": "acme", "username": "bob", "password": "pw", "kind": "admin", "mustChangePassword": False, "email": None},
     ),
     (
         [
             "user", "create", "--tenant", "acme", "--username", "bob", "--password", "pw",
-            "--role", "admin", "--must-change-password",
+            "--kind", "admin", "--must-change-password",
         ],
         "POST", "/api/user/create", {},
-        {"tenant": "acme", "username": "bob", "password": "pw", "role": "admin", "mustChangePassword": True, "email": None},
+        {"tenant": "acme", "username": "bob", "password": "pw", "kind": "admin", "mustChangePassword": True, "email": None},
     ),
     (
         ["user", "create", "--superuser", "--username", "root", "--password", "pw"],
         "POST", "/api/user/create", {},
-        {"tenant": None, "username": "root", "password": "pw", "role": "user", "mustChangePassword": False, "email": None},
+        {"tenant": None, "username": "root", "password": "pw", "kind": "user", "mustChangePassword": False, "email": None},
     ),
     (
         [
             "user", "create", "--tenant", "acme", "--username", "bob", "--password", "pw",
-            "--role", "admin", "--email", "bob@acme.example",
+            "--kind", "admin", "--email", "bob@acme.example",
         ],
         "POST", "/api/user/create", {},
-        {"tenant": "acme", "username": "bob", "password": "pw", "role": "admin", "mustChangePassword": False, "email": "bob@acme.example"},
+        {"tenant": "acme", "username": "bob", "password": "pw", "kind": "admin", "mustChangePassword": False, "email": "bob@acme.example"},
     ),
     (
-        ["user", "update", "u1", "--role", "admin"],
-        "POST", "/api/user/update", {}, {"id": "u1", "role": "admin"},
+        ["user", "update", "u1", "--kind", "admin"],
+        "POST", "/api/user/update", {}, {"id": "u1", "kind": "admin"},
     ),
     (
         ["user", "update", "u1", "--password", "pw", "--must-change-password"],

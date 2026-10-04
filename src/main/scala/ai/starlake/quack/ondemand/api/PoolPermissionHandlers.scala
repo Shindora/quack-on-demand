@@ -61,7 +61,11 @@ final class PoolPermissionHandlers(
                 val code = err match
                   case SupervisorError.NotFound(_) => StatusCode.NotFound
                   case _                           => StatusCode.BadRequest
-                Left((code, ErrorResponse("invalid_grant", err.message)))
+                Left(
+                  SupervisorErrorHttp
+                    .special(err)
+                    .getOrElse((code, ErrorResponse("invalid_grant", err.message)))
+                )
             }
 
   def revoke(req: PoolPermissionRevokeRequest, apiKey: Option[String])(
@@ -90,7 +94,12 @@ final class PoolPermissionHandlers(
               target = Some(req.id)
             )
             Right(())
-          case Left(err) => Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+          case Left(err) =>
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+            )
         }
 
   /** Tenant-scope semantics: if `tenant` is supplied, check against that. If not, clamp the

@@ -243,10 +243,16 @@ final class McpIdentityTools(
       required = List("username", "password"),
       props = "username" -> strProp("Login name."),
       "password"             -> strProp("Initial password."),
-      "role"                 -> strProp("user or admin (default user)."),
+      "kind"                 -> strProp("user or admin (default user)."),
       "email"                -> strProp("Optional contact email."),
       "must_change_password" -> boolProp(
         "Mark the password temporary: login refused until changed."
+      ),
+      "roles" -> strListProp(
+        "RBAC role names in the tenant. Omit for the default qod_all_tables; must be non-empty."
+      ),
+      "groups" -> strListProp(
+        "Group names in the tenant. Omit for the default qod_all_pools; must be non-empty."
       ),
       tenantProp
     ),
@@ -255,18 +261,22 @@ final class McpIdentityTools(
       (for
         username <- required(args, "username")
         password <- required(args, "password")
-      yield (username, password)) match
-        case Left(err)                   => IO.pure(Left(err))
-        case Right((username, password)) =>
+        roles    <- strList(args, "roles", "role names")
+        groups   <- strList(args, "groups", "group names")
+      yield (username, password, roles, groups)) match
+        case Left(err)                                  => IO.pure(Left(err))
+        case Right((username, password, roles, groups)) =>
           users
             .createUser(
               UserCreateRequest(
                 tenant = str(args, "tenant"),
                 username = username,
                 password = password,
-                role = str(args, "role").getOrElse("user"),
+                kind = str(args, "kind").getOrElse("user"),
                 mustChangePassword = bool(args, "must_change_password").getOrElse(false),
-                email = str(args, "email")
+                email = str(args, "email"),
+                roles = roles,
+                groups = groups
               ),
               keyOf(principal)
             )(scopeOf)
@@ -275,14 +285,14 @@ final class McpIdentityTools(
 
   private val updateUserTool = McpToolDef(
     name = "update_user",
-    description = "Update a user by id: rotate password, change role/email, enable/disable. " +
+    description = "Update a user by id: rotate password, change kind/email, enable/disable. " +
       "Omitted fields stay unchanged; empty email clears it. Cannot lock yourself or the " +
       "last enabled superuser.",
     inputSchema = objectSchema(
       required = List("id"),
       props = "id" -> strProp("User id."),
       "password"             -> strProp("New password (omit = no rotation)."),
-      "role"                 -> strProp("user or admin."),
+      "kind"                 -> strProp("user or admin."),
       "email"                -> strProp("New email; empty string clears it."),
       "must_change_password" -> boolProp("Mark the password temporary."),
       "enabled"              -> boolProp("false locks the account, true unlocks.")
@@ -297,7 +307,7 @@ final class McpIdentityTools(
               UserUpdateRequest(
                 id = id,
                 password = str(args, "password"),
-                role = str(args, "role"),
+                kind = str(args, "kind"),
                 mustChangePassword = bool(args, "must_change_password"),
                 email = args("email").flatMap(_.asString), // preserve "" = clear
                 enabled = bool(args, "enabled")

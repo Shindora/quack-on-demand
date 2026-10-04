@@ -142,14 +142,10 @@ final class PostgresControlPlaneStore(
 
   def deleteTenant(id: String): Unit = withConn(c => deleteById(c, "qodstate_tenant", "id", id))
 
-  def createTenantWithAdminRole(
-      tenant: Tenant,
-      adminRole: RbacRole,
-      adminPermission: RolePermission
-  ): Unit = withConn { c =>
-    // Single connection + manual commit so the three inserts either all
-    // land or roll back together. INSERT (not upsert) because this is a
-    // bootstrap path -- a duplicate id is a programmer error.
+  def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit = withConn { c =>
+    // Single connection + manual commit so the tenant row and every built-in row either all land
+    // or roll back together. INSERT (not upsert) because this is a bootstrap path -- a duplicate
+    // id is a programmer error.
     c.setAutoCommit(false)
     try
       val tps = c.prepareStatement(
@@ -168,33 +164,10 @@ final class PostgresControlPlaneStore(
         tps.executeUpdate()
       finally tps.close()
 
-      val rps = c.prepareStatement(
-        """INSERT INTO qodstate_role (id, tenant_id, name, description)
-          |VALUES (?, ?, ?, ?)""".stripMargin
-      )
-      try
-        rps.setString(1, adminRole.id)
-        rps.setString(2, adminRole.tenantId)
-        rps.setString(3, adminRole.name)
-        setNullable(rps, 4, adminRole.description)
-        rps.executeUpdate()
-      finally rps.close()
-
-      val pps = c.prepareStatement(
-        """INSERT INTO qodstate_role_permission
-          |  (id, role_id, catalog_name, schema_name, table_name, verb)
-          |VALUES (?, ?, ?, ?, ?, ?)""".stripMargin
-      )
-      try
-        pps.setString(1, adminPermission.id)
-        pps.setString(2, adminPermission.roleId)
-        pps.setString(3, adminPermission.catalogName)
-        pps.setString(4, adminPermission.schemaName)
-        pps.setString(5, adminPermission.tableName)
-        pps.setString(6, adminPermission.verb.toUpperCase(Locale.ROOT))
-        pps.executeUpdate()
-      finally pps.close()
-
+      builtins.roles.foreach(r => insertRoleRow(c, r))
+      builtins.groups.foreach(g => insertGroupRow(c, g))
+      builtins.permissions.foreach(p => insertRolePermissionRow(c, p))
+      builtins.poolGrants.foreach(p => insertPoolPermissionRow(c, p))
       c.commit()
     catch
       case t: Throwable =>
@@ -203,6 +176,253 @@ final class PostgresControlPlaneStore(
         throw t
     finally c.setAutoCommit(true)
   }
+
+  def ensureBuiltins(tenantId: String): BuiltinRbac.Rows =
+    var changed = false
+    withConn { c =>
+      // Every write is either guarded by `NOT builtin` or ON CONFLICT DO NOTHING against a unique
+      // constraint, so two replicas running this at once serialize on the row/index locks and the
+      // loser's writes become no-ops instead of failing.
+      c.setAutoCommit(false)
+      try
+        def exec(sql: String)(bind: PreparedStatement => Unit): Unit =
+          val ps = c.prepareStatement(sql)
+          try
+            bind(ps)
+            if ps.executeUpdate() > 0 then changed = true
+          finally ps.close()
+
+        // Case-insensitive: the qod_ prefix is reserved regardless of case. FOR UPDATE makes a
+        // concurrent replica block here, then re-check lower(name) on the renamed row and skip it.
+        def renameCollisions(table: String, names: Set[String]): Unit =
+          names.toList.sorted.foreach { n =>
+            val ps = c.prepareStatement(
+              s"SELECT id, name FROM $table WHERE tenant_id = ? AND lower(name) = ? " +
+                "AND NOT builtin ORDER BY id FOR UPDATE"
+            )
+            val colliding =
+              try
+                ps.setString(1, tenantId)
+                ps.setString(2, n.toLowerCase(Locale.ROOT))
+                val rs = ps.executeQuery()
+                try drain(rs)(r => (r.getString(1), r.getString(2)))
+                finally rs.close()
+              finally ps.close()
+            colliding.foreach { case (id, name) =>
+              val target = BuiltinRbac.renamedName(name, candidate => nameTaken(table, candidate))
+              exec(s"UPDATE $table SET name = ? WHERE id = ?") { ps =>
+                ps.setString(1, target)
+                ps.setString(2, id)
+              }
+            }
+          }
+        def nameTaken(table: String, name: String): Boolean =
+          val ps = c.prepareStatement(s"SELECT 1 FROM $table WHERE tenant_id = ? AND name = ?")
+          try
+            ps.setString(1, tenantId)
+            ps.setString(2, name)
+            val rs = ps.executeQuery()
+            try rs.next()
+            finally rs.close()
+          finally ps.close()
+        renameCollisions("qodstate_role", BuiltinRbac.RoleNames)
+        renameCollisions("qodstate_group", BuiltinRbac.GroupNames)
+
+        val fresh = BuiltinRbac.rowsFor(tenantId)
+        def insertBuiltin(table: String, id: String, name: String, desc: Option[String]): Unit =
+          exec(
+            s"""INSERT INTO $table (id, tenant_id, name, description, builtin)
+               |VALUES (?, ?, ?, ?, TRUE)
+               |ON CONFLICT (tenant_id, name) DO NOTHING""".stripMargin
+          ) { ps =>
+            ps.setString(1, id)
+            ps.setString(2, tenantId)
+            ps.setString(3, name)
+            setNullable(ps, 4, desc)
+          }
+        fresh.roles.foreach(r => insertBuiltin("qodstate_role", r.id, r.name, r.description))
+        fresh.groups.foreach(g => insertBuiltin("qodstate_group", g.id, g.name, g.description))
+
+        def builtinId(table: String, name: String): String =
+          val ps =
+            c.prepareStatement(
+              s"SELECT id FROM $table WHERE tenant_id = ? AND name = ? AND builtin"
+            )
+          try
+            ps.setString(1, tenantId)
+            ps.setString(2, name)
+            val rs = ps.executeQuery()
+            try
+              if rs.next() then rs.getString(1)
+              else throw new IllegalStateException(s"built-in $name missing in tenant $tenantId")
+            finally rs.close()
+          finally ps.close()
+        val allTablesId = builtinId("qodstate_role", BuiltinRbac.AllTables)
+        val allPoolsId  = builtinId("qodstate_group", BuiltinRbac.AllPools)
+
+        // qodstate_role_permission_unique covers (role_id, catalog, schema, table, verb).
+        val perm = fresh.permissions.head
+        exec(
+          """INSERT INTO qodstate_role_permission
+            |  (id, role_id, catalog_name, schema_name, table_name, verb)
+            |VALUES (?, ?, ?, ?, ?, ?)
+            |ON CONFLICT DO NOTHING""".stripMargin
+        ) { ps =>
+          ps.setString(1, perm.id)
+          ps.setString(2, allTablesId)
+          ps.setString(3, perm.catalogName)
+          ps.setString(4, perm.schemaName)
+          ps.setString(5, perm.tableName)
+          ps.setString(6, perm.verb.toUpperCase(Locale.ROOT))
+        }
+        // qodstate_pool_permission_group_unique covers (tenant_id, COALESCE(pool_id, ''),
+        // group_id), so a second tenant-wide grant for the group is a conflict.
+        val grant = fresh.poolGrants.head
+        exec(
+          """INSERT INTO qodstate_pool_permission (id, tenant_id, pool_id, user_id, group_id)
+            |VALUES (?, ?, NULL, NULL, ?)
+            |ON CONFLICT DO NOTHING""".stripMargin
+        ) { ps =>
+          ps.setString(1, grant.id)
+          ps.setString(2, tenantId)
+          ps.setString(3, allPoolsId)
+        }
+        c.commit()
+      catch
+        case t: Throwable =>
+          try c.rollback()
+          catch case _: Throwable => ()
+          throw t
+      finally c.setAutoCommit(true)
+    }
+    builtinRowsOf(tenantId).copy(changed = changed)
+
+  private def builtinRowsOf(tenantId: String): BuiltinRbac.Rows =
+    val roles  = listRoles(tenantId).filter(_.builtin)
+    val groups = listGroups(tenantId).filter(_.builtin)
+    BuiltinRbac.Rows(
+      roles = roles,
+      groups = groups,
+      permissions = roles.flatMap(r => listRolePermissions(r.id)),
+      poolGrants = groups.flatMap(g => listPoolPermissionsForGroup(g.id))
+    )
+
+  def foldLegacyAdminRole(tenantId: String): Boolean = withConn { c =>
+    c.setAutoCommit(false)
+    try
+      def single(sql: String)(bind: PreparedStatement => Unit): Option[String] =
+        val ps = c.prepareStatement(sql)
+        try
+          bind(ps)
+          val rs = ps.executeQuery()
+          try if rs.next() then Some(rs.getString(1)) else None
+          finally rs.close()
+        finally ps.close()
+
+      // FOR UPDATE: a concurrent replica blocks here, then re-checks and finds the row gone.
+      val adminId = single(
+        """SELECT r.id FROM qodstate_role r
+          |WHERE r.tenant_id = ? AND r.name = 'admin' AND NOT r.builtin
+          |  AND (SELECT count(*) FROM qodstate_role_permission p WHERE p.role_id = r.id) = 1
+          |  AND EXISTS (SELECT 1 FROM qodstate_role_permission p WHERE p.role_id = r.id
+          |      AND p.catalog_name = '*' AND p.schema_name = '*' AND p.table_name = '*'
+          |      AND p.verb = 'ALL')
+          |  AND NOT EXISTS (SELECT 1 FROM qodstate_role_column_policy cp WHERE cp.role_id = r.id)
+          |  AND NOT EXISTS (SELECT 1 FROM qodstate_role_row_policy rp WHERE rp.role_id = r.id)
+          |FOR UPDATE""".stripMargin
+      )(_.setString(1, tenantId))
+      val target = adminId.flatMap { _ =>
+        single("SELECT id FROM qodstate_role WHERE tenant_id = ? AND name = ? AND builtin") { ps =>
+          ps.setString(1, tenantId)
+          ps.setString(2, BuiltinRbac.AllTables)
+        }
+      }
+      val folded = (adminId, target) match
+        case (Some(aid), Some(all)) =>
+          List(
+            "INSERT INTO qodstate_user_role (user_id, role_id) " +
+              "SELECT user_id, ? FROM qodstate_user_role WHERE role_id = ? ON CONFLICT DO NOTHING",
+            "INSERT INTO qodstate_group_role (group_id, role_id) " +
+              "SELECT group_id, ? FROM qodstate_group_role WHERE role_id = ? ON CONFLICT DO NOTHING"
+          ).foreach { sql =>
+            val ps = c.prepareStatement(sql)
+            try
+              ps.setString(1, all)
+              ps.setString(2, aid)
+              ps.executeUpdate()
+            finally ps.close()
+          }
+          // The admin role's own edges and its permission go with it (ON DELETE CASCADE).
+          deleteById(c, "qodstate_role", "id", aid)
+          true
+        case _ => false
+      c.commit()
+      folded
+    catch
+      case t: Throwable =>
+        try c.rollback()
+        catch case _: Throwable => ()
+        throw t
+    finally c.setAutoCommit(true)
+  }
+
+  private def insertRoleRow(c: Connection, r: RbacRole): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_role (id, tenant_id, name, description, builtin)
+        |VALUES (?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, r.id)
+      ps.setString(2, r.tenantId)
+      ps.setString(3, r.name)
+      setNullable(ps, 4, r.description)
+      ps.setBoolean(5, r.builtin)
+      ps.executeUpdate()
+    finally ps.close()
+
+  private def insertGroupRow(c: Connection, g: RbacGroup): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_group (id, tenant_id, name, description, builtin)
+        |VALUES (?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, g.id)
+      ps.setString(2, g.tenantId)
+      ps.setString(3, g.name)
+      setNullable(ps, 4, g.description)
+      ps.setBoolean(5, g.builtin)
+      ps.executeUpdate()
+    finally ps.close()
+
+  private def insertRolePermissionRow(c: Connection, p: RolePermission): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_role_permission
+        |  (id, role_id, catalog_name, schema_name, table_name, verb)
+        |VALUES (?, ?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, p.id)
+      ps.setString(2, p.roleId)
+      ps.setString(3, p.catalogName)
+      ps.setString(4, p.schemaName)
+      ps.setString(5, p.tableName)
+      ps.setString(6, p.verb.toUpperCase(Locale.ROOT))
+      ps.executeUpdate()
+    finally ps.close()
+
+  private def insertPoolPermissionRow(c: Connection, p: PoolPermission): Unit =
+    val ps = c.prepareStatement(
+      """INSERT INTO qodstate_pool_permission (id, tenant_id, pool_id, user_id, group_id)
+        |VALUES (?, ?, ?, ?, ?)""".stripMargin
+    )
+    try
+      ps.setString(1, p.id)
+      ps.setString(2, p.tenantId)
+      setNullable(ps, 3, p.poolId)
+      setNullable(ps, 4, p.userId)
+      setNullable(ps, 5, p.groupId)
+      ps.executeUpdate()
+    finally ps.close()
 
   private def readTenant(rs: ResultSet): Tenant =
     Tenant(
@@ -631,12 +851,12 @@ final class PostgresControlPlaneStore(
 
   def upsertUserIdentity(u: RbacUser): Unit = withConn { c =>
     val ps = c.prepareStatement(
-      """INSERT INTO qodstate_user (id, tenant, username, role, password_hash, created_at, updated_at)
+      """INSERT INTO qodstate_user (id, tenant, username, kind, password_hash, created_at, updated_at)
         |VALUES (?, ?, ?, ?, '', COALESCE(?, NOW()), NOW())
         |ON CONFLICT (id) DO UPDATE SET
         |  tenant     = EXCLUDED.tenant,
         |  username   = EXCLUDED.username,
-        |  role       = EXCLUDED.role,
+        |  kind       = EXCLUDED.kind,
         |  updated_at = NOW()""".stripMargin
     )
     try
@@ -645,7 +865,7 @@ final class PostgresControlPlaneStore(
         case Some(t) => ps.setString(2, t)
         case None    => ps.setNull(2, Types.VARCHAR)
       ps.setString(3, u.username)
-      ps.setString(4, u.role)
+      ps.setString(4, u.kind)
       u.createdAt match
         case Some(t) => ps.setTimestamp(5, Timestamp.from(t))
         case None    => ps.setNull(5, Types.TIMESTAMP_WITH_TIMEZONE)
@@ -679,7 +899,7 @@ final class PostgresControlPlaneStore(
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Boolean = true,
       mustChangePassword: Boolean = false,
       email: Option[String] = None
@@ -694,7 +914,7 @@ final class PostgresControlPlaneStore(
       tenant,
       username,
       passwordHash,
-      role,
+      kind,
       enabled = Some(enabled),
       mustChangePassword = Some(mustChangePassword),
       email = Some(email)
@@ -703,7 +923,7 @@ final class PostgresControlPlaneStore(
 
   def getUserById(id: String): Option[RbacUser] = withConn { c =>
     val ps = c.prepareStatement(
-      "SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user WHERE id = ?"
+      "SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user WHERE id = ?"
     )
     try
       ps.setString(1, id)
@@ -717,7 +937,7 @@ final class PostgresControlPlaneStore(
     val ps = tenant match
       case Some(t) =>
         val p = c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user WHERE tenant = ? AND username = ?""".stripMargin
         )
         p.setString(1, t)
@@ -725,7 +945,7 @@ final class PostgresControlPlaneStore(
         p
       case None =>
         val p = c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user WHERE tenant IS NULL AND username = ?""".stripMargin
         )
         p.setString(1, username)
@@ -741,14 +961,14 @@ final class PostgresControlPlaneStore(
     val ps = tenant match
       case Some(t) =>
         val p = c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user WHERE tenant = ? ORDER BY username""".stripMargin
         )
         p.setString(1, t)
         p
       case None =>
         c.prepareStatement(
-          """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+          """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
             |FROM qodstate_user ORDER BY COALESCE(tenant, ''), username""".stripMargin
         )
     try
@@ -760,7 +980,7 @@ final class PostgresControlPlaneStore(
 
   def listSuperusers(): List[RbacUser] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+      """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
         |FROM qodstate_user WHERE tenant IS NULL ORDER BY username""".stripMargin
     )
     try
@@ -775,7 +995,7 @@ final class PostgresControlPlaneStore(
     // the wildcard NULL superuser row when both exist with the same
     // username. Mirrors application.conf's auth.database.query.
     val ps = c.prepareStatement(
-      """SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id
+      """SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id
         |FROM qodstate_user
         |WHERE (tenant IS NULL OR tenant = ?) AND username = ?
         |ORDER BY (tenant IS NOT NULL) DESC
@@ -798,7 +1018,7 @@ final class PostgresControlPlaneStore(
       id = rs.getString("id"),
       tenant = Option(rs.getString("tenant")),
       username = rs.getString("username"),
-      role = rs.getString("role"),
+      kind = rs.getString("kind"),
       enabled = rs.getBoolean("enabled"),
       mustChangePassword = rs.getBoolean("must_change_password"),
       email = Option(rs.getString("email")),
@@ -852,7 +1072,7 @@ final class PostgresControlPlaneStore(
 
   def listRoles(tenantId: String): List[RbacRole] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, created_at
+      """SELECT id, tenant_id, name, description, created_at, builtin
         |FROM qodstate_role WHERE tenant_id = ? ORDER BY name""".stripMargin
     )
     try
@@ -865,7 +1085,7 @@ final class PostgresControlPlaneStore(
 
   def getRole(id: String): Option[RbacRole] = withConn { c =>
     val ps = c.prepareStatement(
-      "SELECT id, tenant_id, name, description, created_at FROM qodstate_role WHERE id = ?"
+      "SELECT id, tenant_id, name, description, created_at, builtin FROM qodstate_role WHERE id = ?"
     )
     try
       ps.setString(1, id)
@@ -877,7 +1097,7 @@ final class PostgresControlPlaneStore(
 
   def findRole(tenantId: String, name: String): Option[RbacRole] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, created_at
+      """SELECT id, tenant_id, name, description, created_at, builtin
         |FROM qodstate_role WHERE tenant_id = ? AND name = ?""".stripMargin
     )
     try
@@ -898,7 +1118,8 @@ final class PostgresControlPlaneStore(
       tenantId = rs.getString("tenant_id"),
       name = rs.getString("name"),
       description = Option(rs.getString("description")),
-      createdAt = Option(rs.getTimestamp("created_at")).map(_.toInstant)
+      createdAt = Option(rs.getTimestamp("created_at")).map(_.toInstant),
+      builtin = rs.getBoolean("builtin")
     )
 
   // ---------------- RBAC: role permissions ----------------
@@ -1010,7 +1231,7 @@ final class PostgresControlPlaneStore(
 
   def listGroups(tenantId: String): List[RbacGroup] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, external_id FROM qodstate_group
+      """SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group
         |WHERE tenant_id = ? ORDER BY name""".stripMargin
     )
     try
@@ -1023,7 +1244,7 @@ final class PostgresControlPlaneStore(
 
   def getGroup(id: String): Option[RbacGroup] = withConn { c =>
     val ps = c.prepareStatement(
-      "SELECT id, tenant_id, name, description, external_id FROM qodstate_group WHERE id = ?"
+      "SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group WHERE id = ?"
     )
     try
       ps.setString(1, id)
@@ -1035,7 +1256,7 @@ final class PostgresControlPlaneStore(
 
   def findGroup(tenantId: String, name: String): Option[RbacGroup] = withConn { c =>
     val ps = c.prepareStatement(
-      """SELECT id, tenant_id, name, description, external_id FROM qodstate_group
+      """SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group
         |WHERE tenant_id = ? AND name = ?""".stripMargin
     )
     try
@@ -1056,7 +1277,8 @@ final class PostgresControlPlaneStore(
       tenantId = rs.getString("tenant_id"),
       name = rs.getString("name"),
       description = Option(rs.getString("description")),
-      externalId = Option(rs.getString("external_id"))
+      externalId = Option(rs.getString("external_id")),
+      builtin = rs.getBoolean("builtin")
     )
 
   // ---------------- RBAC: memberships ----------------
@@ -1080,6 +1302,24 @@ final class PostgresControlPlaneStore(
   def addUserRole(userId: String, roleId: String): Unit = withConn { c =>
     insertEdge(c, "qodstate_user_role", "user_id", "role_id", userId, roleId)
   }
+
+  def addUserMemberships(userId: String, roleIds: List[String], groupIds: List[String]): Unit =
+    withConn { c =>
+      // Single connection + manual commit: a fresh user ends with all of its edges or none.
+      c.setAutoCommit(false)
+      try
+        roleIds.foreach(r => insertEdge(c, "qodstate_user_role", "user_id", "role_id", userId, r))
+        groupIds.foreach(g =>
+          insertEdge(c, "qodstate_user_group", "user_id", "group_id", userId, g)
+        )
+        c.commit()
+      catch
+        case t: Throwable =>
+          try c.rollback()
+          catch case _: Throwable => ()
+          throw t
+      finally c.setAutoCommit(true)
+    }
 
   def removeUserRole(userId: String, roleId: String): Boolean = withConn { c =>
     deleteEdge(c, "qodstate_user_role", "user_id", "role_id", userId, roleId)
@@ -1562,12 +1802,12 @@ final class PostgresControlPlaneStore(
       ),
       users = selectAll(
         c,
-        "SELECT id, tenant, username, role, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user ORDER BY COALESCE(tenant, ''), username",
+        "SELECT id, tenant, username, kind, enabled, must_change_password, email, created_at, updated_at, external_id FROM qodstate_user ORDER BY COALESCE(tenant, ''), username",
         readRbacUser
       ),
       roles = selectAll(
         c,
-        "SELECT id, tenant_id, name, description, created_at FROM qodstate_role ORDER BY tenant_id, name",
+        "SELECT id, tenant_id, name, description, created_at, builtin FROM qodstate_role ORDER BY tenant_id, name",
         readRole
       ),
       rolePermissions = selectAll(
@@ -1577,7 +1817,7 @@ final class PostgresControlPlaneStore(
       ),
       groups = selectAll(
         c,
-        "SELECT id, tenant_id, name, description, external_id FROM qodstate_group ORDER BY tenant_id, name",
+        "SELECT id, tenant_id, name, description, external_id, builtin FROM qodstate_group ORDER BY tenant_id, name",
         readGroup
       ),
       userGroups = selectAll(

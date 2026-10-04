@@ -60,7 +60,11 @@ final class RoleColumnPolicyHandlers(
               )
               Right(toDto(p))
             case Left(err) =>
-              Left((StatusCode.BadRequest, ErrorResponse("invalid_policy", err.message)))
+              Left(
+                SupervisorErrorHttp
+                  .special(err)
+                  .getOrElse((StatusCode.BadRequest, ErrorResponse("invalid_policy", err.message)))
+              )
           }
 
   def update(req: UpdateColumnPolicyRequest, apiKey: Option[String])(
@@ -92,7 +96,11 @@ final class RoleColumnPolicyHandlers(
           case Left(err: SupervisorError.NotFound) =>
             Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
           case Left(err) =>
-            Left((StatusCode.BadRequest, ErrorResponse("invalid_policy", err.message)))
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((StatusCode.BadRequest, ErrorResponse("invalid_policy", err.message)))
+            )
         }
 
   def delete(req: DeleteColumnPolicyRequest, apiKey: Option[String])(
@@ -121,7 +129,12 @@ final class RoleColumnPolicyHandlers(
               target = Some(req.id)
             )
             Right(())
-          case Left(err) => Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+          case Left(err) =>
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+            )
         }
 
   def list(roleId: String, apiKey: Option[String])(

@@ -9,9 +9,9 @@ import org.scalatest.matchers.should.Matchers
 class RowPolicyRewriterSpec extends AnyFlatSpec with Matchers:
   import RowPolicyRewriter._
 
-  private val superuser = RbacUser(id = "u-super", tenant = None, username = "root", role = "admin")
+  private val superuser = RbacUser(id = "u-super", tenant = None, username = "root", kind = "admin")
   private val tenantUser =
-    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", role = "user")
+    RbacUser(id = "u-1", tenant = Some("acme"), username = "alice", kind = "user")
 
   private def policy(
       predicate: String,
@@ -221,7 +221,7 @@ class RowPolicyRewriterSpec extends AnyFlatSpec with Matchers:
   }
 
   it should "SQL-escape a single quote in a substituted identity value" in {
-    val odd = RbacUser(id = "u-2", tenant = Some("acme"), username = "o'brien", role = "user")
+    val odd = RbacUser(id = "u-2", tenant = Some("acme"), username = "o'brien", kind = "user")
     val sql = rewritten(go("SELECT * FROM customer", eff(odd, List(policy("c_owner = ${user}")))))
     sql should include("'o''brien'")
   }

@@ -26,7 +26,7 @@ object UserUpsert:
     * `enabled` and `mustChangePassword` control the two boolean flag columns:
     *   - `Some(b)`: write the column `= b` on both insert and update.
     *   - `None`: leave the column to its default on insert and PRESERVE the stored value on update
-    *     -- the plain credential/role rotation path must never silently re-enable a disabled user
+    *     -- the plain credential/kind rotation path must never silently re-enable a disabled user
     *     or clear a pending forced password change.
     *
     * `email` follows the identical present/absent rule but is a nullable TEXT rather than a
@@ -34,20 +34,20 @@ object UserUpsert:
     *   - `Some(inner)`: write the column `= inner.orNull` on both insert and update (`Some(None)`
     *     clears it to SQL NULL, `Some(Some(x))` sets it).
     *   - `None`: leave the column to its default (NULL) on insert and PRESERVE the stored value on
-    *     update -- a plain credential/role rotation must never silently clear a stored email.
+    *     update -- a plain credential/kind rotation must never silently clear a stored email.
     */
   def apply(
       c: Connection,
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Option[Boolean],
       mustChangePassword: Option[Boolean] = None,
       email: Option[Option[String]] = None,
       // insertOnly = true refuses to touch an existing (tenant, username) row: the caller gets
       // Result(existingId, inserted = false) and NOTHING is written -- no password rotation, no
-      // role change, no lockout clear. A true concurrent double-insert (both lookups miss) is
+      // kind change, no lockout clear. A true concurrent double-insert (both lookups miss) is
       // resolved by the partial unique indexes: the second INSERT throws instead of overwriting.
       insertOnly: Boolean = false
   ): Result =
@@ -75,11 +75,11 @@ object UserUpsert:
     // exist unconditionally (Liquibase `0030`) and default to 0/NULL, so this is a harmless no-op
     // on insert and when lockout is disabled.
     val sql =
-      s"""INSERT INTO qodstate_user (id, tenant, username, password_hash, role$extraNames, updated_at)
+      s"""INSERT INTO qodstate_user (id, tenant, username, password_hash, kind$extraNames, updated_at)
          |VALUES (?, ?, ?, ?, ?$extraHoles, NOW())
          |ON CONFLICT (id) DO UPDATE SET
          |  password_hash   = EXCLUDED.password_hash,
-         |  role            = EXCLUDED.role$extraUpdates,
+         |  kind            = EXCLUDED.kind$extraUpdates,
          |  failed_attempts = 0,
          |  locked_at       = NULL,
          |  updated_at      = NOW()""".stripMargin
@@ -91,7 +91,7 @@ object UserUpsert:
         case None    => ps.setNull(2, Types.VARCHAR)
       ps.setString(3, username)
       ps.setString(4, passwordHash)
-      ps.setString(5, role)
+      ps.setString(5, kind)
       var idx = 6
       boolExtras.foreach { case (_, v) =>
         ps.setBoolean(idx, v)

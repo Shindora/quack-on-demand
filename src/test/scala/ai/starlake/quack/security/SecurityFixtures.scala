@@ -167,7 +167,7 @@ object SecurityFixtures:
       tenant = None,
       username = RootUsername,
       passwordHash = bcryptHash(RootPassword),
-      role = "admin"
+      kind = "admin"
     )
 
     // alice -- tenant admin: role membership + pool permission.
@@ -175,7 +175,7 @@ object SecurityFixtures:
       tenant = Some(TenantId),
       username = AliceUsername,
       passwordHash = bcryptHash(AlicePassword),
-      role = "admin"
+      kind = "admin"
     )
     s.addUserRole(aliceId, AdminRoleId)
     s.insertPoolPermission(
@@ -192,7 +192,7 @@ object SecurityFixtures:
       tenant = Some(TenantId),
       username = BobUsername,
       passwordHash = bcryptHash(BobPassword),
-      role = "user"
+      kind = "user"
     )
 
     Fixture(store = s, rootUserId = rootId, aliceUserId = aliceId, bobUserId = bobId)

@@ -63,7 +63,7 @@ class UserStoreGrantsSpec extends AnyFlatSpec, Matchers, BeforeAndAfterAll:
 
   it should "surface a superuser grant when the user has tenant=NULL" in {
     requirePg()
-    store.upsertUser(tenant = None, username = u, plaintext = "x", role = "admin")
+    store.upsertUser(tenant = None, username = u, plaintext = "x", kind = "admin")
     val gs = store.grantsForIdentity(u, None)
     gs should contain(UserGrant(None, "admin"))
   }
@@ -71,7 +71,7 @@ class UserStoreGrantsSpec extends AnyFlatSpec, Matchers, BeforeAndAfterAll:
   it should "surface tenant-scoped grants" in {
     requirePg()
     val t = "t-grants-test"
-    store.upsertUser(tenant = Some(t), username = u, plaintext = "x", role = "admin")
+    store.upsertUser(tenant = Some(t), username = u, plaintext = "x", kind = "admin")
     val gs = store.grantsForIdentity(u, None)
     gs.map(_.tenant).toSet should contain(Some(t))
   }
@@ -83,7 +83,7 @@ class UserStoreGrantsSpec extends AnyFlatSpec, Matchers, BeforeAndAfterAll:
       tenant = Some("t-grants-test"),
       username = email,
       plaintext = "x",
-      role = "admin"
+      kind = "admin"
     )
     val gs = store.grantsForIdentity(identity = s"$u-not-real", email = Some(email))
     gs.map(_.tenant) should contain(Some("t-grants-test"))
@@ -95,7 +95,7 @@ class UserStoreGrantsSpec extends AnyFlatSpec, Matchers, BeforeAndAfterAll:
   it should "not re-enable a disabled row on a password/role update" in {
     requirePg()
     val t = "t-enabled-preserve"
-    store.upsertUser(tenant = Some(t), username = u, plaintext = "x", role = "admin")
+    store.upsertUser(tenant = Some(t), username = u, plaintext = "x", kind = "admin")
     withRawConn { c =>
       val ps =
         c.prepareStatement(
@@ -109,7 +109,7 @@ class UserStoreGrantsSpec extends AnyFlatSpec, Matchers, BeforeAndAfterAll:
     // Sanity: disabled row contributes no grant.
     store.grantsForIdentity(u, None).filter(_.tenant.contains(t)) shouldBe Nil
     // Rotate password + role; enabled must stay false.
-    store.upsertUser(tenant = Some(t), username = u, plaintext = "y", role = "reader")
+    store.upsertUser(tenant = Some(t), username = u, plaintext = "y", kind = "reader")
     store.grantsForIdentity(u, None).filter(_.tenant.contains(t)) shouldBe Nil
   }
 

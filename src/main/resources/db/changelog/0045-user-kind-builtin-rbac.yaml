@@ -1,0 +1,36 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0045-user-kind
+      author: qod
+      changes:
+        # qodstate_user.role is the account kind (admin | user), not an RBAC role. Renaming it
+        # frees "role" for RBAC roles on every surface. Custom QOD_AUTH_DB_*_QUERY overrides that
+        # select `role` must be updated; the boot precondition probe refuses them otherwise.
+        - renameColumn:
+            tableName: qodstate_user
+            oldColumnName: role
+            newColumnName: kind
+  - changeSet:
+      id: 0045-builtin-rbac
+      author: qod
+      changes:
+        # Marks the per-tenant built-ins (qod_no_tables, qod_all_tables, qod_no_pools,
+        # qod_all_pools). Rows are seeded by the store, not here: see BuiltinRbacBackfill.
+        - addColumn:
+            tableName: qodstate_role
+            columns:
+              - column:
+                  name: builtin
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+        - addColumn:
+            tableName: qodstate_group
+            columns:
+              - column:
+                  name: builtin
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false

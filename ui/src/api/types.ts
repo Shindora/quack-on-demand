@@ -450,7 +450,7 @@ export interface UserResponse {
   id: string;
   tenant: string | null;            // null = superuser (manager UI + every FlightSQL tenant)
   username: string;
-  role: string;                     // free-text JWT-claim label, NOT an RBAC role id
+  kind: string;                     // account kind: admin | user (management rights), NOT an RBAC role
   enabled: boolean;
   roles:  string[];                 // effective role NAMES
   groups: string[];                 // effective group NAMES
@@ -462,17 +462,19 @@ export interface UserCreateRequest {
   tenant: string | null;            // null = superuser
   username: string;
   password: string;
-  role?: string;
+  kind?: string;
   mustChangePassword?: boolean;
   // Optional contact address, used by forgot-password. Omit to leave the row emailless.
   email?: string | null;
+  roles?: string[];                 // RBAC role names; omit = qod_all_tables; never []
+  groups?: string[];                // group names; omit = qod_all_pools; never []
 }
 
 export interface UserUpdateRequest {
   id: string;
   tenant?: string | null;
   password?: string | null;
-  role?: string | null;
+  kind?: string | null;
   mustChangePassword?: boolean;
   // Omit (undefined) = unchanged; empty string = clear to no email; non-empty = set.
   email?: string | null;
@@ -578,6 +580,7 @@ export interface RoleResponse {
   name:        string;
   description: string | null;
   createdAt:   string;
+  builtin?:    boolean;             // qod_* built-in: no delete, no permission/policy edits
 }
 
 export interface RoleCreateRequest {
@@ -672,6 +675,7 @@ export interface GroupResponse {
   tenantId:    string;
   name:        string;
   description: string | null;
+  builtin?:    boolean;             // qod_* built-in: no delete, role bindings or pool grants
 }
 
 export interface GroupCreateRequest {

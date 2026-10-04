@@ -27,7 +27,7 @@ import scala.collection.concurrent.TrieMap
   * Postgres; the in-memory store mirrors that by reaping the dependent edges/permissions on parent
   * removal.
   */
-final class InMemoryControlPlaneStore extends ControlPlaneStore:
+class InMemoryControlPlaneStore extends ControlPlaneStore:
 
   private val tenants   = TrieMap.empty[String, Tenant]
   private val tenantDbs = TrieMap.empty[String, TenantDb]
@@ -44,16 +44,81 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
   def updateTenantAcl(tenantId: String, acl: TenantAcl): Unit =
     tenants.updateWith(tenantId)(_.map(_.copy(acl = acl)))
 
-  def createTenantWithAdminRole(
-      tenant: Tenant,
-      adminRole: RbacRole,
-      adminPermission: RolePermission
-  ): Unit =
+  def createTenantWithBuiltins(tenant: Tenant, builtins: BuiltinRbac.Rows): Unit =
     if tenants.contains(tenant.id) then
       throw new java.sql.SQLException(s"tenant id ${tenant.id} already exists")
     tenants.put(tenant.id, tenant)
-    upsertRole(adminRole)
-    insertRolePermission(adminPermission)
+    builtins.roles.foreach(putRole)
+    builtins.groups.foreach(putGroup)
+    builtins.permissions.foreach(insertRolePermission)
+    builtins.poolGrants.foreach(insertPoolPermission)
+
+  def ensureBuiltins(tenantId: String): BuiltinRbac.Rows = synchronized {
+    def collides(names: Set[String], name: String): Boolean = names.exists(_.equalsIgnoreCase(name))
+    var changed                                             = false
+    roles.values.toList
+      .filter(r => r.tenantId == tenantId && !r.builtin && collides(BuiltinRbac.RoleNames, r.name))
+      .sortBy(_.id)
+      .foreach { r =>
+        val target = BuiltinRbac.renamedName(r.name, findRole(tenantId, _).isDefined)
+        upsertRole(r.copy(name = target)); changed = true
+      }
+    groups.values.toList
+      .filter(g => g.tenantId == tenantId && !g.builtin && collides(BuiltinRbac.GroupNames, g.name))
+      .sortBy(_.id)
+      .foreach { g =>
+        val target = BuiltinRbac.renamedName(g.name, findGroup(tenantId, _).isDefined)
+        upsertGroup(g.copy(name = target)); changed = true
+      }
+    val fresh = BuiltinRbac.rowsFor(tenantId)
+    fresh.roles.foreach(r =>
+      if findRole(tenantId, r.name).isEmpty then { putRole(r); changed = true }
+    )
+    fresh.groups.foreach(g =>
+      if findGroup(tenantId, g.name).isEmpty then { putGroup(g); changed = true }
+    )
+    val all = findRole(tenantId, BuiltinRbac.AllTables).filter(_.builtin).get
+    if !listRolePermissions(all.id).exists(p =>
+        p.catalogName == "*" && p.schemaName == "*" && p.tableName == "*" && p.verb == "ALL"
+      )
+    then { insertRolePermission(fresh.permissions.head.copy(roleId = all.id)); changed = true }
+    val pools = findGroup(tenantId, BuiltinRbac.AllPools).filter(_.builtin).get
+    if !listPoolPermissionsForGroup(pools.id).exists(_.poolId.isEmpty) then
+      insertPoolPermission(fresh.poolGrants.head.copy(groupId = Some(pools.id))); changed = true
+    val bRoles  = listRoles(tenantId).filter(_.builtin)
+    val bGroups = listGroups(tenantId).filter(_.builtin)
+    BuiltinRbac.Rows(
+      bRoles,
+      bGroups,
+      bRoles.flatMap(r => listRolePermissions(r.id)),
+      bGroups.flatMap(g => listPoolPermissionsForGroup(g.id)),
+      changed
+    )
+  }
+
+  def foldLegacyAdminRole(tenantId: String): Boolean = synchronized {
+    val pristineAdmin = findRole(tenantId, "admin").filter { admin =>
+      !admin.builtin &&
+      listRolePermissions(admin.id).map(p =>
+        (p.catalogName, p.schemaName, p.tableName, p.verb)
+      ) == List(("*", "*", "*", "ALL")) &&
+      listColumnPolicies(admin.id).isEmpty && listRowPolicies(admin.id).isEmpty
+    }
+    val target = findRole(tenantId, BuiltinRbac.AllTables).filter(_.builtin)
+    (pristineAdmin, target) match
+      case (Some(admin), Some(all)) =>
+        userRoles
+          .collect { case (u, r) if r == admin.id => u }
+          .toList
+          .foreach(addUserRole(_, all.id))
+        groupRoles
+          .collect { case (g, r) if r == admin.id => g }
+          .toList
+          .foreach(addGroupRole(_, all.id))
+        deleteRole(admin.id) // reaps the admin's permission and edges
+        true
+      case _ => false
+  }
   def listTenants(): List[Tenant]    = tenants.values.toList.sortBy(_.displayName)
   def deleteTenant(id: String): Unit =
     if tenantDbs.values.exists(_.tenantId == id) then
@@ -158,7 +223,7 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
   def upsertUserIdentity(u: RbacUser): Unit =
     val existing = users.get(u.id)
     val now      = Instant.now()
-    // Mirror the Postgres impl: the identity upsert writes (tenant, username, role) only, so
+    // Mirror the Postgres impl: the identity upsert writes (tenant, username, kind) only, so
     // `enabled`, `mustChangePassword` and `email` keep whatever the credential paths last stored.
     users.put(
       u.id,
@@ -178,7 +243,7 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
       tenant: Option[String],
       username: String,
       passwordHash: String,
-      role: String,
+      kind: String,
       enabled: Boolean = true,
       mustChangePassword: Boolean = false,
       email: Option[String] = None
@@ -194,7 +259,7 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
         id = id,
         tenant = tenant,
         username = username,
-        role = role,
+        kind = kind,
         enabled = enabled,
         mustChangePassword = mustChangePassword,
         email = email,
@@ -233,8 +298,14 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
     poolPermissions.values.filter(_.userId.contains(id)).foreach(p => poolPermissions.remove(p.id))
 
   // ---------------- RBAC: roles ----------------
-  private val roles                 = TrieMap.empty[String, RbacRole]
+  private val roles = TrieMap.empty[String, RbacRole]
+  // Mirrors Postgres: upsertRole never writes `builtin`, so a fresh id is non-built-in and an
+  // existing row keeps its flag (ManifestImporter re-upserts roles without it).
   def upsertRole(r: RbacRole): Unit =
+    val existing = roles.get(r.id)
+    putRole(r.copy(builtin = existing.exists(_.builtin)))
+  // Raw insert that honours `builtin` (createTenantWithBuiltins / ensureBuiltins only).
+  private def putRole(r: RbacRole): Unit =
     val existing = roles.get(r.id)
     roles.put(
       r.id,
@@ -273,7 +344,11 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
   private val groups = TrieMap.empty[String, RbacGroup]
   // Mirror Postgres: upsertGroup's column list omits external_id, so a SCIM-set
   // externalId survives a name/description upsert.
+  // Likewise for `builtin`: never written by an upsert, preserved on an existing row.
   def upsertGroup(g: RbacGroup): Unit =
+    val existing = groups.get(g.id)
+    putGroup(g.copy(builtin = existing.exists(_.builtin)))
+  private def putGroup(g: RbacGroup): Unit =
     val preserved = groups.get(g.id).flatMap(_.externalId)
     groups.put(g.id, g.copy(externalId = g.externalId.orElse(preserved)))
     ()
@@ -307,7 +382,10 @@ final class InMemoryControlPlaneStore extends ControlPlaneStore:
 
   def addUserRole(userId: String, roleId: String): Unit       = userRoles += ((userId, roleId))
   def removeUserRole(userId: String, roleId: String): Boolean = userRoles.remove((userId, roleId))
-  def listDirectRolesForUser(userId: String): List[String]    =
+  def addUserMemberships(userId: String, roleIds: List[String], groupIds: List[String]): Unit =
+    roleIds.foreach(addUserRole(userId, _))
+    groupIds.foreach(addUserGroup(userId, _))
+  def listDirectRolesForUser(userId: String): List[String] =
     userRoles.collect { case (u, r) if u == userId => r }.toList.sorted
 
   def listDirectRolesByUsers(userIds: List[String]): Map[String, Set[String]] =

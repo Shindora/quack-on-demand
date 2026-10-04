@@ -59,7 +59,11 @@ final class GroupHandlers(
                 val code = err match
                   case SupervisorError.AlreadyExists(_) => StatusCode.Conflict
                   case _                                => StatusCode.BadRequest
-                Left((code, ErrorResponse("invalid_group", err.message)))
+                Left(
+                  SupervisorErrorHttp
+                    .special(err)
+                    .getOrElse((code, ErrorResponse("invalid_group", err.message)))
+                )
             }
 
   def deleteGroup(req: GroupDeleteRequest, apiKey: Option[String])(
@@ -88,7 +92,12 @@ final class GroupHandlers(
               target = Some(req.id)
             )
             Right(())
-          case Left(err) => Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+          case Left(err) =>
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+            )
         }
 
   def listGroups(tenant: String, apiKey: Option[String])(

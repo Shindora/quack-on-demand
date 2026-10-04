@@ -140,7 +140,7 @@ class QuackFrontDoorSpec extends AnyFlatSpec with Matchers:
         if withAdmin then Some(new ai.starlake.quack.edge.admin.AdminStatementExecutor(sup))
         else None
     )
-    val user      = RbacUser("u-1", if superuser then None else Some("t-1"), "alice", role = "user")
+    val user      = RbacUser("u-1", if superuser then None else Some("t-1"), "alice", kind = "user")
     val eff       = EffectiveSet(user, Nil, Nil, Nil, Nil)
     val handshake = new EdgeHandshake(
       new AuthenticationService(AuthenticationConfig.disabled, "x"),

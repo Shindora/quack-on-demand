@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, errorMessage } from '../api/client';
-import type { PoolResponse, TenantResponse, UserResponse } from '../api/types';
+import type {
+  GroupResponse, PoolResponse, RoleResponse, TenantResponse, UserResponse,
+} from '../api/types';
 import EffectivePermsCard from './EffectivePermsCard';
 import { DeleteIcon, EditIcon } from './Icons';
 import { Modal } from './Modal';
@@ -12,6 +14,18 @@ import { Modal } from './Modal';
 // locks to keep the two from drifting apart.
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const isEmailUsername = (u: string) => EMAIL_RE.test(u.trim());
+
+// Server defaults for a tenant user created without explicit lists; the
+// create form preselects them so the request states what the server would
+// otherwise assume.
+const DEFAULT_ROLES  = ['qod_all_tables'];
+const DEFAULT_GROUPS = ['qod_all_pools'];
+
+/** Built-ins first, then the tenant's own objects by name. */
+function builtinsFirst<T extends { name: string; builtin?: boolean }>(xs: T[]): T[] {
+  return [...xs].sort((a, b) =>
+    Number(!!b.builtin) - Number(!!a.builtin) || a.name.localeCompare(b.name));
+}
 
 /** Users tab on the /users page. Renders the user table for the
   * selected tenant (or every user when `tenant === null`), with inline
@@ -108,13 +122,38 @@ export default function UserSection({
   const SUPERUSER = '';
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [newRole,     setNewRole]     = useState<'user' | 'admin'>('user');
+  const [newKind,     setNewKind]     = useState<'user' | 'admin'>('user');
   const [newEmail,    setNewEmail]    = useState('');
   const [newTenant,   setNewTenant]   = useState<string>(tenant ?? SUPERUSER);
   // Only meaningful for db-mode tenants: an OIDC pre-provisioned user has a
   // random throwaway password nobody can ever present, so the flag would
   // be a no-op there.
   const [newMustChange, setNewMustChange] = useState(false);
+  // Roles and groups attached at creation. Superusers bypass RBAC, so the
+  // pickers are disabled and nothing is sent for them.
+  const [newRoles,  setNewRoles]  = useState<string[]>(DEFAULT_ROLES);
+  const [newGroups, setNewGroups] = useState<string[]>(DEFAULT_GROUPS);
+  const [tenantRoles,  setTenantRoles]  = useState<RoleResponse[]>([]);
+  const [tenantGroups, setTenantGroups] = useState<GroupResponse[]>([]);
+  const isSuperuserTarget = newTenant === SUPERUSER;
+
+  useEffect(() => {
+    setNewRoles(DEFAULT_ROLES);
+    setNewGroups(DEFAULT_GROUPS);
+    if (isSuperuserTarget) { setTenantRoles([]); setTenantGroups([]); return; }
+    // Ignore a late answer for a tenant the operator already switched away from.
+    let live = true;
+    api.listRoles(newTenant)
+      .then(r => { if (live) setTenantRoles(builtinsFirst(r.roles)); })
+      .catch(() => { if (live) setTenantRoles([]); });
+    api.listGroups(newTenant)
+      .then(g => { if (live) setTenantGroups(builtinsFirst(g.groups)); })
+      .catch(() => { if (live) setTenantGroups([]); });
+    return () => { live = false; };
+  }, [newTenant, isSuperuserTarget]);
+
+  const membershipsMissing =
+    !isSuperuserTarget && (newRoles.length === 0 || newGroups.length === 0);
 
   // Per-row edit (password rotation only). Edit form opens inline
   // below the table row. Skipped for OIDC-tenant users -- the IdP
@@ -179,15 +218,17 @@ export default function UserSection({
         // is NOT NULL) but the user will never authenticate via Basic
         // against it. The IdP is authoritative.
         password: newTenantIsDb ? newPassword : crypto.randomUUID(),
-        role:     newRole,
+        kind:     newKind,
         mustChangePassword: newTenantIsDb ? newMustChange : false,
         // Email-format usernames lock the email field to the username
         // (see isEmailUsername above); otherwise fall back to whatever
         // was typed in the free-form field.
         email: isEmailUsername(newUsername) ? newUsername.trim() : (newEmail.trim() || undefined),
+        ...(isSuperuserTarget ? {} : { roles: newRoles, groups: newGroups }),
       });
       setAdding(false);
-      setNewUsername(''); setNewPassword(''); setNewRole('user'); setNewMustChange(false); setNewEmail('');
+      setNewUsername(''); setNewPassword(''); setNewKind('user'); setNewMustChange(false); setNewEmail('');
+      setNewRoles(DEFAULT_ROLES); setNewGroups(DEFAULT_GROUPS);
       reload();
     } catch (e) {
       setError(errorMessage(e));
@@ -200,7 +241,7 @@ export default function UserSection({
       await api.updateUser({
         id,
         password: editPassword || null,
-        role:     editIsAdmin ? 'admin' : 'user',
+        kind:     editIsAdmin ? 'admin' : 'user',
         mustChangePassword: editPassword ? editMustChange : undefined,
         // Email-format usernames lock the email field to the username --
         // send it explicitly so a stale editEmail can't fight the server's
@@ -292,7 +333,7 @@ export default function UserSection({
                   <td>
                     <input
                       type="checkbox"
-                      checked={u.role === 'admin'}
+                      checked={u.kind === 'admin'}
                       disabled
                       title="Admin status is edited in the Edit modal"
                     />
@@ -323,7 +364,7 @@ export default function UserSection({
                         onClick={() => {
                           setEditingId(u.id);
                           setEditPassword('');
-                          setEditIsAdmin(u.role === 'admin');
+                          setEditIsAdmin(u.kind === 'admin');
                           setEditEmail(u.email ?? '');
                           setEditEmailOriginal(u.email ?? '');
                           setEditLocked(!u.enabled);
@@ -414,11 +455,39 @@ export default function UserSection({
                   ))}
                 </select>
               </label>
+              <label>
+                Roles
+                <select
+                  multiple
+                  disabled={isSuperuserTarget}
+                  value={newRoles}
+                  onChange={ev => setNewRoles(Array.from(ev.target.selectedOptions, o => o.value))}
+                >
+                  {tenantRoles.map(r => (
+                    <option key={r.id} value={r.name}>{r.name}{r.builtin ? ' (built-in)' : ''}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Groups
+                <select
+                  multiple
+                  disabled={isSuperuserTarget}
+                  value={newGroups}
+                  onChange={ev => setNewGroups(Array.from(ev.target.selectedOptions, o => o.value))}
+                >
+                  {tenantGroups.map(g => (
+                    <option key={g.id} value={g.name}>{g.name}{g.builtin ? ' (built-in)' : ''}</option>
+                  ))}
+                </select>
+              </label>
+              {isSuperuserTarget && <p className="subtle">Superusers bypass roles and groups.</p>}
+              {membershipsMissing && <p className="subtle">Pick at least one role and one group.</p>}
               <label className="checkbox-label">
                 <input
                   type="checkbox"
-                  checked={newRole === 'admin'}
-                  onChange={ev => setNewRole(ev.target.checked ? 'admin' : 'user')}
+                  checked={newKind === 'admin'}
+                  onChange={ev => setNewKind(ev.target.checked ? 'admin' : 'user')}
                 />
                 {' '}Admin User
               </label>
@@ -434,7 +503,7 @@ export default function UserSection({
               )}
               <div className="row" style={{ gap: 8, marginTop: '1rem', justifyContent: 'flex-end' }}>
                 <button type="button" className="cancel-button" style={{ minWidth: '7rem' }} onClick={() => { setAdding(false); setError(null); }}>Cancel</button>
-                <button type="submit" style={{ minWidth: '7rem' }}>{newTenantIsDb ? 'Create' : 'Pre-provision'}</button>
+                <button type="submit" style={{ minWidth: '7rem' }} disabled={membershipsMissing}>{newTenantIsDb ? 'Create' : 'Pre-provision'}</button>
               </div>
             </form>
         </Modal>

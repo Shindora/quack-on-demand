@@ -228,7 +228,7 @@ If `QOD_API_KEY` is unset (or empty), only the static-key arm is disabled: every
 
 ### Regular-user login (profile only)
 
-The admin UI isn't admin-exclusive: a tenant-scoped `role=user` principal can log in too, with the same `/api/auth/login` call plus a `tenant` (the blank/system login and OIDC SSO still require an admin grant). The resulting session is demoted to a fixed allowlist - `whoami`, `logout`, `/api/profile/usage`, `/api/profile/statements` - and gets `403 admin_required` on everything else; the UI lands such a session straight on `/profile` (change own password; view own usage + recent statements).
+The admin UI isn't admin-exclusive: a tenant-scoped `kind=user` principal can log in too, with the same `/api/auth/login` call plus a `tenant` (the blank/system login and OIDC SSO still require an admin grant). The resulting session is demoted to a fixed allowlist - `whoami`, `logout`, `/api/profile/usage`, `/api/profile/statements` - and gets `403 admin_required` on everything else; the UI lands such a session straight on `/profile` (change own password; view own usage + recent statements).
 
 ```bash
 # Log in as a regular tenant user (demo credentials from the bootstrap manifest)
@@ -242,7 +242,7 @@ qod profile statements --limit 20
 ### Personal access tokens and the MCP server
 
 PATs are long-lived bearer credentials for agents and scripts. A PAT acts with exactly
-its owner's permissions (admin PATs reach the admin surface, `role=user` PATs are
+its owner's permissions (admin PATs reach the admin surface, `kind=user` PATs are
 demoted to the profile allowlist) and is accepted wherever a session token is, on both
 `/api/*` and the MCP endpoint. Management is no longer session-only: a session can
 mint, list, revoke and delete any of the caller's own tokens, and a PAT may now mint a
@@ -516,8 +516,11 @@ qod role permission list --role-id <roleId>
 qod role permission grant --role-id <roleId> --catalog acme_tpch --schema tpch1 --table customer --verb RO
 qod role permission revoke <permissionId>
 
-# Users
-qod user create --tenant acme --username alice --role user   # prompts for the password
+# Users (--kind admin | user is the account kind; --role / --group are RBAC memberships)
+qod user create --tenant acme --username alice --kind user   # prompts for the password
+# Pick memberships at create time (repeatable; names, not ids). Omitted = the permissive defaults.
+qod user create --tenant acme --username bob --role analyst --group analysts
+qod user create --tenant acme --username eve --role qod_no_tables --group qod_no_pools
 
 # Groups
 qod group create --tenant acme --name analysts
@@ -533,7 +536,46 @@ qod pool permission grant --tenant acme --pool-id <poolId> --group-id <groupId>
 qod pool permission revoke <id>
 ```
 
+### Built-in roles and groups (every tenant)
+
+Every tenant carries four built-ins, created with the tenant (and backfilled into existing
+tenants on manager boot):
+
+| Name | Kind | Grants |
+|---|---|---|
+| `qod_all_tables` | role | `* * * ALL` (every table, every verb) |
+| `qod_no_tables` | role | nothing |
+| `qod_all_pools` | group | access to every pool of the tenant |
+| `qod_no_pools` | group | nothing |
+
+- **New tenant users default to `qod_all_tables` + `qod_all_pools`**: ALL on every table of
+  every pool. To create a restricted user, name its memberships at create time
+  (`--role` / `--group` in the CLI, `roles` / `groups` in REST and MCP, `ROLES ... GROUPS ...`
+  in SQL `CREATE USER`). Use `--role qod_no_tables --group qod_no_pools` for a user that can
+  reach nothing until you grant it something.
+- An omitted list takes the default; an explicitly empty list is refused (`400 roles_required`
+  / `groups_required`); an unknown name is `400 unknown_role` / `unknown_group`.
+- `--role` / `--group` do not apply to superusers (no tenant): sending either is a 400. SCIM
+  provisioning and manifest import attach nothing by default.
+- The built-ins cannot be deleted or edited (permissions, column/row policies, group-role
+  bindings, pool grants): `409 builtin_protected`. User memberships in them are freely added and removed.
+- The `qod_` name prefix is reserved for built-ins (case-insensitive): creating a role or group
+  named `qod_...` is `400 reserved_name`. Manifest export omits the built-ins and refuses
+  (`400 reserved_name`) when a user-made `qod_...` role or group exists; rename it first. On
+  upgrade, a pre-existing user-made role or group holding a built-in name is renamed
+  `<name>_renamed` (or `<name>_renamed_N`), and a pristine legacy `admin` role (one `* * * ALL`
+  permission, no policies) is folded into `qod_all_tables`.
+- Upgrade note: the user field formerly called `role` (admin | user) is now `kind` everywhere:
+  REST, CLI `--kind` (`--role` now means an RBAC role), MCP, the manifest `kind` key, custom
+  `QOD_AUTH_DB_*_QUERY` overrides (which must project `kind`), and `QOD_ADMIN_KIND` (formerly
+  `QOD_ADMIN_ROLE`) for the seeded admin. New tenants no longer get an `admin` role.
+
 ### Grant a team read access (6-step flow)
+
+The flow below narrows access only for users that do not also hold the defaults: create the
+user with `--role qod_no_tables --group qod_no_pools` (or with the team's own role and group),
+or remove its `qod_all_tables` / `qod_all_pools` memberships.
+
 
 ```bash
 # 1. Create a role (qod --json prints the raw response so the id can be captured)
@@ -657,7 +699,7 @@ Create with a temporary password (or reset one) that only works against
 `POST /api/auth/change-password`:
 
 ```bash
-qod user create --tenant acme --username alice --password Temp123 --role user \
+qod user create --tenant acme --username alice --password Temp123 --kind user \
   --must-change-password
 
 # reset an existing password as temporary
@@ -742,6 +784,7 @@ ALTER GROUP finance ADD USER alice;
 -- Users
 CREATE USER alice PASSWORD 'secret';
 CREATE USER ops PASSWORD 'secret' ADMIN;
+CREATE USER bob PASSWORD 'secret' ROLES analyst, qod_no_tables GROUPS qod_no_pools;
 ALTER USER alice PASSWORD 'newsecret';
 ALTER USER alice REQUIRE PASSWORD CHANGE;
 ALTER USER alice DISABLE;
@@ -815,9 +858,13 @@ what the later Execute actually delivers.
   unreachable by construction), consistent with the standing
   no-privilege-escalation rule that only superusers mint superusers, via REST.
   `WITH` before `PASSWORD` is optional Postgres-style noise; `ADMIN` sets the
-  tenant-admin role label, not RBAC superuser status. `CREATE USER` is a true
+  account kind to `admin` (management rights), not RBAC superuser status. `CREATE USER` is a true
   create (`failIfExists = true`): an existing `(tenant, username)` is refused
-  with `ALREADY_EXISTS`, never upserted. `DROP USER` refuses to drop the
+  with `ALREADY_EXISTS`, never upserted. Optional `ROLES r1, r2` then
+  `GROUPS g1, g2` (in that order, each at most once, at least one name each)
+  attach the user to exactly those roles / groups; an omitted clause defaults
+  to `qod_all_tables` (roles) / `qod_all_pools` (groups), and an unknown name
+  is refused with `INVALID_ARGUMENT` and creates nothing. `DROP USER` refuses to drop the
   session's own username (self-drop guard, mirroring the REST posture). The
   password literal is excluded from statement history (the executor logs only
   the command kind) AND redacted from the edge's DEBUG statement logging - a

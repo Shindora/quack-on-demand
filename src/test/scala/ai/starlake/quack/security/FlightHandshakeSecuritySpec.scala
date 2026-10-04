@@ -226,7 +226,7 @@ class FlightHandshakeSecuritySpec extends AnyFlatSpec with Matchers:
       tenant = Some(otherTenantId),
       username = "carol",
       passwordHash = BCrypt.withDefaults().hashToString(10, "carolpw".toCharArray),
-      role = "user"
+      kind = "user"
     )
     // Build a new supervisor that picks up both tenants.
     val sup    = buildSupervisor(s)
@@ -263,7 +263,7 @@ class FlightHandshakeSecuritySpec extends AnyFlatSpec with Matchers:
       tenant = Some(SecurityFixtures.TenantId),
       username = SecurityFixtures.AliceUsername,
       passwordHash = aliceHash,
-      role = "admin",
+      kind = "admin",
       enabled = false
     )
     val sup    = buildSupervisor(s)

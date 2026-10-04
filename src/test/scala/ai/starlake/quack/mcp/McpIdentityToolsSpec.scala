@@ -18,13 +18,17 @@ import org.scalatest.matchers.should.Matchers
 
 class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
 
+  /** True for a role or group JSON row the tenant got from BuiltinRbac seeding. */
+  private def isBuiltin(j: Json): Boolean =
+    j.hcursor.get[Boolean]("builtin").toOption.contains(true)
+
   private val Tenant0  = "acme"
   private val patToken = "qod_pat_alice"
 
   private def adminPat(tenant: String = Tenant0): McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", role = "admin"),
+        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", kind = "admin"),
         patId = "pat-1",
         scope = SessionScope(superuser = false, manageableTenants = Set(tenant)),
         isAdmin = true,
@@ -52,7 +56,7 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
           |  tenant                TEXT,
           |  username              TEXT NOT NULL,
           |  password_hash         TEXT NOT NULL,
-          |  role                  TEXT NOT NULL DEFAULT 'user',
+          |  kind                  TEXT NOT NULL DEFAULT 'user',
           |  enabled               BOOLEAN NOT NULL DEFAULT true,
           |  must_change_password  BOOLEAN NOT NULL DEFAULT false,
           |  email                 TEXT,
@@ -196,6 +200,58 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     out.isRight shouldBe true
   }
 
+  it should "pass roles and groups arrays through, refusing an empty roles list" in {
+    val f   = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val out = f.call(
+      "create_user",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString("acme"),
+      "username" -> Json.fromString("bob"),
+      "password" -> Json.fromString("s3cret-s3cret"),
+      "roles"    -> Json.arr()
+    )
+    out.isLeft shouldBe true
+    out.left.toOption.get should startWith("roles_required")
+    val bad = f.call(
+      "create_user",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString("acme"),
+      "username" -> Json.fromString("bob"),
+      "password" -> Json.fromString("s3cret-s3cret"),
+      "groups"   -> Json.arr(Json.fromString("nope"))
+    )
+    bad.left.toOption.get should startWith("unknown_group")
+  }
+
+  it should "refuse a malformed roles or groups argument and create nothing" in {
+    val f                            = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    def attempt(arg: (String, Json)) =
+      f.call(
+        "create_user",
+        McpPrincipal.StaticKey,
+        "tenant"   -> Json.fromString("acme"),
+        "username" -> Json.fromString("bob"),
+        "password" -> Json.fromString("s3cret-s3cret"),
+        arg
+      )
+    attempt("roles" -> Json.fromString("analyst")).left.toOption.get shouldBe
+      "the 'roles' argument must be an array of role names"
+    attempt("roles" -> Json.arr(Json.fromString("a"), Json.fromInt(5))).isLeft shouldBe true
+    attempt("groups" -> Json.arr(Json.fromString(" "))).left.toOption.get shouldBe
+      "the 'groups' argument must be an array of group names"
+    f.call("list_users", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
+      .toOption
+      .get
+      .hcursor
+      .downField("users")
+      .values
+      .get
+      .size shouldBe 0
+    attempt("roles" -> Json.Null).isRight shouldBe true
+  }
+
   it should "refuse a PAT creating a superuser (no tenant arg)" in {
     val f   = new Fixture
     val out = f.call(
@@ -289,9 +345,9 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       .downField("groups")
       .values
       .get
+      .filterNot(isBuiltin)
       .size shouldBe 1
-    // create_tenant seeds a built-in "admin" role (PoolSupervisor.createTenant), so the tenant
-    // already has 1 role before "reader" is created here.
+    // create_tenant also seeds the built-in roles and groups (BuiltinRbac); count user-made ones.
     f.call("list_roles", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
       .toOption
       .get
@@ -299,7 +355,8 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
       .downField("roles")
       .values
       .get
-      .size shouldBe 2
+      .filterNot(isBuiltin)
+      .size shouldBe 1
   }
 
   "list_roles" should "infer the tenant for a tenant-scoped PAT" in {
@@ -313,8 +370,8 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     )
     val out = f.call("list_roles", adminPat()) // no tenant arg
     out.isRight shouldBe true
-    // create_tenant's built-in "admin" role plus the "reader" role created above.
-    out.toOption.get.hcursor.downField("roles").values.get.size shouldBe 2
+    // Only the "reader" role created above; create_tenant's built-ins are left out.
+    out.toOption.get.hcursor.downField("roles").values.get.filterNot(isBuiltin).size shouldBe 1
   }
 
   "add_membership" should "attach a user to a role and reflect in effective permissions" in {
@@ -326,7 +383,9 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
         McpPrincipal.StaticKey,
         "tenant"   -> Json.fromString("acme"),
         "username" -> Json.fromString("bob"),
-        "password" -> Json.fromString("s3cret-s3cret")
+        "password" -> Json.fromString("s3cret-s3cret"),
+        "roles"    -> Json.arr(Json.fromString("qod_no_tables")),
+        "groups"   -> Json.arr(Json.fromString("qod_no_pools"))
       )
     )
     val r = f.idOf(
@@ -347,7 +406,12 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     add.isRight shouldBe true
     val eff =
       f.call("user_effective_permissions", McpPrincipal.StaticKey, "id" -> Json.fromString(u))
-    eff.toOption.get.hcursor.downField("roles").values.get.size shouldBe 1
+    eff.toOption.get.hcursor
+      .downField("roles")
+      .values
+      .get
+      .flatMap(_.hcursor.get[String]("name").toOption)
+      .toSet shouldBe Set("qod_no_tables", "reader")
   }
 
   it should "reject an unknown kind" in {

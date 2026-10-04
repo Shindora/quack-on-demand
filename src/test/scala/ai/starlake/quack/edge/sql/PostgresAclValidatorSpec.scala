@@ -34,7 +34,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
         id = "u-1",
         tenant = Some("t-1"),
         username = "alice",
-        role = "analyst",
+        kind = "analyst",
         createdAt = Some(Instant.now()),
         updatedAt = Some(Instant.now())
       ),
@@ -185,7 +185,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
       id = "u-su",
       tenant = None,
       username = "admin",
-      role = "admin",
+      kind = "admin",
       createdAt = Some(Instant.now()),
       updatedAt = Some(Instant.now())
     )
@@ -506,7 +506,7 @@ class PostgresAclValidatorSpec extends AnyFlatSpec with Matchers:
     }
 
   it should "still be available to superusers" in {
-    val superuser = RbacUser(id = "u-su", tenant = None, username = "admin", role = "admin")
+    val superuser = RbacUser(id = "u-su", tenant = None, username = "admin", kind = "admin")
     val eff       = EffectiveSet(superuser, Nil, Nil, Nil, Nil)
     catalogAware.validate(
       mkAcmeCtx("SELECT * FROM query_table('acme_other.main.secret')", eff)

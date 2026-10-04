@@ -20,9 +20,11 @@ def list_(ctx: typer.Context, tenant: str = typer.Option(None, "--tenant", help=
         "tenant": "--tenant",
         "username": "--username",
         "password": "--password",
-        "role": "--role",
+        "kind": "--kind",
         "mustChangePassword": "--must-change-password",
         "email": "--email",
+        "roles": "--role",
+        "groups": "--group",
     },
 )
 def create(
@@ -31,7 +33,9 @@ def create(
     tenant: str = typer.Option(None, "--tenant"),
     superuser: bool = typer.Option(False, "--superuser", help="Create a superuser (no tenant)."),
     password: str = typer.Option(None, "--password", help="Prompted when omitted."),
-    role: str = typer.Option("user", "--role"),
+    kind: str = typer.Option(
+        "user", "--kind", help="Account kind: admin | user. admin grants management rights only."
+    ),
     must_change_password: bool = typer.Option(
         False,
         "--must-change-password",
@@ -43,26 +47,39 @@ def create(
         help="Contact address for password-reset links. Omit to leave emailless. "
         "Derived from and locked to the username when the username is itself in email format.",
     ),
+    roles: list[str] = typer.Option(
+        None,
+        "--role",
+        help="RBAC role name in the tenant (repeatable). Omit for the default qod_all_tables.",
+    ),
+    groups: list[str] = typer.Option(
+        None,
+        "--group",
+        help="Group name in the tenant (repeatable). Omit for the default qod_all_pools.",
+    ),
 ):
     if superuser and tenant:
         raise typer.BadParameter("--superuser and --tenant are mutually exclusive")
     if not superuser and not tenant:
         raise typer.BadParameter("pass --tenant, or --superuser for a tenant-less superuser")
+    if superuser and (roles or groups):
+        raise typer.BadParameter("--role / --group do not apply to a superuser")
     if password is None:
         password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
-    call(
-        ctx,
-        "POST",
-        "/api/user/create",
-        body={
-            "tenant": None if superuser else tenant,
-            "username": username,
-            "password": password,
-            "role": role,
-            "mustChangePassword": must_change_password,
-            "email": email,
-        },
-    )
+    body: dict = {
+        "tenant": None if superuser else tenant,
+        "username": username,
+        "password": password,
+        "kind": kind,
+        "mustChangePassword": must_change_password,
+        "email": email,
+    }
+    # Omitted lists let the server apply its defaults (qod_all_tables / qod_all_pools).
+    if roles:
+        body["roles"] = roles
+    if groups:
+        body["groups"] = groups
+    call(ctx, "POST", "/api/user/create", body=body)
 
 
 @app.command()
@@ -73,7 +90,7 @@ def create(
         "id": "ID",
         "tenant": "--tenant",
         "password": "--password",
-        "role": "--role",
+        "kind": "--kind",
         "mustChangePassword": "--must-change-password",
         "email": "--email",
         "enabled": "--enabled",
@@ -84,7 +101,7 @@ def update(
     user_id: str = typer.Argument(..., metavar="ID"),
     tenant: str = typer.Option(None, "--tenant"),
     password: str = typer.Option(None, "--password", help="Omit = no rotation."),
-    role: str = typer.Option(None, "--role"),
+    kind: str = typer.Option(None, "--kind"),
     must_change_password: bool = typer.Option(
         None,
         "--must-change-password/--no-must-change-password",
@@ -108,8 +125,8 @@ def update(
         body["tenant"] = tenant
     if password is not None:
         body["password"] = password
-    if role is not None:
-        body["role"] = role
+    if kind is not None:
+        body["kind"] = kind
     if must_change_password is not None:
         body["mustChangePassword"] = must_change_password
     if email is not None:

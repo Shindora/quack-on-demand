@@ -2,7 +2,7 @@ package ai.starlake.quack.ondemand.api
 
 import ai.starlake.quack.model.{NodePlacement, NodeToleration, PoolCohort, RoleDistribution}
 import ai.starlake.quack.ondemand.federation.iceberg.IcebergRestConfig
-import io.circe.{Codec, Decoder, Encoder, Json}
+import io.circe.{Codec, Decoder, DecodingFailure, Encoder, Json}
 import io.circe.derivation.{Configuration, ConfiguredCodec}
 import io.circe.generic.semiauto.deriveCodec
 
@@ -901,22 +901,28 @@ final case class UserCreateRequest(
     tenant: Option[String] = None, // None = superuser
     username: String,
     password: String,
-    role: String = "user",
+    // Account kind (admin | user): admin grants management rights. Not an RBAC role.
+    kind: String = "user",
     // Marks the assigned password as temporary: login is refused (REST and FlightSQL)
     // until the user swaps it via POST /api/auth/change-password.
     mustChangePassword: Boolean = false,
     // Optional contact address. Omit to leave the row emailless (admin reset stays
     // the only recovery path -- see the forgot-password / lockout gate).
-    email: Option[String] = None
+    email: Option[String] = None,
+    // RBAC role / group NAMES in the user's tenant. Omitted = the built-in default
+    // (qod_all_tables / qod_all_pools); an empty list is refused; both must be omitted for a
+    // superuser.
+    roles: Option[List[String]] = None,
+    groups: Option[List[String]] = None
 )
 final case class UserUpdateRequest(
     id: String,
     tenant: Option[String] = None,   // None = leave unchanged
     password: Option[String] = None, // None = no rotation
-    role: Option[String] = None,
+    kind: Option[String] = None,     // account kind (admin | user); None = unchanged
     // Only meaningful together with `password`: Some(true) flags the new temp password,
     // Some(false)/None clears any pending flag along with the rotation. Without a
-    // password this field is a no-op -- role-only updates never touch the flag, and
+    // password this field is a no-op -- kind-only updates never touch the flag, and
     // Some(true) without a password is a 400.
     mustChangePassword: Option[Boolean] = None,
     // Omit (None) = unchanged; empty string = clear to no email; non-empty = set.
@@ -936,7 +942,7 @@ final case class UserResponse(
     id: String,
     tenant: Option[String],
     username: String,
-    role: String,
+    kind: String, // account kind: admin | user (management rights), NOT an RBAC role
     enabled: Boolean = true,
     roles: List[String] = Nil,      // role NAMES (not ids), tenant-scoped
     groups: List[String] = Nil,     // group NAMES
@@ -969,7 +975,8 @@ final case class RoleResponse(
     tenantId: String,
     name: String,
     description: Option[String],
-    createdAt: String
+    createdAt: String,
+    builtin: Boolean = false
 )
 final case class RoleListResponse(roles: List[RoleResponse])
 
@@ -1004,7 +1011,8 @@ final case class GroupResponse(
     id: String,
     tenantId: String,
     name: String,
-    description: Option[String]
+    description: Option[String],
+    builtin: Boolean = false
 )
 final case class GroupListResponse(groups: List[GroupResponse])
 
@@ -1683,8 +1691,25 @@ object Dtos:
   given Codec[AuditActionsResponse] = deriveCodec
 
   // RBAC: users
-  given Codec[UserCreateRequest] = ConfiguredCodec.derived
-  given Codec[UserUpdateRequest] = deriveCodec
+  // The `role` key was renamed to `kind`. Without the guard an old client's `"role":"admin"` is an
+  // unknown key the decoder ignores: create would mint a `kind=user` account and update would
+  // silently do nothing. Refused instead, so the caller sees a 400 naming the new field.
+  private def refusingLegacyRoleKey[A](derived: Codec[A]): Codec[A] =
+    Codec.from(
+      Decoder.instance { c =>
+        if c.downField("role").succeeded then
+          Left(
+            DecodingFailure(
+              "the field `role` was renamed to `kind` (admin | user); `roles` lists RBAC roles",
+              c.history
+            )
+          )
+        else derived(c)
+      },
+      derived
+    )
+  given Codec[UserCreateRequest] = refusingLegacyRoleKey(ConfiguredCodec.derived)
+  given Codec[UserUpdateRequest] = refusingLegacyRoleKey(deriveCodec)
   given Codec[UserDeleteRequest] = deriveCodec
   given Codec[UserResponse]      = deriveCodec
   given Codec[UserListResponse]  = deriveCodec

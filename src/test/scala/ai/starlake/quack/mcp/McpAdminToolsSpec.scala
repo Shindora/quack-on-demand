@@ -42,7 +42,7 @@ class McpAdminToolsSpec extends AnyFlatSpec with Matchers:
   private def adminPat(tenant: String = Tenant0): McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", role = "admin"),
+        user = RbacUser(id = "u1", tenant = Some(tenant), username = "alice", kind = "admin"),
         patId = "pat-1",
         scope = SessionScope(superuser = false, manageableTenants = Set(tenant)),
         isAdmin = true,

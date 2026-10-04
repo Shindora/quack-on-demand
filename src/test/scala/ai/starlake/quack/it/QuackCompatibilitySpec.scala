@@ -168,7 +168,7 @@ class QuackCompatibilitySpec extends AnyFlatSpec with Matchers with BeforeAndAft
       columnPolicyRewriter = new ColumnPolicyRewriter(columns),
       metadataFilterRewriter = new MetadataFilterRewriter(enabled = true)
     )
-    val user   = RbacUser("u-1", Some("t-1"), "alice", role = "user")
+    val user   = RbacUser("u-1", Some("t-1"), "alice", kind = "user")
     val grants = List(
       RolePermission("rp-1", "r-1", "acme_db", "tpch1", "customer", "RW"),
       RolePermission("rp-2", "r-1", "acme_db", "tpch1", "ids", "RO")

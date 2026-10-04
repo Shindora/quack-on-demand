@@ -421,7 +421,7 @@ class ManagerRestSecuritySpec extends AnyFlatSpec with Matchers with SecurityHtt
       tenant = None,
       username = SecurityFixtures.RootUsername,
       passwordHash = rootHash,
-      role = "admin",
+      kind = "admin",
       enabled = false
     )
     val h = ManagerServerHarness.boot(s, staticApiKey = None)

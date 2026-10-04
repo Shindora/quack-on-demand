@@ -110,7 +110,7 @@ object InMemoryAuthService:
                 Right(
                   AuthenticatedProfile(
                     username = u.username,
-                    role = u.role,
+                    role = u.kind,
                     groups = Set.empty,
                     claims = Map.empty,
                     authMethod = "in-memory",

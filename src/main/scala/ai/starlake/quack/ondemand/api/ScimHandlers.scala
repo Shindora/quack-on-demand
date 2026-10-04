@@ -3,6 +3,7 @@ package ai.starlake.quack.ondemand.api
 import java.util.Locale
 import ai.starlake.quack.ondemand.auth.SessionScope
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
+import ai.starlake.quack.ondemand.rbac.UserMemberships
 import ai.starlake.quack.ondemand.state.{RbacGroup, RbacUser, UserStore}
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
@@ -182,6 +183,10 @@ final class ScimHandlers(
     case SupervisorError.NotFound(msg)     => scimError(StatusCode.NotFound, msg)
     case SupervisorError.InvalidEmail(msg) =>
       scimError(StatusCode.BadRequest, msg, Some("invalidValue"))
+    case SupervisorError.BuiltinProtected(msg) =>
+      scimError(StatusCode.Conflict, msg, Some("mutability"))
+    case SupervisorError.ReservedName(msg) =>
+      scimError(StatusCode.BadRequest, msg, Some("invalidValue"))
     case other => scimError(StatusCode.BadRequest, other.toString, Some("invalidValue"))
 
   private def randomPassword(): String = SessionTokenStore.randomSecret()
@@ -264,7 +269,7 @@ final class ScimHandlers(
               val password   = str(obj, "password").getOrElse(randomPassword())
               // failIfExists: the pre-check above gives the clean 409; this closes the
               // check-then-act race so a retried/concurrent POST can never rotate an
-              // existing user's password or demote their role. active: false persists
+              // existing user's password or demote their kind. active: false persists
               // atomically -- no enabled window, nothing to roll back.
               sup
                 .createUser(
@@ -273,6 +278,8 @@ final class ScimHandlers(
                   password,
                   "user",
                   userStore,
+                  // The IdP owns group membership and pushes it afterwards.
+                  memberships = UserMemberships.IdpManaged,
                   email = emailOf(obj),
                   enabled = active,
                   failIfExists = true

@@ -1,8 +1,8 @@
 package ai.starlake.quack.edge.admin
 
 import ai.starlake.quack.model.{PoolKey, RoleDistribution, Tenant, TenantDbKind}
-import ai.starlake.quack.ondemand.rbac.EffectiveSet
-import ai.starlake.quack.ondemand.state.{InMemoryControlPlaneStore, RbacUser}
+import ai.starlake.quack.ondemand.rbac.{EffectiveSet, UserMemberships}
+import ai.starlake.quack.ondemand.state.{BuiltinRbac, InMemoryControlPlaneStore, RbacUser}
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
 import ai.starlake.quack.ondemand.telemetry.{
   AuditActions,
@@ -78,7 +78,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
     val (sup, store, _)                                   = setup()
     val auditStore                                        = new RecordingAuditStore
     val audit                                             = new AuditRecorder(auditStore, _ => None)
-    val createUserFn: AdminStatementExecutor.CreateUserFn = (tid, username, password, role) =>
+    val createUserFn: AdminStatementExecutor.CreateUserFn = (tid, username, password, role, _) =>
       IO {
         store.findUser(Some(tid), username) match
           case Some(_) => Left(SupervisorError.AlreadyExists(s"user already exists: $username"))
@@ -98,25 +98,29 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
   // PoolSupervisor.createUser, not exercised here) and implements the failIfExists
   // contract itself, since the fake stands in for supervisor.createUser(..., failIfExists
   // = true). `calls` records each invocation so the (tenantId, username, password, role)
-  // arguments the executor passes can be pinned.
+  // arguments the executor passes can be pinned; `memberships` records the matching
+  // UserMemberships argument, in the same order.
   private def setupWithUserFn(): (
       PoolSupervisor,
       InMemoryControlPlaneStore,
       AdminStatementExecutor,
-      scala.collection.mutable.Buffer[(String, String, String, String)]
+      scala.collection.mutable.Buffer[(String, String, String, String)],
+      scala.collection.mutable.Buffer[UserMemberships]
   ) =
     val (sup, store, _) = setup()
     val calls           = scala.collection.mutable.Buffer.empty[(String, String, String, String)]
-    val fn: AdminStatementExecutor.CreateUserFn = (tid, username, password, role) =>
+    val memberships     = scala.collection.mutable.Buffer.empty[UserMemberships]
+    val fn: AdminStatementExecutor.CreateUserFn = (tid, username, password, role, ms) =>
       IO {
         calls += ((tid, username, password, role))
+        memberships += ms
         store.findUser(Some(tid), username) match
           case Some(_) => Left(SupervisorError.AlreadyExists(s"user already exists: $username"))
           case None    =>
             val id = store.upsertUserWithHash(Some(tid), username, "x", role)
             Right(store.getUserById(id).get)
       }
-    (sup, store, new AdminStatementExecutor(sup, createUserFn = fn), calls)
+    (sup, store, new AdminStatementExecutor(sup, createUserFn = fn), calls, memberships)
 
   // ALTER USER PASSWORD tests only: builds an executor wired with a fake alterPasswordFn
   // that just records invocations (the real rotation path is PoolSupervisor.updateUserPassword,
@@ -161,7 +165,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
               u.tenant,
               u.username,
               "x",
-              u.role,
+              u.kind,
               enabled = u.enabled,
               mustChangePassword = true,
               email = u.email
@@ -178,7 +182,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
               u.tenant,
               u.username,
               "x",
-              u.role,
+              u.kind,
               enabled = enabled,
               mustChangePassword = u.mustChangePassword,
               email = u.email
@@ -202,7 +206,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
 
   private def adminEff(sup: PoolSupervisor): Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-admin", Some(tenantId(sup)), "boss", role = "admin"),
+      user = RbacUser("u-admin", Some(tenantId(sup)), "boss", kind = "admin"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -212,7 +216,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
 
   private def superEff: Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-root", None, "root", role = "admin"),
+      user = RbacUser("u-root", None, "root", kind = "admin"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -222,7 +226,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
 
   private def userEff(sup: PoolSupervisor): Option[EffectiveSet] = Some(
     EffectiveSet(
-      user = RbacUser("u-plain", Some(tenantId(sup)), "carol", role = "user"),
+      user = RbacUser("u-plain", Some(tenantId(sup)), "carol", kind = "user"),
       roles = Nil,
       groups = Nil,
       permissions = Nil,
@@ -252,7 +256,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
     // role = "admin", but tenant is some OTHER tenant id, not the session's poolKey.tenant.
     val crossTenantAdmin = Some(
       EffectiveSet(
-        user = RbacUser("u-other", Some("other-tenant-id"), "eve", role = "admin"),
+        user = RbacUser("u-other", Some("other-tenant-id"), "eve", kind = "admin"),
         roles = Nil,
         groups = Nil,
         permissions = Nil,
@@ -279,6 +283,16 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
     run(exec, sup, "CREATE ROLE analyst") match
       case Left(RouterFailure.AlreadyExists(_)) => succeed
       case other                                => fail(s"expected AlreadyExists, got $other")
+
+  it should "refuse DROP ROLE on a built-in role and CREATE ROLE with the reserved prefix" in:
+    val (sup, _, exec) = setup()
+    run(exec, sup, s"DROP ROLE ${BuiltinRbac.AllTables}") match
+      case Left(RouterFailure.AccessDenied(reason)) => reason should include("built-in")
+      case other                                    => fail(s"expected AccessDenied, got $other")
+    sup.listRoles(tenantId(sup)).map(_.name) should contain(BuiltinRbac.AllTables)
+    run(exec, sup, "CREATE ROLE qod_mine") match
+      case Left(RouterFailure.BadRequest(reason)) => reason should include("reserved prefix")
+      case other                                  => fail(s"expected BadRequest, got $other")
 
   "GRANT/REVOKE table" should "store the mapped verb, dedupe, and count revokes" in:
     val (sup, _, exec) = setup()
@@ -335,7 +349,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
       tenant = Some(tid),
       username = name,
       passwordHash = "x",
-      role = "user"
+      kind = "user"
     )
 
   private def readAll(qr: QueryResult): List[List[Option[String]]] =
@@ -446,7 +460,8 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
         case Right(qr) => readAll(qr)
         case Left(f)   => fail(s"expected rows for '$sql', got $f")
 
-    val granted = rowsOf("SHOW POOL GRANTS")
+    // createTenant seeds the built-in qod_all_pools tenant-wide grant; leave it out.
+    val granted = rowsOf("SHOW POOL GRANTS").filterNot(_(3).contains(BuiltinRbac.AllPools))
     granted should have size 1
     granted.head(2) shouldBe Some("alice")
     rowsOf("SHOW POOL GRANTS FOR USER alice") shouldBe granted
@@ -556,7 +571,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
       case other     => fail(s"expected rows, got $other")
 
   "CREATE/DROP USER" should "create a tenant user, refuse duplicates, and drop" in:
-    val (sup, _, exec, calls) = setupWithUserFn()
+    val (sup, _, exec, calls, _) = setupWithUserFn()
     run(exec, sup, "CREATE USER alice PASSWORD 'secret'").isRight shouldBe true
     calls.last shouldBe ((tenantId(sup), "alice", "secret", "user"))
     sup.findUser(Some(tenantId(sup)), "alice") should not be empty
@@ -572,8 +587,28 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
       case other                           => fail(s"expected NotFound, got $other")
     run(exec, sup, "DROP USER IF EXISTS alice").isRight shouldBe true
 
+  it should "pass the ROLES and GROUPS lists through as requested memberships" in:
+    val (sup, _, exec, calls, memberships) = setupWithUserFn()
+    run(exec, sup, "CREATE USER bob PASSWORD 'x' ROLES r GROUPS g").isRight shouldBe true
+    calls.last shouldBe ((tenantId(sup), "bob", "x", "user"))
+    memberships.last shouldBe UserMemberships.Requested(Some(List("r")), Some(List("g")))
+    run(exec, sup, "CREATE USER carol PASSWORD 'x'").isRight shouldBe true
+    memberships.last shouldBe UserMemberships.Requested(None, None)
+    run(exec, sup, "CREATE USER dan PASSWORD 'x' ADMIN ROLES r1, r2").isRight shouldBe true
+    calls.last shouldBe ((tenantId(sup), "dan", "x", "admin"))
+    memberships.last shouldBe UserMemberships.Requested(Some(List("r1", "r2")), None)
+
+  it should "surface an invalid membership as BadRequest" in:
+    val (sup, _, _)                             = setup()
+    val fn: AdminStatementExecutor.CreateUserFn = (_, _, _, _, _) =>
+      IO.pure(Left(SupervisorError.InvalidMembership("unknown_role", "unknown role: nope")))
+    val exec = new AdminStatementExecutor(sup, createUserFn = fn)
+    run(exec, sup, "CREATE USER bob PASSWORD 'x' ROLES nope") match
+      case Left(RouterFailure.BadRequest(msg)) => msg should include("nope")
+      case other                               => fail(s"expected BadRequest, got $other")
+
   it should "refuse dropping the session user and stay unwired-safe" in:
-    val (sup, _, exec, _) = setupWithUserFn()
+    val (sup, _, exec, _, _) = setupWithUserFn()
     // run() always executes as user "boss" - DROP USER boss is a self-drop.
     run(exec, sup, "DROP USER boss") match
       case Left(RouterFailure.BadRequest(msg)) =>
@@ -727,7 +762,7 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
         rows.map(_(1)) should contain allOf (Some("alice"), Some("bob"))
         rows.map(_(1)) should not contain Some("eve")
         val aliceRow = rows.find(_(1) == Some("alice")).get
-        aliceRow(2) shouldBe Some("user") // role
+        aliceRow(2) shouldBe Some("user") // kind
         aliceRow(3) shouldBe Some("true") // enabled
         aliceRow(4) shouldBe None         // email (seedUser sets none)
       case other => fail(s"expected rows, got $other")
@@ -753,7 +788,15 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
     val e = events.find(_.action == AuditActions.UserCreate).get
     e.outcome shouldBe "ok"
     e.detail.values should not contain "topsecret"
-    e.detail should contain("role" -> "user")
+    e.detail should contain("kind" -> "user")
+    e.detail should contain("roles" -> "(default)")
+    e.detail should contain("groups" -> "(default)")
+
+  it should "record the requested ROLES and GROUPS in the user.create detail map" in:
+    val (sup, _, exec, events) = setupWithAudit()
+    run(exec, sup, "CREATE USER bob PASSWORD 'pw' ROLES r1, r2 GROUPS g").isRight shouldBe true
+    val e = events.find(_.action == AuditActions.UserCreate).get
+    e.detail shouldBe Map("kind" -> "user", "roles" -> "r1,r2", "groups" -> "g")
 
   it should "fire the generic sql.admin.denied action on an authorization denial" in:
     val (sup, _, exec, events) = setupWithAudit()

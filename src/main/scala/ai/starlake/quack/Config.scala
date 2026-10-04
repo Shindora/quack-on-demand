@@ -63,7 +63,7 @@ final case class K8sConfig(
 
 final case class AdminConfig(
     // Comma-separated list of admin usernames. All get the same password +
-    // role on seed. Stored as a single string so a single env var can
+    // kind on seed. Stored as a single string so a single env var can
     // override (HOCON env-var substitution can't inject a list).
     @field @ConfigField(
       envVar = "QOD_ADMIN_USERNAME",
@@ -77,10 +77,10 @@ final case class AdminConfig(
     )
     password: String,
     @field @ConfigField(
-      envVar = "QOD_ADMIN_ROLE",
-      description = "Role assigned to the bootstrap admin user."
+      envVar = "QOD_ADMIN_KIND",
+      description = "Account kind (qodstate_user.kind) assigned to the bootstrap admin user."
     )
-    role: String
+    kind: String
 ):
   def usernameList: List[String] =
     username.split(",").iterator.map(_.trim).filter(_.nonEmpty).toList

@@ -21,7 +21,7 @@ class EdgeHandshakeSpec extends AnyFlatSpec with Matchers:
   private val trustMode = new AuthenticationService(AuthenticationConfig.disabled, "x")
 
   private val eff =
-    EffectiveSet(RbacUser("u-1", Some("t-1"), "alice", role = "user"), Nil, Nil, Nil, Nil)
+    EffectiveSet(RbacUser("u-1", Some("t-1"), "alice", kind = "user"), Nil, Nil, Nil, Nil)
 
   private def handshake(
       authorizeResult: Either[String, AuthorizedHandshake] = Right(

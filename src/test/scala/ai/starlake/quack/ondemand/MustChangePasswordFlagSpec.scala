@@ -1,6 +1,7 @@
 package ai.starlake.quack.ondemand
 
 import ai.starlake.quack.edge.adapter.NodeLoadTracker
+import ai.starlake.quack.ondemand.rbac.UserMemberships
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
 import ai.starlake.quack.ondemand.state.{LiquibaseRunner, PostgresControlPlaneStore, UserStore}
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
@@ -38,21 +39,40 @@ class MustChangePasswordFlagSpec extends AnyFlatSpec with Matchers:
 
   "createUser" should "persist the flag when requested" in withSup { (sup, store, users) =>
     sup
-      .createUser(None, "alice", "temp", "admin", users, mustChangePassword = true)
+      .createUser(
+        None,
+        "alice",
+        "temp",
+        "admin",
+        users,
+        UserMemberships.Requested(None, None),
+        mustChangePassword = true
+      )
       .unsafeRunSync()
       .isRight shouldBe true
     store.findUser(None, "alice").get.mustChangePassword shouldBe true
   }
 
   it should "default the flag to false" in withSup { (sup, store, users) =>
-    sup.createUser(None, "alice", "pw", "admin", users).unsafeRunSync().isRight shouldBe true
+    sup
+      .createUser(None, "alice", "pw", "admin", users, UserMemberships.Requested(None, None))
+      .unsafeRunSync()
+      .isRight shouldBe true
     store.findUser(None, "alice").get.mustChangePassword shouldBe false
   }
 
   "updateUserPassword" should "clear a pending flag on an unflagged reset" in
     withSup { (sup, store, users) =>
       sup
-        .createUser(None, "alice", "temp", "admin", users, mustChangePassword = true)
+        .createUser(
+          None,
+          "alice",
+          "temp",
+          "admin",
+          users,
+          UserMemberships.Requested(None, None),
+          mustChangePassword = true
+        )
         .unsafeRunSync()
       val id = store.findUser(None, "alice").get.id
       sup.updateUserPassword(id, Some("fresh"), None, users).unsafeRunSync().isRight shouldBe true
@@ -60,7 +80,9 @@ class MustChangePasswordFlagSpec extends AnyFlatSpec with Matchers:
     }
 
   it should "set the flag on a flagged reset" in withSup { (sup, store, users) =>
-    sup.createUser(None, "alice", "pw", "admin", users).unsafeRunSync()
+    sup
+      .createUser(None, "alice", "pw", "admin", users, UserMemberships.Requested(None, None))
+      .unsafeRunSync()
     val id = store.findUser(None, "alice").get.id
     sup
       .updateUserPassword(id, Some("temp2"), None, users, mustChangePassword = Some(true))
@@ -71,7 +93,15 @@ class MustChangePasswordFlagSpec extends AnyFlatSpec with Matchers:
 
   it should "leave the flag untouched on a role-only update" in withSup { (sup, store, users) =>
     sup
-      .createUser(None, "alice", "temp", "admin", users, mustChangePassword = true)
+      .createUser(
+        None,
+        "alice",
+        "temp",
+        "admin",
+        users,
+        UserMemberships.Requested(None, None),
+        mustChangePassword = true
+      )
       .unsafeRunSync()
     val id = store.findUser(None, "alice").get.id
     sup.updateUserPassword(id, None, Some("admin"), users).unsafeRunSync().isRight shouldBe true
@@ -80,7 +110,9 @@ class MustChangePasswordFlagSpec extends AnyFlatSpec with Matchers:
 
   it should "accept Some(true) without a password as a flag-only update" in withSup {
     (sup, store, users) =>
-      sup.createUser(None, "alice", "pw", "admin", users).unsafeRunSync()
+      sup
+        .createUser(None, "alice", "pw", "admin", users, UserMemberships.Requested(None, None))
+        .unsafeRunSync()
       val id         = store.findUser(None, "alice").get.id
       val hashBefore = store.getPasswordHash(None, "alice")
       sup
@@ -98,7 +130,15 @@ class MustChangePasswordFlagSpec extends AnyFlatSpec with Matchers:
   it should "accept Some(false) enabled without a password as a flag-only update" in withSup {
     (sup, store, users) =>
       sup
-        .createUser(None, "alice", "pw", "admin", users, mustChangePassword = true)
+        .createUser(
+          None,
+          "alice",
+          "pw",
+          "admin",
+          users,
+          UserMemberships.Requested(None, None),
+          mustChangePassword = true
+        )
         .unsafeRunSync()
       val id         = store.findUser(None, "alice").get.id
       val hashBefore = store.getPasswordHash(None, "alice")

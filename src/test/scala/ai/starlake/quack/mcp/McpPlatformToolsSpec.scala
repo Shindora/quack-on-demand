@@ -203,7 +203,7 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
   private def adminPat(raw: String): McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u1", tenant = None, username = "alice", role = "admin"),
+        user = RbacUser(id = "u1", tenant = None, username = "alice", kind = "admin"),
         patId = "pat-1",
         scope = SessionScope(superuser = false, manageableTenants = Set(Tenant0)),
         isAdmin = true,
@@ -221,7 +221,7 @@ class McpPlatformToolsSpec extends AnyFlatSpec with Matchers:
   private def tenantPat: McpPrincipal =
     new McpPrincipal.Pat(
       PatPrincipal(
-        user = RbacUser(id = "u2", tenant = None, username = "bob", role = "admin"),
+        user = RbacUser(id = "u2", tenant = None, username = "bob", kind = "admin"),
         patId = "pat-2",
         scope = SessionScope(superuser = false, manageableTenants = Set(Tenant0)),
         isAdmin = true,

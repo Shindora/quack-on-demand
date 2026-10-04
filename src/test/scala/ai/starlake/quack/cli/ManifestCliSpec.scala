@@ -15,6 +15,17 @@ class ManifestCliSpec extends AnyFlatSpec with Matchers:
     out.toString should include("apiVersion: quack-on-demand/v1")
   }
 
+  it should "exit 1 and print nothing when a user-made row uses the qod_ prefix" in {
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(ai.starlake.quack.model.Tenant(id = "acme", displayName = "acme"))
+    store.upsertRole(
+      ai.starlake.quack.ondemand.state.RbacRole(id = "r-x", tenantId = "acme", name = "qod_x")
+    )
+    val out = new ByteArrayOutputStream()
+    ManifestCli.exportTo(store, new PrintStream(out)) shouldBe 1
+    out.size shouldBe 0
+  }
+
   "ManifestCli.importFrom" should "apply a manifest from an input stream" in {
     // Defaulted fields (tenants / roles / groups / users) may be omitted -
     // the hand-rolled decoders fall back to `Nil` per the case-class default.

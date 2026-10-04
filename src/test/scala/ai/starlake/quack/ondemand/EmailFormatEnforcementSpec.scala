@@ -1,6 +1,7 @@
 package ai.starlake.quack.ondemand
 
 import ai.starlake.quack.edge.adapter.NodeLoadTracker
+import ai.starlake.quack.ondemand.rbac.UserMemberships
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
 import ai.starlake.quack.ondemand.state.{LiquibaseRunner, PostgresControlPlaneStore, UserStore}
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
@@ -37,7 +38,14 @@ class EmailFormatEnforcementSpec extends AnyFlatSpec with Matchers:
   "createUser" should "auto-set email to an email-format username" in withSup {
     (sup, store, users) =>
       sup
-        .createUser(None, "root@corp.io", "pw", "admin", users)
+        .createUser(
+          None,
+          "root@corp.io",
+          "pw",
+          "admin",
+          users,
+          UserMemberships.Requested(None, None)
+        )
         .unsafeRunSync()
         .isRight shouldBe true
       store.findUser(None, "root@corp.io").get.email shouldBe Some("root@corp.io")
@@ -46,27 +54,62 @@ class EmailFormatEnforcementSpec extends AnyFlatSpec with Matchers:
   it should "reject a different email on an email-format username" in withSup {
     (sup, store, users) =>
       val out = sup
-        .createUser(None, "root@corp.io", "pw", "admin", users, email = Some("other@x.io"))
+        .createUser(
+          None,
+          "root@corp.io",
+          "pw",
+          "admin",
+          users,
+          UserMemberships.Requested(None, None),
+          email = Some("other@x.io")
+        )
         .unsafeRunSync()
       out.left.toOption.get shouldBe a[SupervisorError.InvalidEmail]
   }
 
   it should "accept the same email as an email-format username" in withSup { (sup, store, users) =>
     sup
-      .createUser(None, "root@corp.io", "pw", "admin", users, email = Some("root@corp.io"))
+      .createUser(
+        None,
+        "root@corp.io",
+        "pw",
+        "admin",
+        users,
+        UserMemberships.Requested(None, None),
+        email = Some("root@corp.io")
+      )
       .unsafeRunSync()
       .isRight shouldBe true
     store.findUser(None, "root@corp.io").get.email shouldBe Some("root@corp.io")
   }
 
   it should "leave a non-email username's email free" in withSup { (sup, store, users) =>
-    sup.createUser(None, "alice", "pw", "admin", users, email = Some("alice@x.io")).unsafeRunSync()
+    sup
+      .createUser(
+        None,
+        "alice",
+        "pw",
+        "admin",
+        users,
+        UserMemberships.Requested(None, None),
+        email = Some("alice@x.io")
+      )
+      .unsafeRunSync()
     store.findUser(None, "alice").get.email shouldBe Some("alice@x.io")
   }
 
   "updateUserPassword" should "reject changing an email-format user's email" in withSup {
     (sup, store, users) =>
-      sup.createUser(None, "root@corp.io", "pw", "admin", users).unsafeRunSync()
+      sup
+        .createUser(
+          None,
+          "root@corp.io",
+          "pw",
+          "admin",
+          users,
+          UserMemberships.Requested(None, None)
+        )
+        .unsafeRunSync()
       val id  = store.findUser(None, "root@corp.io").get.id
       val out = sup
         .updateUserPassword(id, None, None, users, email = Some(Some("other@x.io")))
@@ -76,12 +119,21 @@ class EmailFormatEnforcementSpec extends AnyFlatSpec with Matchers:
 
   it should "allow a role-only update on an email-format user without touching the email" in
     withSup { (sup, store, users) =>
-      sup.createUser(None, "root@corp.io", "pw", "admin", users).unsafeRunSync()
+      sup
+        .createUser(
+          None,
+          "root@corp.io",
+          "pw",
+          "admin",
+          users,
+          UserMemberships.Requested(None, None)
+        )
+        .unsafeRunSync()
       val id = store.findUser(None, "root@corp.io").get.id
       // Outer-None email = no email change: the rule is skipped, so a role-only update
       // must not 400 even though the username is email-format.
       val out = sup
-        .updateUserPassword(id, password = None, role = Some("admin"), users, email = None)
+        .updateUserPassword(id, password = None, kind = Some("admin"), users, email = None)
         .unsafeRunSync()
       out.isRight shouldBe true
       store.findUser(None, "root@corp.io").get.email shouldBe Some("root@corp.io")
