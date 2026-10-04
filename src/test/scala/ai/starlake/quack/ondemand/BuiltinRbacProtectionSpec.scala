@@ -127,3 +127,21 @@ class BuiltinRbacProtectionSpec extends AnyFlatSpec with Matchers:
     f.sup.createGroup("acme", "QOD_mine").unsafeRunSync().left.toOption.get shouldBe
       a[SupervisorError.ReservedName]
   }
+
+  "the built-in guards" should "read the store, not a resolver that has not refreshed" in {
+    // An HA replica whose resolver predates a peer's createTenant: the built-ins exist in the
+    // store but were never loaded into this supervisor's resolver (no restore after insert).
+    val store = new InMemoryControlPlaneStore()
+    val sup   = new PoolSupervisor(StubQuackBackend.noop(), new NodeLoadTracker, store)
+    sup.restore()
+    store.upsertTenant(Tenant(id = "peer"))
+    store.ensureBuiltins("peer")
+    val allTables = store.findRole("peer", BuiltinRbac.AllTables).get.id
+    val allPools  = store.findGroup("peer", BuiltinRbac.AllPools).get.id
+    val permId    = store.listRolePermissions(allTables).head.id
+    val ppId      = store.listPoolPermissionsForGroup(allPools).head.id
+    protectedErr(sup.revokeRolePermission(permId))
+    protectedErr(sup.revokePoolPermission(ppId))
+    store.listRolePermissions(allTables).map(_.id) shouldBe List(permId)
+    store.listPoolPermissionsForGroup(allPools).map(_.id) shouldBe List(ppId)
+  }

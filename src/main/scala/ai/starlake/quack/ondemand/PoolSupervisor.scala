@@ -3134,18 +3134,22 @@ final class PoolSupervisor(
   /** Built-in roles and groups ([[state.BuiltinRbac]]) are frozen: their own definition (delete,
     * permissions, policies, role bindings, pool grants) is refused here, while user memberships
     * stay editable. Each guard runs after the existence check so a missing id still 404s.
+    *
+    * The decision reads the store row, never the in-memory resolver: under HA a replica whose
+    * resolver has not yet refreshed after a peer's createTenant would otherwise see no built-in
+    * flag and let the definition be stripped.
     */
   private def builtinRoleError(roleId: String): Option[SupervisorError] =
-    rbacResolver
-      .role(roleId)
+    store
+      .getRole(roleId)
       .filter(_.builtin)
       .map(r =>
         SupervisorError.BuiltinProtected(s"role '${r.name}' is built-in and cannot be modified")
       )
 
   private def builtinGroupError(groupId: String): Option[SupervisorError] =
-    rbacResolver
-      .group(groupId)
+    store
+      .getGroup(groupId)
       .filter(_.builtin)
       .map(g =>
         SupervisorError.BuiltinProtected(s"group '${g.name}' is built-in and cannot be modified")
