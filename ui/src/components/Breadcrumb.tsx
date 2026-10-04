@@ -13,8 +13,8 @@ interface Props {
 
 /** Universal breadcrumb. Items with `to` render as <Link>; the last
   * (current) item should omit `to` and renders as bold non-clickable
-  * text. Inline-styled so it works on both className-based pages
-  * (TenantDetail) and inline-styled pages (PoolDetail, CatalogTableDetail). */
+  * text. Inline-styled so it works on both className-based tenant-scoped
+  * pages and inline-styled detail pages (PoolDetailBody, CatalogTableDetail). */
 export default function Breadcrumb({ items }: Props) {
   return (
     <nav

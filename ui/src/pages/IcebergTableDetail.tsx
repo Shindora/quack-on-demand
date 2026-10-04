@@ -10,6 +10,7 @@ import type {
 import Breadcrumb from '../components/Breadcrumb';
 import Tabs from '../components/Tabs';
 import PreviewTable from '../components/PreviewTable';
+import { catalogPath, tenantHome } from '../nav/links';
 
 const HISTORY_PAGE = 50;
 
@@ -168,9 +169,6 @@ export default function IcebergTableDetail() {
     if (to) loadDiff(snapshotId, to);
   }
 
-  const tEnc = encodeURIComponent(tenant!);
-  const tdEnc = encodeURIComponent(tenantDb!);
-
   // Both selects are built from `history`, which the History tab's own operation filter can
   // narrow -- so each one also keeps whatever it is currently showing (and the resolved current
   // snapshot) as an option even when that id has fallen out of the filtered list.
@@ -181,9 +179,9 @@ export default function IcebergTableDetail() {
     <div>
       <Breadcrumb
         items={[
-          { label: 'Catalog', to: '/catalog' },
-          { label: tenant!, to: `/catalog?tenant=${tEnc}` },
-          { label: tenantDb!, to: `/catalog?tenant=${tEnc}&tenantDb=${tdEnc}` },
+          { label: tenant!,   to: tenantHome(tenant!) },
+          { label: 'Catalog', to: catalogPath(tenant!) },
+          { label: tenantDb!, to: catalogPath(tenant!, { tenantDb: tenantDb! }) },
           { label: alias! },
           { label: schema! },
           { label: table! },

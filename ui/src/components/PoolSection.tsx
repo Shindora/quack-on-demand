@@ -13,7 +13,7 @@ import CohortEditor, {
 } from './CohortEditor';
 
 
-/** Pools card for the TenantDetail page. Mirrors DatabaseSection's
+/** Pools page for one tenant (`/t/:tenant/pools`). Mirrors DatabaseSection's
   * shape: list pools, plus an inline "+ New pool" form that opens
   * below the table instead of navigating to a dedicated route. */
 export default function PoolSection({ tenant }: { tenant: string }) {

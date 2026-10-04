@@ -7,6 +7,7 @@ import type {
   PoolResponse,
   TenantResponse,
 } from '../api/types';
+import { poolPath, tenantHome } from '../nav/links';
 
 /** Inline per-user effective-permissions drilldown rendered as a card
   * beneath the user's row in the Users table. Loads
@@ -147,7 +148,7 @@ export default function EffectivePermsCard({
     const t = tenantById.get(tenantId);
     if (!t) return <code>{tenantId}</code>;
     return (
-      <Link to={`/tenant/${t.name}`}><code>{t.name}</code></Link>
+      <Link to={tenantHome(t.name)}><code>{t.name}</code></Link>
     );
   }
 
@@ -160,13 +161,13 @@ export default function EffectivePermsCard({
       const tn = tenantById.get(g.tenantId)?.name;
       const star = <code>*</code>;
       return tn
-        ? <Link to={`/tenant/${tn}`} title="every pool in this tenant">{star}</Link>
+        ? <Link to={tenantHome(tn)} title="every pool in this tenant">{star}</Link>
         : star;
     }
     const p = poolById.get(g.poolId);
     if (!p) return <code>{g.poolId}</code>;
     return (
-      <Link to={`/pool/${p.tenant}/${p.tenantDb}/${p.pool}`}>
+      <Link to={poolPath(p.tenant, p.tenantDb, p.pool)}>
         <code>{p.pool}</code>
       </Link>
     );
@@ -254,13 +255,13 @@ export default function EffectivePermsCard({
               </tr></thead>
               <tbody>{databases.map(d => (
                 <tr key={`${d.tenant}/${d.tenantDb}`}>
-                  <td><Link to={`/tenant/${d.tenant}`}><code>{d.tenant}</code></Link></td>
+                  <td><Link to={tenantHome(d.tenant)}><code>{d.tenant}</code></Link></td>
                   <td><code>{d.tenantDb}</code></td>
                   <td>
                     {d.pools.map((pn, i) => (
                       <span key={pn}>
                         {i > 0 && ', '}
-                        <Link to={`/pool/${d.tenant}/${d.tenantDb}/${pn}`}><code>{pn}</code></Link>
+                        <Link to={poolPath(d.tenant, d.tenantDb, pn)}><code>{pn}</code></Link>
                       </span>
                     ))}
                   </td>
@@ -278,7 +279,7 @@ export default function EffectivePermsCard({
               <tbody>{reachableNodes.map(n => (
                 <tr key={n.key}>
                   <td>
-                    <Link to={`/pool/${n.tenant}/${n.tenantDb}/${n.pool}`}>
+                    <Link to={poolPath(n.tenant, n.tenantDb, n.pool)}>
                       <code>{n.tenant}/{n.pool}</code>
                     </Link>
                   </td>

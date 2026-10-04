@@ -5,6 +5,7 @@ import type { PoolResponse, NodeInfo, StatementHistoryEntry, ActiveStatementInfo
 import { useAuth } from '../auth/AuthContext';
 import SqlHighlight from '../components/SqlHighlight';
 import { fmtBytes } from '../format';
+import { poolPath, tenantHome } from '../nav/links';
 
 interface Row extends NodeInfo {
   tenant:   string;
@@ -28,7 +29,7 @@ export default function Nodes() {
   const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr]   = useState<string | null>(null);
   const [tenants, setTenants] = useState<string[]>([]);
-  // Seed filters from URL so deep links from TenantDetail / PoolDetail
+  // Seed filters from URL so deep links from the Pools / Databases pages
   // land pre-filtered. The two filters compose: ?tenant=acme&node=ro1
   // narrows both axes simultaneously. With no deep link, default to the
   // tenant used at sign-in (null for a system-scope login).
@@ -288,18 +289,18 @@ export default function Nodes() {
               <tr key={`${n.tenant}/${n.tenantDb}/${n.pool}/${n.nodeId}`}>
                 <td>
                   <Link
-                    to={`/nodes?${filter ? `tenant=${encodeURIComponent(filter)}&` : ''}node=${encodeURIComponent(n.nodeId)}`}
+                    to={`?node=${encodeURIComponent(n.nodeId)}`}
                     style={{ textDecoration: 'none' }}
                   >
                     <code>{n.nodeId}</code>
                   </Link>
                 </td>
                 <td>
-                  <Link to={`/tenant/${n.tenant}`}>{n.tenant}</Link>
+                  <Link to={tenantHome(n.tenant)}>{n.tenant}</Link>
                   {' / '}
                   <code style={{ color: '#666' }}>{n.tenantDb}</code>
                   {' / '}
-                  <Link to={`/pool/${encodeURIComponent(n.tenant)}/${encodeURIComponent(n.tenantDb)}/${encodeURIComponent(n.pool)}`}>{n.pool}</Link>
+                  <Link to={poolPath(n.tenant, n.tenantDb, n.pool)}>{n.pool}</Link>
                 </td>
                 <td><RoleBadge role={n.role} /></td>
                 <td><HealthBadge healthy={n.healthy} draining={n.draining} quarantined={n.quarantined} /></td>
@@ -435,13 +436,13 @@ export default function Nodes() {
                       <td className="subtle"><code>{shortTime(h.ts)}</code></td>
                       <td>{h.user}</td>
                       <td>
-                        <Link to={`/tenant/${h.tenant}`}>{h.tenant}</Link>
+                        <Link to={tenantHome(h.tenant)}>{h.tenant}</Link>
                         {' / '}
                         <span>{h.pool}</span>
                       </td>
                       <td>
                         <Link
-                          to={`/nodes?${filter ? `tenant=${encodeURIComponent(filter)}&` : ''}node=${encodeURIComponent(h.nodeId)}`}
+                          to={`?node=${encodeURIComponent(h.nodeId)}`}
                           style={{ textDecoration: 'none' }}
                           onClick={e => e.stopPropagation()}
                         >

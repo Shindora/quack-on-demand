@@ -8,6 +8,7 @@ import EffectivePermsCard from './EffectivePermsCard';
 import MultiSelectDropdown from './MultiSelectDropdown';
 import { DeleteIcon, EditIcon } from './Icons';
 import { Modal } from './Modal';
+import { poolPath, tenantHome } from '../nav/links';
 
 // Mirrors the server-side EmailFormat detector (ai.starlake.quack state
 // package): a username that looks like an email address is treated as
@@ -28,7 +29,7 @@ function builtinsFirst<T extends { name: string; builtin?: boolean }>(xs: T[]): 
     Number(!!b.builtin) - Number(!!a.builtin) || a.name.localeCompare(b.name));
 }
 
-/** Users tab on the /users page. Renders the user table for the
+/** Users tab at `/t/:tenant/users` (or `/all/users`). Renders the user table for the
   * selected tenant (or every user when `tenant === null`), with inline
   * create + per-row edit / delete / effective drilldown actions.
   *
@@ -101,7 +102,7 @@ export default function UserSection({
     const poolTok    = token.slice(slash + 1);
     if (poolTok === '*') {
       return (
-        <Link to={`/tenant/${tenantName}`} title="every pool in this tenant">
+        <Link to={tenantHome(tenantName)} title="every pool in this tenant">
           <code>{tenantName}/*</code>
         </Link>
       );
@@ -111,7 +112,7 @@ export default function UserSection({
       ?? poolByTenantAndName.get(`${tenantName}/${poolTok}`);
     if (!p) return <code>{token}</code>;
     return (
-      <Link to={`/pool/${p.tenant}/${p.tenantDb}/${p.pool}`}>
+      <Link to={poolPath(p.tenant, p.tenantDb, p.pool)}>
         <code>{p.tenant}/{p.pool}</code>
       </Link>
     );

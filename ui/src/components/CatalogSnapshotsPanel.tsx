@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { CatalogSnapshotEntry, CatalogTagEntry } from '../api/types';
+import { catalogTablePath } from '../nav/links';
 
 const PAGE = 200;
 
@@ -168,8 +169,7 @@ export default function CatalogSnapshotsPanel({ tenant, tenantDb, refreshToken =
                           <span key={`${t.schema}.${t.name}`}>
                             {i > 0 && ', '}
                             <Link
-                              to={`/catalog/${encodeURIComponent(tenant)}/${encodeURIComponent(tenantDb)}` +
-                                  `/${encodeURIComponent(t.schema)}/${encodeURIComponent(t.name)}?asOf=${tableAsOf}`}
+                              to={`${catalogTablePath(tenant, tenantDb, t.schema, t.name)}?asOf=${tableAsOf}`}
                             >
                               {t.schema}.{t.name}
                             </Link>

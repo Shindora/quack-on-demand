@@ -5,7 +5,7 @@ import type { AuthProvider, TenantResponse } from '../api/types';
 import { EditIcon } from './Icons';
 import { Modal } from './Modal';
 
-/** Auth-provider tab on the TenantDetail page. Shows the tenant's
+/** Auth-provider page for one tenant (`/t/:tenant/auth-provider`). Shows the tenant's
   * current provider + config and lets the admin swap it. Users / roles /
   * groups under the tenant are unaffected by this swap -- it's only a
   * change to HOW the tenant's users authenticate.

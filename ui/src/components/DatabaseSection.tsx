@@ -10,7 +10,7 @@ import DataPathEditor, {
 } from './DataPathEditor';
 import FederationSection from './FederationSection';
 
-/** Databases card for the TenantDetail page. Lists tenant databases,
+/** Databases page for one tenant (`/t/:tenant/databases`). Lists tenant databases,
   * lets you add a new one (name + dataPath + structured metastore +
   * structured object-store inputs) or delete an existing one. */
 export default function DatabaseSection({ tenant }: { tenant: string }) {

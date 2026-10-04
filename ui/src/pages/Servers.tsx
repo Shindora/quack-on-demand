@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../api/client';
 import type { FleetServer } from '../api/types';
 import { fmtBytes } from '../format';
+import { poolPath } from '../nav/links';
 
 const POLL_MS = 5000;
 
@@ -144,7 +145,7 @@ export default function Servers() {
                   <td>{s.assignedNodeId ? <code>{s.assignedNodeId}</code> : <span className="subtle">-</span>}</td>
                   <td>
                     {s.tenant ? (
-                      <Link to={`/pool/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.tenantDb ?? '')}/${encodeURIComponent(s.pool ?? '')}`}>
+                      <Link to={poolPath(s.tenant, s.tenantDb ?? '', s.pool ?? '')}>
                         {s.tenant}/{s.tenantDb}/{s.pool}
                       </Link>
                     ) : <span className="subtle">-</span>}

@@ -15,6 +15,7 @@ import Tabs from '../components/Tabs';
 import CatalogHistoryPanel from '../components/CatalogHistoryPanel';
 import RestoreDialog from '../components/RestoreDialog';
 import PreviewTable from '../components/PreviewTable';
+import { catalogPath, dashboardPath, tenantHome } from '../nav/links';
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -292,18 +293,14 @@ export default function CatalogTableDetail() {
     font: 'inherit', fontSize: '0.9em', color: 'inherit', textDecoration: 'underline',
   };
 
-  const tEnc  = encodeURIComponent(tenant!);
-  const tdEnc = encodeURIComponent(tenantDb!);
-  const sEnc  = encodeURIComponent(schema!);
-
   return (
     <div>
       <Breadcrumb
         items={[
-          { label: 'Catalog', to: '/catalog' },
-          { label: tenant!,   to: `/catalog?tenant=${tEnc}` },
-          { label: tenantDb!, to: `/catalog?tenant=${tEnc}&tenantDb=${tdEnc}` },
-          { label: schema!,   to: `/catalog?tenant=${tEnc}&tenantDb=${tdEnc}&schema=${sEnc}` },
+          { label: tenant!,   to: tenantHome(tenant!) },
+          { label: 'Catalog', to: catalogPath(tenant!) },
+          { label: tenantDb!, to: catalogPath(tenant!, { tenantDb: tenantDb! }) },
+          { label: schema!,   to: catalogPath(tenant!, { tenantDb: tenantDb!, schema: schema! }) },
           { label: table! },
         ]}
       />
@@ -338,9 +335,9 @@ export default function CatalogTableDetail() {
       </div>
 
       <div style={{ marginBottom: 16, fontSize: '0.9rem' }}>
-        <Link to={`/tenant/${tEnc}`}>Open tenant {tenant} →</Link>
+        <Link to={tenantHome(tenant!)}>Open tenant {tenant} →</Link>
         <span style={{ color: '#bbb', margin: '0 8px' }}>·</span>
-        <Link to={`/nodes?tenant=${tEnc}`}>Live nodes for this tenant</Link>
+        <Link to={dashboardPath({ kind: 'tenant', tenant: tenant! })}>Live nodes for this tenant</Link>
       </div>
 
       {error && <p style={{ color: 'red' }}>Error: {error}</p>}

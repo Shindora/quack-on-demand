@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, errorMessage } from '../api/client';
 import type { CatalogSchemaEntry, FederatedSourceResponse } from '../api/types';
+import { icebergTablePath } from '../nav/links';
 
 /** Namespace/table browser for one attached Iceberg alias, shown inline when the alias row is
   * expanded: a namespace dropdown (preselected when there is only one) above that namespace's
@@ -81,10 +82,7 @@ function IcebergAliasBody({
                     {tables.map(t => (
                       <li key={t} style={{ padding: '4px 0' }}>
                         <Link
-                          to={
-                            `/catalog/${encodeURIComponent(tenant)}/${encodeURIComponent(tenantDb)}` +
-                            `/iceberg/${encodeURIComponent(alias)}/${encodeURIComponent(schema)}/${encodeURIComponent(t)}`
-                          }
+                          to={icebergTablePath(tenant, tenantDb, alias, schema, t)}
                         >
                           <code>{t}</code>
                         </Link>

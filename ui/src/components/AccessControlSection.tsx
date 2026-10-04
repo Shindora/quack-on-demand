@@ -4,8 +4,8 @@ import type { TenantResponse } from '../api/types';
 import { EditIcon } from './Icons';
 import { Modal } from './Modal';
 
-/** Access control tab on the TenantDetail page: who may read or write data in this
-  * tenant's pools. Mode `qod` (or unset, the manager default) enforces standard QoD
+/** Access control page for one tenant (`/t/:tenant/access-control`): who may read or
+  * write data in this tenant's pools. Mode `qod` (or unset, the manager default) enforces standard QoD
   * grants (roles, groups, per-pool permissions). Mode `opa` delegates the decision to
   * the tenant's own OPA server (examples/opa/README.md). The OPA bearer token is write-only:
   * the server only ever reports whether one is set, never its value, so this form must

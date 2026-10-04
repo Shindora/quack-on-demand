@@ -7,6 +7,7 @@ import { DeleteIcon } from './Icons';
 import { CpuLimitSlider, MemLimitSlider } from './LimitSlider';
 import { Modal } from './Modal';
 import Tabs from './Tabs';
+import { dashboardPath, poolsPath } from '../nav/links';
 
 
 /** Header (title + Back button) + the four-tab body for one pool. No
@@ -318,7 +319,7 @@ export default function PoolDetailBody({
     try {
       await api.deletePool({ tenant, tenantDb, pool, force: true });
       if (onBack) onBack();
-      else navigate(`/tenant/${encodeURIComponent(tenant)}`);
+      else navigate(poolsPath(tenant));
     } catch (e) {
       setSuspendErr(errorMessage(e));
     }
@@ -448,7 +449,7 @@ export default function PoolDetailBody({
             <tr key={n.nodeId} style={{ borderTop: '1px solid #eee' }}>
               <td>
                 <Link
-                  to={`/nodes?tenant=${encodeURIComponent(data.tenant)}&node=${encodeURIComponent(n.nodeId)}`}
+                  to={dashboardPath({ kind: 'tenant', tenant: data.tenant }, n.nodeId)}
                   style={{ textDecoration: 'none' }}
                 >
                   <code>{n.nodeId}</code>
@@ -810,7 +811,7 @@ export default function PoolDetailBody({
           {onBack
             ? <button type="button" className="link-button" onClick={onBack}>← Back to pools</button>
             : (
-              <Link to={`/tenant/${encodeURIComponent(data.tenant)}`}>
+              <Link to={poolsPath(data.tenant)}>
                 <button type="button" className="link-button">← Back to pools</button>
               </Link>
             )}

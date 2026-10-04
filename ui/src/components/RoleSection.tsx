@@ -9,7 +9,7 @@ import Tabs from './Tabs';
 
 const VERBS = ['RO', 'RW', 'DDL', 'ALL'];
 
-/** Roles tab on the /users page. Two-pane layout:
+/** Roles tab at `/t/:tenant/roles` (or `/all/roles`). Two-pane layout:
   *   - left: roles list + "+ New role"
   *   - right: the selected role's permission rows + inline grant form
   * No role-permission revoke action returns a payload, so each toggle
