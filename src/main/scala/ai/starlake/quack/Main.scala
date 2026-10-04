@@ -1013,6 +1013,9 @@ object Main extends IOApp with LazyLogging:
                 password = password,
                 kind = kind,
                 userStore = userStore,
+                // ROLES / GROUPS clauses arrive with the dialect change; until then the
+                // built-in defaults apply.
+                memberships = ai.starlake.quack.ondemand.rbac.UserMemberships.Requested(None, None),
                 failIfExists = true
               ),
             // Same per-(tenant, username) rotation path REST user/update uses

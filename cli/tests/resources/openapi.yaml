@@ -10609,6 +10609,14 @@ components:
           type: boolean
         email:
           type: string
+        roles:
+          type: array
+          items:
+            type: string
+        groups:
+          type: array
+          items:
+            type: string
     UserDeleteRequest:
       title: UserDeleteRequest
       type: object

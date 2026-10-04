@@ -200,6 +200,30 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     out.isRight shouldBe true
   }
 
+  it should "pass roles and groups arrays through, refusing an empty roles list" in {
+    val f   = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    val out = f.call(
+      "create_user",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString("acme"),
+      "username" -> Json.fromString("bob"),
+      "password" -> Json.fromString("s3cret-s3cret"),
+      "roles"    -> Json.arr()
+    )
+    out.isLeft shouldBe true
+    out.left.toOption.get should startWith("roles_required")
+    val bad = f.call(
+      "create_user",
+      McpPrincipal.StaticKey,
+      "tenant"   -> Json.fromString("acme"),
+      "username" -> Json.fromString("bob"),
+      "password" -> Json.fromString("s3cret-s3cret"),
+      "groups"   -> Json.arr(Json.fromString("nope"))
+    )
+    bad.left.toOption.get should startWith("unknown_group")
+  }
+
   it should "refuse a PAT creating a superuser (no tenant arg)" in {
     val f   = new Fixture
     val out = f.call(
@@ -331,7 +355,9 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
         McpPrincipal.StaticKey,
         "tenant"   -> Json.fromString("acme"),
         "username" -> Json.fromString("bob"),
-        "password" -> Json.fromString("s3cret-s3cret")
+        "password" -> Json.fromString("s3cret-s3cret"),
+        "roles"    -> Json.arr(Json.fromString("qod_no_tables")),
+        "groups"   -> Json.arr(Json.fromString("qod_no_pools"))
       )
     )
     val r = f.idOf(
@@ -352,7 +378,12 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     add.isRight shouldBe true
     val eff =
       f.call("user_effective_permissions", McpPrincipal.StaticKey, "id" -> Json.fromString(u))
-    eff.toOption.get.hcursor.downField("roles").values.get.size shouldBe 1
+    eff.toOption.get.hcursor
+      .downField("roles")
+      .values
+      .get
+      .flatMap(_.hcursor.get[String]("name").toOption)
+      .toSet shouldBe Set("qod_no_tables", "reader")
   }
 
   it should "reject an unknown kind" in {

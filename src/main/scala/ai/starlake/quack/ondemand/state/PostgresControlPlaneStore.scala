@@ -1302,6 +1302,24 @@ final class PostgresControlPlaneStore(
     insertEdge(c, "qodstate_user_role", "user_id", "role_id", userId, roleId)
   }
 
+  def addUserMemberships(userId: String, roleIds: List[String], groupIds: List[String]): Unit =
+    withConn { c =>
+      // Single connection + manual commit: a fresh user ends with all of its edges or none.
+      c.setAutoCommit(false)
+      try
+        roleIds.foreach(r => insertEdge(c, "qodstate_user_role", "user_id", "role_id", userId, r))
+        groupIds.foreach(g =>
+          insertEdge(c, "qodstate_user_group", "user_id", "group_id", userId, g)
+        )
+        c.commit()
+      catch
+        case t: Throwable =>
+          try c.rollback()
+          catch case _: Throwable => ()
+          throw t
+      finally c.setAutoCommit(true)
+    }
+
   def removeUserRole(userId: String, roleId: String): Boolean = withConn { c =>
     deleteEdge(c, "qodstate_user_role", "user_id", "role_id", userId, roleId)
   }

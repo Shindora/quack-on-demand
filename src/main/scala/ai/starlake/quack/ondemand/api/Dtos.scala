@@ -908,7 +908,12 @@ final case class UserCreateRequest(
     mustChangePassword: Boolean = false,
     // Optional contact address. Omit to leave the row emailless (admin reset stays
     // the only recovery path -- see the forgot-password / lockout gate).
-    email: Option[String] = None
+    email: Option[String] = None,
+    // RBAC role / group NAMES in the user's tenant. Omitted = the built-in default
+    // (qod_all_tables / qod_all_pools); an empty list is refused; both must be omitted for a
+    // superuser.
+    roles: Option[List[String]] = None,
+    groups: Option[List[String]] = None
 )
 final case class UserUpdateRequest(
     id: String,

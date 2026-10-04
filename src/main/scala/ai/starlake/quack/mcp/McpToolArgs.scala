@@ -19,6 +19,10 @@ private[mcp] object McpToolArgs:
   def bool(args: JsonObject, name: String): Option[Boolean] =
     args(name).flatMap(_.asBoolean)
 
+  /** A JSON array of non-blank strings; None when the argument is absent. */
+  def strList(args: JsonObject, name: String): Option[List[String]] =
+    args(name).flatMap(_.asArray).map(_.toList.flatMap(_.asString).map(_.trim).filter(_.nonEmpty))
+
   def required(args: JsonObject, name: String): Either[String, String] =
     str(args, name).toRight(s"the '$name' argument is required")
 
@@ -27,6 +31,13 @@ private[mcp] object McpToolArgs:
 
   def intProp(description: String): Json =
     Json.obj("type" -> Json.fromString("integer"), "description" -> Json.fromString(description))
+
+  def strListProp(description: String): Json =
+    Json.obj(
+      "type"        -> Json.fromString("array"),
+      "items"       -> Json.obj("type" -> Json.fromString("string")),
+      "description" -> Json.fromString(description)
+    )
 
   def boolProp(description: String): Json =
     Json.obj("type" -> Json.fromString("boolean"), "description" -> Json.fromString(description))

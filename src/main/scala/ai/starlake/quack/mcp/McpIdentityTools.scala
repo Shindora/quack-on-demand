@@ -248,6 +248,12 @@ final class McpIdentityTools(
       "must_change_password" -> boolProp(
         "Mark the password temporary: login refused until changed."
       ),
+      "roles" -> strListProp(
+        "RBAC role names in the tenant. Omit for the default qod_all_tables; must be non-empty."
+      ),
+      "groups" -> strListProp(
+        "Group names in the tenant. Omit for the default qod_all_pools; must be non-empty."
+      ),
       tenantProp
     ),
     adminOnly = true,
@@ -266,7 +272,9 @@ final class McpIdentityTools(
                 password = password,
                 kind = str(args, "kind").getOrElse("user"),
                 mustChangePassword = bool(args, "must_change_password").getOrElse(false),
-                email = str(args, "email")
+                email = str(args, "email"),
+                roles = strList(args, "roles"),
+                groups = strList(args, "groups")
               ),
               keyOf(principal)
             )(scopeOf)

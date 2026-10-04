@@ -285,6 +285,9 @@ trait ControlPlaneStore:
   def listGroupsByUsers(userIds: List[String]): Map[String, Set[String]]
 
   def addUserRole(userId: String, roleId: String): Unit
+
+  /** Every user->role and user->group edge for a freshly created user, in one transaction. */
+  def addUserMemberships(userId: String, roleIds: List[String], groupIds: List[String]): Unit
   def removeUserRole(userId: String, roleId: String): Boolean
   def listDirectRolesForUser(userId: String): List[String]
 

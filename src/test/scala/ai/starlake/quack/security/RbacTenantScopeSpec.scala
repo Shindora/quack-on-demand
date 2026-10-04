@@ -361,6 +361,24 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
     finally h.shutdown()
   }
 
+  it should "answer 400 roles_required for an explicitly empty roles list" in {
+    val (h, _, _) = bootWithTwoTenants()
+    try
+      val token = h.mintToken(
+        SecurityFixtures.AliceUsername,
+        SecurityFixtures.AlicePassword,
+        Some(SecurityFixtures.TenantId)
+      )
+      val body =
+        s"""{"tenant":"${SecurityFixtures.TenantId}","username":"newbie","password":"pw","roles":[]}"""
+      val resp = post(h.httpClient, s"${h.baseUrl}/api/user/create", body, apiKey = Some(token))
+      withClue(resp.body()) {
+        resp.statusCode() shouldBe 400
+        errorCode(resp.body()) shouldBe Some("roles_required")
+      }
+    finally h.shutdown()
+  }
+
   // ---- /pool/permission/revoke ----
 
   "revokePoolPermission" should "reject a tenant-A admin revoking a tenant-B grant" in {

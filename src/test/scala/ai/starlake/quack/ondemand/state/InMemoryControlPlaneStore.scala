@@ -376,7 +376,10 @@ class InMemoryControlPlaneStore extends ControlPlaneStore:
 
   def addUserRole(userId: String, roleId: String): Unit       = userRoles += ((userId, roleId))
   def removeUserRole(userId: String, roleId: String): Boolean = userRoles.remove((userId, roleId))
-  def listDirectRolesForUser(userId: String): List[String]    =
+  def addUserMemberships(userId: String, roleIds: List[String], groupIds: List[String]): Unit =
+    roleIds.foreach(addUserRole(userId, _))
+    groupIds.foreach(addUserGroup(userId, _))
+  def listDirectRolesForUser(userId: String): List[String] =
     userRoles.collect { case (u, r) if u == userId => r }.toList.sorted
 
   def listDirectRolesByUsers(userIds: List[String]): Map[String, Set[String]] =

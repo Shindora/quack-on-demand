@@ -3,7 +3,7 @@ package ai.starlake.quack.ondemand.api
 import java.util.Locale
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
 import ai.starlake.quack.ondemand.auth.SessionScope
-import ai.starlake.quack.ondemand.rbac.EffectiveSet
+import ai.starlake.quack.ondemand.rbac.{EffectiveSet, UserMemberships}
 import ai.starlake.quack.ondemand.state.{
   PoolPermission,
   RbacGroup,
@@ -127,6 +127,7 @@ final class UserHandlers(
             req.password,
             req.kind,
             userStore,
+            UserMemberships.Requested(req.roles, req.groups),
             mustChangePassword = req.mustChangePassword,
             email = req.email
           )
@@ -141,7 +142,9 @@ final class UserHandlers(
                 "ok",
                 tenant = tenantId,
                 target = Some(u.username),
-                detail = Map("username" -> u.username, "kind" -> u.kind)
+                detail = Map("username" -> u.username, "kind" -> u.kind) ++
+                  req.roles.map(r => "roles" -> r.mkString(",")) ++
+                  req.groups.map(g => "groups" -> g.mkString(","))
               )
               toResponseFor(u.id) match
                 case Some(r) => Right(r)
@@ -153,11 +156,15 @@ final class UserHandlers(
                     )
                   )
             case Left(err) =>
-              err match
-                case SupervisorError.InvalidEmail(m) =>
-                  Left((StatusCode.BadRequest, ErrorResponse("invalid_email", m)))
-                case _ =>
-                  Left((StatusCode.BadRequest, ErrorResponse("invalid_user", err.message)))
+              Left(
+                SupervisorErrorHttp
+                  .special(err)
+                  .getOrElse(err match
+                    case SupervisorError.InvalidEmail(m) =>
+                      (StatusCode.BadRequest, ErrorResponse("invalid_email", m))
+                    case _ =>
+                      (StatusCode.BadRequest, ErrorResponse("invalid_user", err.message)))
+              )
           }
 
   // ---------- self + last-superuser guards (shared by update-lock and delete) ----------

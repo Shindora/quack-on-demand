@@ -3,6 +3,7 @@ package ai.starlake.quack.ondemand.api
 import java.util.Locale
 import ai.starlake.quack.ondemand.auth.SessionScope
 import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
+import ai.starlake.quack.ondemand.rbac.UserMemberships
 import ai.starlake.quack.ondemand.state.{RbacGroup, RbacUser, UserStore}
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
@@ -277,6 +278,8 @@ final class ScimHandlers(
                   password,
                   "user",
                   userStore,
+                  // The IdP owns group membership and pushes it afterwards.
+                  memberships = UserMemberships.IdpManaged,
                   email = emailOf(obj),
                   enabled = active,
                   failIfExists = true
