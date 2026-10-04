@@ -1962,7 +1962,7 @@ opt-in except pod security:
 
 ## Common UI URLs
 
-Pages are scoped by tenant in the path: `/ui/t/<tenant>/...` for one tenant, `/ui/all/...` for every tenant (superusers only; tenant admins are kept on their own tenant). The sidebar's tenant switcher changes the scope.
+Pages are scoped by tenant in the path: `/ui/t/<tenant>/...` for one tenant, `/ui/all/...` for every tenant (superusers only; tenant admins are kept within the tenants they administer). The sidebar's tenant switcher changes the scope.
 
 - `http://localhost:20900/ui/` → Nodes dashboard (landing page; redirects to `/ui/all/dashboard` or `/ui/t/<tenant>/dashboard`)
 - `http://localhost:20900/ui/tenants` → Tenants list

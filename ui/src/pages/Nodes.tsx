@@ -44,7 +44,9 @@ export default function Nodes() {
   // Running statements
   const [active, setActive] = useState<ActiveStatementInfo[]>([]);
   const [activeFetchedAt, setActiveFetchedAt] = useState(0);
-  const [activeExpanded, setActiveExpanded] = useState<number | null>(null);
+  // Keyed by the statement's stable `id`, not its row index, so a scope or list change
+  // (refresh reordering/filtering visibleActive) cannot expand a different row.
+  const [activeExpanded, setActiveExpanded] = useState<string | null>(null);
   // Transient notice shown when a kill reports already-completed. Cleared after ~3s.
   const [killNote, setKillNote] = useState<string | null>(null);
   // 1s ticker so the live elapsed counter updates without waiting for the 2s pool poll.
@@ -358,11 +360,11 @@ export default function Nodes() {
               </tr>
             </thead>
             <tbody>
-              {visibleActive.map((a, i) => {
-                const isOpen = activeExpanded === i;
+              {visibleActive.map((a) => {
+                const isOpen = activeExpanded === a.id;
                 const liveElapsed = a.elapsedMs + (activeFetchedAt ? Date.now() - activeFetchedAt : 0);
                 return (
-                  <tr key={a.id} onClick={() => setActiveExpanded(isOpen ? null : i)} style={{ cursor: 'pointer' }}>
+                  <tr key={a.id} onClick={() => setActiveExpanded(isOpen ? null : a.id)} style={{ cursor: 'pointer' }}>
                     <td>{a.user}</td>
                     <td>{a.tenant} / {a.pool}</td>
                     <td><code>{a.nodeId}</code></td>

@@ -35,6 +35,17 @@ const AuthContext = createContext<AuthState | null>(null);
 const ANONYMOUS_USERNAME = 'anonymous';
 const ANONYMOUS_ROLE     = 'admin';
 
+// The tenant to use for login-mode resolution and SSO start: `?tenant=` wins; otherwise the
+// tenant of a scoped path (/ui/t/<tenant>/...), so a session-expiry reload or a direct hit on a
+// scoped page resolves (and, for SSO, starts) that tenant's own identity provider rather than
+// the system one.
+function loginTenantFromUrl(): string | undefined {
+  const fromQuery = new URLSearchParams(window.location.search).get('tenant');
+  if (fromQuery) return fromQuery;
+  const pathScope = parseScope(window.location.pathname.replace(/^\/ui/, ''))?.scope;
+  return pathScope?.kind === 'tenant' ? pathScope.tenant : undefined;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [username, setUsername] = useState<string | null>(null);
   const [role, setRole]         = useState<string | null>(null);
@@ -88,11 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // the SSO redirect (or vice versa).
       // ?tenant= wins; otherwise the tenant in a scoped path (/ui/t/<tenant>/...), so a
       // session-expiry reload on a scoped page keeps that tenant's login mode.
-      const pathScope = parseScope(window.location.pathname.replace(/^\/ui/, ''))?.scope;
-      const urlTenant =
-        new URLSearchParams(window.location.search).get('tenant')
-        || (pathScope?.kind === 'tenant' ? pathScope.tenant : undefined)
-        || undefined;
+      const urlTenant = loginTenantFromUrl();
       try {
         const m = await api.authMode(urlTenant);
         setIdentitySource(m.mode);
@@ -145,8 +152,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   function ssoLogin(tenant?: string) {
-    // Pick up ?tenant= from the current URL when no explicit tenant is given.
-    const t = tenant ?? new URLSearchParams(window.location.search).get('tenant') ?? undefined;
+    // An explicit tenant argument wins; otherwise fall back to the same URL-derived tenant used
+    // for login-mode resolution, so reloading a scoped tenant page starts that tenant's own IdP
+    // instead of the system one.
+    const t = tenant ?? loginTenantFromUrl();
     window.location.href = '/api/auth/oidc/start' + (t ? `?tenant=${encodeURIComponent(t)}` : '');
   }
 
