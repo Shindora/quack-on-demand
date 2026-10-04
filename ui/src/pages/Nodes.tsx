@@ -5,7 +5,8 @@ import type { PoolResponse, NodeInfo, StatementHistoryEntry, ActiveStatementInfo
 import { useAuth } from '../auth/AuthContext';
 import SqlHighlight from '../components/SqlHighlight';
 import { fmtBytes } from '../format';
-import { poolPath, tenantHome } from '../nav/links';
+import { dashboardPath, poolPath, tenantHome } from '../nav/links';
+import { useTenantScope } from '../nav/TenantScope';
 
 interface Row extends NodeInfo {
   tenant:   string;
@@ -24,17 +25,16 @@ const POLL_MS = 2000;
   * from the backend's rolling-window per-node histogram; QPS is derived
   * client-side from the delta in totalServed between polls. */
 export default function Nodes() {
-  const { superuser, tenant: authTenant } = useAuth();
+  const { superuser } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr]   = useState<string | null>(null);
-  const [tenants, setTenants] = useState<string[]>([]);
-  // Seed filters from URL so deep links from the Pools / Databases pages
-  // land pre-filtered. The two filters compose: ?tenant=acme&node=ro1
-  // narrows both axes simultaneously. With no deep link, default to the
-  // tenant used at sign-in (null for a system-scope login).
-  const [filter, setFilter]   = useState<string>(searchParams.get('tenant') ?? authTenant ?? '');
-  const [nodeFilter, setNodeFilter] = useState<string>(searchParams.get('node') ?? '');
+  // The tenant filter is the sidebar scope (empty under All tenants). The node
+  // filter is read from the URL on every render so a node link clicked while
+  // already on the dashboard applies immediately.
+  const { scope, scopedTenant } = useTenantScope();
+  const filter = scopedTenant ?? '';
+  const nodeFilter = searchParams.get('node') ?? '';
   const [history, setHistory] = useState<StatementHistoryEntry[]>([]);
   const showServer = history.some(h => h.serverName);
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -67,20 +67,8 @@ export default function Nodes() {
     }
   }
 
-  // Keep the URL and the filter dropdown in sync so deep-linked views
-  // stay shareable and the back button works.
-  function applyFilter(next: string) {
-    setFilter(next);
-    const params: Record<string, string> = {};
-    if (next) params.tenant = next;
-    if (nodeFilter) params.node = nodeFilter;
-    setSearchParams(params);
-  }
   function clearNodeFilter() {
-    setNodeFilter('');
-    const params: Record<string, string> = {};
-    if (filter) params.tenant = filter;
-    setSearchParams(params);
+    setSearchParams({});
   }
 
   function refresh() {
@@ -111,8 +99,6 @@ export default function Nodes() {
           })
         );
         setRows(flat);
-        const ts = Array.from(new Set(r.pools.map(p => p.tenant))).sort();
-        setTenants(ts);
       })
       .catch(e => setErr(String(e)));
   }
@@ -198,13 +184,6 @@ export default function Nodes() {
     <>
       <div className="row" style={{ marginBottom: '1rem', justifyContent: 'space-between' }}>
         <h1>Quack Nodes</h1>
-        <label style={{ marginBottom: 0 }}>
-          Tenant filter
-          <select value={filter} onChange={e => applyFilter(e.target.value)} style={{ minWidth: 160 }}>
-            <option value="">All tenants</option>
-            {tenants.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </label>
       </div>
 
       {nodeFilter && (
@@ -289,7 +268,7 @@ export default function Nodes() {
               <tr key={`${n.tenant}/${n.tenantDb}/${n.pool}/${n.nodeId}`}>
                 <td>
                   <Link
-                    to={`?node=${encodeURIComponent(n.nodeId)}`}
+                    to={dashboardPath(scope, n.nodeId)}
                     style={{ textDecoration: 'none' }}
                   >
                     <code>{n.nodeId}</code>
@@ -442,7 +421,7 @@ export default function Nodes() {
                       </td>
                       <td>
                         <Link
-                          to={`?node=${encodeURIComponent(h.nodeId)}`}
+                          to={dashboardPath(scope, h.nodeId)}
                           style={{ textDecoration: 'none' }}
                           onClick={e => e.stopPropagation()}
                         >

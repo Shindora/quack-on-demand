@@ -11,9 +11,10 @@ import {
   Legend,
 } from 'recharts';
 import { api } from '../api/client';
-import { tenantOptionLabel, useTenantPoolOptions } from '../hooks/useTenantPoolOptions';
+import { useTenantPoolOptions } from '../hooks/useTenantPoolOptions';
 import type { TrendBucketEntry, StatementHistoryRowEntry } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { useTenantScope } from '../nav/TenantScope';
 import SqlHighlight from '../components/SqlHighlight';
 
 // Granularity thresholds: ranges <= 48 h use per-hour buckets, else per-day.
@@ -204,13 +205,15 @@ function StmtStatusBadge({ status }: { status: string }) {
 }
 
 export default function History() {
-  const { superuser, telemetryEnabled, tenant: authTenant } = useAuth();
+  const { superuser, telemetryEnabled } = useAuth();
+  const { scopedTenant } = useTenantScope();
 
   const [range, setRange]   = useState<Range>('24h');
-  // Default the tenant filter to the tenant used at sign-in (null for a
-  // system-scope login); the combobox stays free to widen to "all tenants".
-  const [tenant, setTenant] = useState(authTenant ?? '');
+  // The tenant filter is the sidebar scope (empty under All tenants).
+  const tenant = scopedTenant ?? '';
   const [pool, setPool]     = useState('');
+  // A pool picked under the previous tenant does not exist under the new one.
+  useEffect(() => { setPool(''); }, [scopedTenant]);
   const [buckets, setBuckets] = useState<TrendBucketEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr]         = useState('');
@@ -239,7 +242,7 @@ export default function History() {
   filterRef.current = { range, tenant, pool, userFilter, statusFilter, sqlFilter };
 
   // Filter select options (mirrors the Usage page).
-  const { tenantOptions, poolNamesFor } = useTenantPoolOptions(superuser);
+  const { poolNamesFor } = useTenantPoolOptions(superuser);
 
   const fetch = useCallback(() => {
     const { range: r, tenant: t, pool: p } = filterRef.current;
@@ -367,16 +370,6 @@ export default function History() {
             {opt.label}
           </button>
         ))}
-        {superuser && (
-          <select value={tenant} onChange={e => { setTenant(e.target.value); setPool(''); }}>
-            <option value="">all tenants</option>
-            {tenantOptions.map(t => (
-              <option key={t.id} value={t.id}>
-                {tenantOptionLabel(t)}
-              </option>
-            ))}
-          </select>
-        )}
         <select value={pool} onChange={e => setPool(e.target.value)}>
           <option value="">all pools</option>
           {poolNames.map(p => <option key={p} value={p}>{p}</option>)}

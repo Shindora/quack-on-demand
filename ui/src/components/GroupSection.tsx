@@ -7,7 +7,7 @@ import Tabs from './Tabs';
 import { DeleteIcon, EditIcon } from './Icons';
 import { Modal } from './Modal';
 
-/** Groups tab at `/t/:tenant/groups` (or `/all/groups`). Single-pane list of groups (one row per
+/** Groups tab at `/t/:tenant/groups`. Single-pane list of groups (one row per
   * group, with member/role/pool-grant counts) plus a per-row Edit button
   * that opens a 3-tab modal (Users / Roles / Pool grants) for that group.
   * Counts are computed client-side from the tenant-scoped user list,

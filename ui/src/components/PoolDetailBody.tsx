@@ -24,8 +24,8 @@ export default function PoolDetailBody({
   /** Custom Back-button handler. When provided, the header renders a
     * "Back to pools" button that calls this (used by PoolSection to
     * collapse the inline view). When omitted, the header falls back to
-    * a `<Link>` back to the tenant page (used by the standalone
-    * `/pool/...` route). */
+    * a `<Link>` back to the tenant's pools page (used by the standalone
+    * `/t/:tenant/pools/:tenantDb/:pool` route). */
   onBack?:   () => void;
 }) {
 

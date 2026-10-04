@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { AuditEventEntry } from '../api/types';
-import { tenantOptionLabel, useTenantPoolOptions } from '../hooks/useTenantPoolOptions';
 import { useAuth } from '../auth/AuthContext';
+import { useTenantScope } from '../nav/TenantScope';
 
 const FAMILIES = ['control-plane', 'auth', 'data-denial', 'data-write'];
 const NO_TENANT = '__none__'; // client-side sentinel; never sent as ?tenant=
@@ -13,13 +13,15 @@ function OutcomeBadge({ outcome }: { outcome: string }) {
 }
 
 export default function Audit() {
-  const { superuser, telemetryEnabled, tenant: authTenant } = useAuth();
+  const { superuser, telemetryEnabled } = useAuth();
+  const { scopedTenant } = useTenantScope();
   const [events, setEvents] = useState<AuditEventEntry[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [family, setFamily] = useState('');
-  // Default the tenant filter to the tenant used at sign-in (null for a
-  // system-scope login); the combobox stays free to widen to "all tenants".
-  const [tenant, setTenant] = useState(authTenant ?? '');
+  // Under a tenant scope the filter is that tenant; under All tenants the select below can
+  // narrow to control-plane events that have no tenant.
+  const [allTenantsFilter, setAllTenantsFilter] = useState('');
+  const tenant = scopedTenant ?? allTenantsFilter;
   const [actor, setActor] = useState('');
   const [action, setAction] = useState('');
   const [from, setFrom] = useState('');
@@ -32,8 +34,6 @@ export default function Audit() {
   useEffect(() => {
     api.auditActions().then(r => setActions(r.actions)).catch(() => setActions([]));
   }, []);
-
-  const { tenantOptions } = useTenantPoolOptions(superuser, false);
 
   const params = useCallback((before?: string) => {
     const p: Record<string, string> = { limit: '50' };
@@ -77,15 +77,10 @@ export default function Audit() {
           <option value="">all families</option>
           {FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
-        {superuser && (
-          <select value={tenant} onChange={e => setTenant(e.target.value)}>
+        {superuser && scopedTenant == null && (
+          <select value={allTenantsFilter} onChange={e => setAllTenantsFilter(e.target.value)}>
             <option value="">all tenants</option>
             <option value={NO_TENANT}>(no tenant)</option>
-            {tenantOptions.map(t => (
-              <option key={t.id} value={t.id}>
-                {tenantOptionLabel(t)}
-              </option>
-            ))}
           </select>
         )}
         <input placeholder="actor" value={actor} onChange={e => setActor(e.target.value)} />

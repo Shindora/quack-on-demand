@@ -1,54 +1,26 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type {
-  TenantResponse,
-  TenantDbResponse,
-} from '../api/types';
+import type { TenantDbResponse } from '../api/types';
 import CatalogBrowser from '../components/CatalogBrowser';
 import IcebergCatalogBrowser from '../components/IcebergCatalogBrowser';
 import CatalogSnapshotsPanel from '../components/CatalogSnapshotsPanel';
-import { useAuth } from '../auth/AuthContext';
+import { useTenantScope } from '../nav/TenantScope';
 
 export default function Catalog() {
-  const { tenant: authTenant } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tenants, setTenants]       = useState<TenantResponse[]>([]);
-  const [tenant, setTenantState]    = useState<string>('');
+  const tenant = useTenantScope().scopedTenant ?? '';
+  const [tenantDb, setTenantDbState] = useState<string>(searchParams.get('tenantDb') ?? '');
   const [tenantDbs, setTenantDbs]   = useState<TenantDbResponse[]>([]);
-  const [tenantDb, setTenantDbState] = useState<string>('');
   const [error, setError]           = useState<string | null>(null);
   // Bumped when the browser panel commits a catalog write (undrop), so the
   // snapshots panel below refetches and shows the new recovery snapshot.
   const [catalogGen, setCatalogGen] = useState(0);
 
-  function pickTenant(t: string) {
-    setTenantState(t);
-    setTenantDbState('');
-    setSearchParams({ tenant: t });
-  }
   function pickTenantDb(td: string) {
     setTenantDbState(td);
-    setSearchParams({ tenant, tenantDb: td });
+    setSearchParams({ tenantDb: td });
   }
-
-  useEffect(() => {
-    api.listTenants()
-      .then(r => {
-        setTenants(r.tenants);
-        const fromQuery = searchParams.get('tenant');
-        // Deep link wins; otherwise the tenant used at sign-in (when it is
-        // in the visible list), else the first tenant.
-        const fromAuth =
-          authTenant && r.tenants.some(t => t.name === authTenant) ? authTenant : undefined;
-        const initial = fromQuery ?? fromAuth ?? r.tenants[0]?.name ?? '';
-        if (initial) setTenantState(initial);
-        const queryDb     = searchParams.get('tenantDb');
-        if (queryDb) setTenantDbState(queryDb);
-      })
-      .catch(e => setError(String(e)));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     if (!tenant) return;
@@ -56,12 +28,10 @@ export default function Catalog() {
     api.listTenantDbs(tenant)
       .then(r => {
         setTenantDbs(r.tenantDbs);
-        if (!tenantDb && r.tenantDbs.length > 0) {
-          setTenantDbState(r.tenantDbs[0].name);
-        }
+        setTenantDbState(curr =>
+          r.tenantDbs.some(d => d.name === curr) ? curr : r.tenantDbs[0]?.name ?? '');
       })
       .catch(e => setError(String(e)));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenant]);
 
   return (
@@ -69,12 +39,6 @@ export default function Catalog() {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2>Catalog</h2>
         <div style={{ display: 'flex', gap: 12 }}>
-          <label>
-            Tenant&nbsp;
-            <select value={tenant} onChange={e => pickTenant(e.target.value)}>
-              {tenants.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
-            </select>
-          </label>
           <label>
             Database&nbsp;
             <select value={tenantDb} onChange={e => pickTenantDb(e.target.value)} disabled={tenantDbs.length === 0}>

@@ -10,8 +10,9 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import type { UsageGroupEntry } from '../api/types';
-import { tenantOptionLabel, useTenantPoolOptions } from '../hooks/useTenantPoolOptions';
+import { useTenantPoolOptions } from '../hooks/useTenantPoolOptions';
 import { useAuth } from '../auth/AuthContext';
+import { useTenantScope } from '../nav/TenantScope';
 
 const CHART_HEIGHT = 260;
 
@@ -105,7 +106,8 @@ function chartRows(groups: UsageGroupEntry[], groupBy: string, metric: Metric): 
 }
 
 export default function Usage() {
-  const { superuser, telemetryEnabled, tenant: authTenant } = useAuth();
+  const { superuser, telemetryEnabled } = useAuth();
+  const { scopedTenant } = useTenantScope();
 
   const [month, setMonth] = useState(currentMonth());
   const [custom, setCustom] = useState(false);
@@ -114,10 +116,11 @@ export default function Usage() {
   // Tenant admins land on the pool grouping; the tenant grouping is superuser-only.
   const [groupBy, setGroupBy] = useState<GroupBy>(superuser ? 'tenant' : 'pool');
   const [metric, setMetric] = useState<Metric>('statements');
-  // Default the tenant filter to the tenant used at sign-in (null for a
-  // system-scope login); the combobox stays free to widen to "all tenants".
-  const [tenant, setTenant] = useState(authTenant ?? '');
+  // The tenant filter is the sidebar scope (empty under All tenants).
+  const tenant = scopedTenant ?? '';
   const [pool, setPool] = useState('');
+  // A pool picked under the previous tenant does not exist under the new one.
+  useEffect(() => { setPool(''); }, [scopedTenant]);
 
   const [groups, setGroups] = useState<UsageGroupEntry[]>([]);
   const [resGroupBy, setResGroupBy] = useState<string>(groupBy);
@@ -131,7 +134,7 @@ export default function Usage() {
   const filterRef = useRef({ month, custom, fromDate, toDate, groupBy, tenant, pool });
   filterRef.current = { month, custom, fromDate, toDate, groupBy, tenant, pool };
 
-  const { tenantOptions, poolNamesFor } = useTenantPoolOptions(superuser);
+  const { poolNamesFor } = useTenantPoolOptions(superuser);
 
   const fetchUsage = useCallback(() => {
     const f = filterRef.current;
@@ -229,16 +232,6 @@ export default function Usage() {
           <option value="statements">statements</option>
           <option value="engineMs">engine-ms</option>
         </select>
-        {superuser && (
-          <select value={tenant} onChange={e => { setTenant(e.target.value); setPool(''); }}>
-            <option value="">all tenants</option>
-            {tenantOptions.map(t => (
-              <option key={t.id} value={t.id}>
-                {tenantOptionLabel(t)}
-              </option>
-            ))}
-          </select>
-        )}
         <select value={pool} onChange={e => setPool(e.target.value)}>
           <option value="">all pools</option>
           {poolNames.map(p => <option key={p} value={p}>{p}</option>)}
