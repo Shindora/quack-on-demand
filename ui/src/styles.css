@@ -44,59 +44,99 @@ a:hover { text-decoration: underline; }
 code { font-family: var(--mono); font-size: 0.95em; }
 em { color: var(--text-mute); font-style: normal; }
 
-/* ----- Top nav ----- */
-.app-nav {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1.25rem;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
+/* ----- App shell: sidebar + content ----- */
+.app-shell { display: flex; min-height: 100vh; }
+.app-shell main { flex: 1; min-width: 0; padding: 1.25rem 1.5rem; max-width: 1280px; margin: 0 auto; }
+
+.sidebar {
+  position: sticky; top: 0; height: 100vh; flex: 0 0 240px; width: 240px;
+  display: flex; flex-direction: column; gap: .75rem;
+  padding: .9rem .6rem; overflow-y: auto;
+  background: var(--bg-elev); border-right: 1px solid var(--border);
 }
-.app-nav .brand {
-  font-weight: 600;
-  letter-spacing: .02em;
-  color: var(--accent);
-  display: flex; align-items: center; gap: .5rem;
+.app-shell.collapsed .sidebar { flex-basis: 60px; width: 60px; }
+.app-shell.collapsed .nav-label { display: none; }
+
+.sidebar-brand { display: flex; align-items: center; gap: .5rem; padding: 0 .4rem; font-weight: 600; color: var(--accent); }
+.brand-mark { width: 22px; height: 22px; display: block; flex: 0 0 auto; }
+
+.switcher { display: flex; flex-direction: column; gap: .25rem; margin: 0; padding: 0 .4rem; }
+.switcher-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-mute); }
+.switcher select { width: 100%; }
+.switcher-error { font-size: .75rem; color: var(--bad); }
+.switcher-initial {
+  width: 36px; height: 36px; margin: 0 auto; border-radius: 8px; cursor: pointer;
+  background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-weight: 600;
 }
-.app-nav .brand-mark {
-  width: 22px;
-  height: 22px;
-  display: block;
+
+.sidebar-nav { flex: 1; }
+.nav-tree { list-style: none; margin: 0; padding: 0; }
+.nav-tree.depth-1, .nav-tree.depth-2 { padding-left: .9rem; }
+.app-shell.collapsed .nav-tree.depth-1, .app-shell.collapsed .nav-tree.depth-2 { padding-left: 0; }
+.nav-item, .nav-group {
+  display: flex; align-items: center; gap: .6rem; width: 100%;
+  padding: .35rem .5rem; border-radius: 6px; color: var(--text-soft);
+  background: transparent; border: none; font: inherit; text-align: left; cursor: pointer;
 }
-.app-nav a { color: var(--text-soft); padding: .25rem .6rem; border-radius: 6px; }
-.app-nav a.active, .app-nav a:hover { background: var(--bg-card); color: var(--text); text-decoration: none; }
-/* Top-level nav entry that isn't a route (e.g. Starlake SSO handoff): looks
-   like the sibling NavLinks even though it's a <button>, not an <a>. */
-.app-nav .nav-link-btn {
-  background: transparent; border: none; font: inherit; cursor: pointer;
-  color: var(--text-soft); padding: .25rem .6rem; border-radius: 6px;
+.nav-item:hover { background: var(--bg-card); color: var(--text); text-decoration: none; }
+.nav-item.active { background: var(--bg-card); color: var(--accent); }
+.nav-item.disabled { opacity: .45; cursor: not-allowed; }
+.nav-item.disabled:hover { background: transparent; color: var(--text-soft); }
+.nav-group {
+  cursor: default; margin-top: .6rem;
+  font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-mute);
 }
-.app-nav .nav-link-btn:hover { background: var(--bg-card); color: var(--text); }
-.app-nav .spacer { flex: 1; }
-.app-nav .user-pill {
-  display: flex; align-items: center; gap: .5rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  padding: .25rem .6rem;
-  border-radius: 999px;
+.app-shell.collapsed .nav-group { display: none; }
+.nav-icon { flex: 0 0 auto; }
+.nav-group .nav-icon { display: none; }
+.external-arrow { margin-left: .25rem; font-size: .8em; opacity: .7; }
+
+.sidebar-footer { display: flex; flex-direction: column; gap: .5rem; padding: .5rem .4rem 0; border-top: 1px solid var(--border); }
+.user-pill {
+  display: flex; align-items: center; gap: .5rem; min-width: 0;
+  background: var(--bg-card); border: 1px solid var(--border);
+  padding: .25rem .6rem; border-radius: 999px;
 }
-.app-nav .user-pill .role {
+.user-pill .user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-pill .role {
   background: var(--accent); color: var(--accent-fg);
-  font-size: .7rem; font-weight: 600;
-  padding: 1px 6px; border-radius: 4px;
+  font-size: .7rem; font-weight: 600; padding: 1px 6px; border-radius: 4px;
 }
-.app-nav button {
-  background: transparent; color: var(--text-soft);
-  border: 1px solid var(--border);
-  padding: .3rem .75rem;
-  border-radius: 6px;
-  cursor: pointer;
+.sidebar-actions { display: flex; gap: .4rem; }
+.app-shell.collapsed .sidebar-actions { flex-direction: column; }
+.sidebar-actions button {
+  background: transparent; color: var(--text-soft); border: 1px solid var(--border);
+  padding: .3rem .6rem; border-radius: 6px; cursor: pointer;
 }
-.app-nav button:hover { background: var(--bg-card); color: var(--text); }
+.sidebar-actions button:hover { background: var(--bg-card); color: var(--text); }
+.signout-short { display: none; }
+.app-shell.collapsed .signout-short { display: inline; }
+
+.mobile-bar, .drawer-scrim { display: none; }
+
+@media (max-width: 900px) {
+  .app-shell { flex-direction: column; }
+  .mobile-bar {
+    display: flex; align-items: center; gap: .6rem; padding: .6rem 1rem;
+    background: var(--bg-elev); border-bottom: 1px solid var(--border);
+    color: var(--accent); font-weight: 600;
+  }
+  .mobile-bar button { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: .2rem .55rem; }
+  .sidebar {
+    position: fixed; left: 0; top: 0; z-index: 50; width: 260px; flex-basis: auto;
+    transform: translateX(-100%); transition: transform .15s ease-out;
+  }
+  .app-shell.drawer-open .sidebar { transform: none; }
+  /* The rail makes no sense in a drawer: always show labels there. */
+  .app-shell.collapsed .sidebar { width: 260px; }
+  .app-shell.collapsed .nav-label { display: inline; }
+  .app-shell.collapsed .nav-group { display: flex; }
+  .collapse-toggle { display: none; }
+  .drawer-scrim { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.5); }
+  .app-shell main { padding: 1rem; max-width: none; }
+}
 
 /* ----- Page container ----- */
-main { padding: 1.25rem 1.5rem; max-width: 1280px; margin: 0 auto; }
 h1, h2, h3 { margin: .5rem 0; }
 h1 { font-size: 1.5rem; }
 h2 { font-size: 1.2rem; color: var(--text-soft); }
@@ -212,7 +252,7 @@ button.copy-btn {
 }
 button.copy-btn:hover { color: var(--text); border-color: var(--text-mute); }
 
-/* ----- Dropdown menu (nav Audit menu) ----- */
+/* ----- Dropdown menu ----- */
 .dropdown-menu {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -236,35 +276,6 @@ button.dropdown-item {
 button.dropdown-item:hover { background: var(--bg-elev); }
 button.dropdown-item.danger { color: var(--bad); }
 button.dropdown-item.danger:hover { background: rgba(248,113,113,.1); }
-
-.nav-dropdown { position: relative; }
-.app-nav .nav-dropdown > button {
-  background: transparent;
-  border: none;
-  font: inherit;
-  cursor: pointer;
-  color: var(--text-soft);
-  padding: .25rem .6rem;
-  border-radius: 6px;
-}
-.app-nav .nav-dropdown > button.active,
-.app-nav .nav-dropdown > button:hover { background: var(--bg-card); color: var(--text); }
-.nav-dropdown .dropdown-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 160px;
-  z-index: 30;
-}
-.nav-dropdown a.dropdown-item {
-  color: var(--text);
-  border-radius: 4px;
-  padding: .45rem .75rem;
-  font-weight: 500;
-  text-align: left;
-}
-.nav-dropdown a.dropdown-item:hover { background: var(--bg-elev); text-decoration: none; }
-.nav-dropdown a.dropdown-item.active { color: var(--accent); }
 
 /* ----- Forms ----- */
 label { display: block; margin-bottom: .75rem; color: var(--text-soft); }

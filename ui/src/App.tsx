@@ -1,7 +1,6 @@
-import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { api } from './api/client';
 import Login from './pages/Login';
 import ResetPassword from './pages/ResetPassword';
 
@@ -75,65 +74,31 @@ import {
 } from './pages/TenantPages';
 import { ScopedLayout, usePrincipal } from './nav/TenantScope';
 import { TenantsProvider } from './nav/TenantsContext';
-import { defaultScope, scopePrefix } from './nav/scope';
+import { defaultScope, parseScope, scopePrefix, scopeRedirect, type Scope } from './nav/scope';
+import SidebarLayout from './nav/SidebarLayout';
+import TenantSwitcher from './nav/TenantSwitcher';
+import { NAV, visibleNav } from './nav/navModel';
 import { legacyRedirect } from './nav/legacy';
 import Config from './pages/Config';
 import Profile from './pages/Profile';
-import NavDropdown from './components/NavDropdown';
-
-// Mints a single-use SSO ticket then navigates top-level to Starlake's
-// handoff endpoint. The qod_session cookie rides along same-origin, so the
-// ticket mint call needs no extra credentials. Best-effort: on failure this
-// just logs and leaves the user on the current page (no alert, no redirect).
-async function goToStarlake(starlakeUrl: string) {
-  let ticket: string;
-  try {
-    ({ ticket } = await api.ssoTicket());
-  } catch (e) {
-    console.warn('Starlake SSO ticket mint failed', e);
-    return;
-  }
-  window.location.href =
-    `${starlakeUrl.replace(/\/$/, '')}/api/v1/auth/qod/sso?ticket=${encodeURIComponent(ticket)}`;
-}
 
 // Regular (non-admin) session: the server only lets this token reach
 // /api/auth/{whoami,logout} and /api/profile/{usage,statements}, so the
-// nav is stripped down to that self-service surface. No admin routes are
-// even mounted - a deep-link to e.g. /tenants would 403 admin_required on
-// first fetch anyway, so redirect to the one page that works instead.
+// sidebar is reduced to that self-service surface (no tenant switcher). No
+// admin routes are even mounted; every other path lands on the profile.
 function ProfileShell() {
-  const { username, role, logout, authEnabled, starlakeUrl } = useAuth();
+  const { starlakeUrl, telemetryEnabled, fleetEnabled } = useAuth();
+  const items = visibleNav(NAV, {
+    superuser: false, admin: false, telemetry: telemetryEnabled, fleet: fleetEnabled,
+    starlake: !!starlakeUrl, scope: { kind: 'all' },
+  });
   return (
-    <>
-      <nav className="app-nav">
-        <span className="brand">
-          <img src="/ui/mark-dark.svg" alt="" className="brand-mark" />
-          Quack on Demand
-        </span>
-        <NavLink to="/settings/profile" className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
-        {starlakeUrl && (
-          <button type="button" className="nav-link-btn" onClick={() => { void goToStarlake(starlakeUrl); }}>
-            Workbench
-          </button>
-        )}
-        <span className="spacer" />
-        {authEnabled && (
-          <>
-            <span className="user-pill">
-              {username} <span className="role">{role}</span>
-            </span>
-            <button className="secondary" onClick={() => { void logout(); }}>Sign out</button>
-          </>
-        )}
-      </nav>
-      <main>
-        <Routes>
-          <Route path="/settings/profile" element={<Profile />} />
-          <Route path="*" element={<Navigate to="/settings/profile" replace />} />
-        </Routes>
-      </main>
-    </>
+    <SidebarLayout items={items} switcher={() => null}>
+      <Routes>
+        <Route path="/settings/profile" element={<Profile />} />
+        <Route path="*" element={<Navigate to="/settings/profile" replace />} />
+      </Routes>
+    </SidebarLayout>
   );
 }
 
@@ -173,7 +138,7 @@ function LegacyRedirect() {
 }
 
 function Shell() {
-  const { username, role, tenant, logout, authEnabled, telemetryEnabled, starlakeUrl } = useAuth();
+  const { role, telemetryEnabled, fleetEnabled, starlakeUrl } = useAuth();
   // Config (resolved application.conf + manifest export/import) is a
   // cross-tenant view of the entire deployment, so it's superuser-only.
   // `tenant === null` flags the session as system-scoped; tenant-bound
@@ -181,69 +146,39 @@ function Shell() {
   // the matching backend endpoints also 403 them so URL deep-links don't
   // leak. `authEnabled === false` is the no-auth dev mode; treat the
   // synthetic anonymous user as a superuser there.
-  const isSuperuser = !authEnabled || tenant === null;
-  // Temporary top-nav targets in the scoped URL scheme (the sidebar replaces this nav).
-  const home = `${scopePrefix(defaultScope(usePrincipal()))}/dashboard`;
-  const prefix = home.replace(/\/dashboard$/, '');
+  const principal = usePrincipal();
+  const isSuperuser = principal.superuser;
+  const location = useLocation();
+  // The sidebar's links follow the scope in the URL; on unscoped pages (settings, tenants,
+  // servers) they keep pointing at the last scope the user was in.
+  const parsed = parseScope(location.pathname);
+  const urlScope = parsed && !scopeRedirect(parsed.scope, principal) ? parsed.scope : null;
+  const [lastScope, setLastScope] = useState<Scope>(() => defaultScope(principal));
+  useEffect(() => { if (urlScope) setLastScope(urlScope); }, [location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scope = urlScope ?? lastScope;
+  const items = visibleNav(NAV, {
+    superuser: isSuperuser,
+    admin: role?.toLowerCase() === 'admin',
+    telemetry: telemetryEnabled,
+    fleet: fleetEnabled,
+    starlake: !!starlakeUrl,
+    scope,
+  });
   return (
-    <>
-      <nav className="app-nav">
-        <span className="brand">
-          <img src="/ui/mark-dark.svg" alt="" className="brand-mark" />
-          Quack on Demand
-        </span>
-        <NavLink to={home}          className={({ isActive }) => isActive ? 'active' : ''}>Nodes</NavLink>
-        <NavLink to="/tenants"     className={({ isActive }) => isActive ? 'active' : ''}>Tenants</NavLink>
-        <NavLink to={`${prefix}/catalog`} className={({ isActive }) => isActive ? 'active' : ''}>Catalog</NavLink>
-        <NavLink to={`${prefix}/users`}   className={({ isActive }) => isActive ? 'active' : ''}>Users</NavLink>
-        {role === 'admin' && isSuperuser && (
-          <NavLink to="/servers"    className={({ isActive }) => isActive ? 'active' : ''}>Servers</NavLink>
-        )}
-        {role === 'admin' && telemetryEnabled && (
-          <NavDropdown
-            label="Audit"
-            items={[
-              { to: `${prefix}/audit/control-plane`, label: 'Control Plane' },
-              { to: `${prefix}/audit/statements`, label: 'Statements' },
-              { to: `${prefix}/audit/usage`, label: 'Usage' },
-            ]}
-          />
-        )}
-        {role === 'admin' && isSuperuser && (
-          <NavLink to="/settings/config" className={({ isActive }) => isActive ? 'active' : ''}>Config</NavLink>
-        )}
-        <NavLink to="/settings/profile" className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
-        {starlakeUrl && (
-          <button type="button" className="nav-link-btn" onClick={() => { void goToStarlake(starlakeUrl); }}>
-            Workbench
-          </button>
-        )}
-        <span className="spacer" />
-        {authEnabled ? (
-          <>
-            <span className="user-pill">
-              {username} <span className="role">{role}</span>
-            </span>
-            <button className="secondary" onClick={() => { void logout(); }}>Sign out</button>
-          </>
-        ) : (
-          <span className="user-pill" title="Server has no auth providers configured">
-            anonymous <span className="role">no-auth</span>
-          </span>
-        )}
-      </nav>
-      <main>
-        <Routes>
-          <Route path="/t/:tenant" element={<ScopedLayout />}>{scopedRoutes()}</Route>
-          <Route path="/all" element={<ScopedLayout all />}>{scopedRoutes()}</Route>
-          <Route path="/tenants" element={<TenantList />} />
-          {isSuperuser && <Route path="/servers" element={<Servers />} />}
-          {isSuperuser && <Route path="/settings/config" element={<Config />} />}
-          <Route path="/settings/profile" element={<Profile />} />
-          <Route path="*" element={<LegacyRedirect />} />
-        </Routes>
-      </main>
-    </>
+    <SidebarLayout
+      items={items}
+      switcher={(collapsed, expand) => <TenantSwitcher scope={scope} collapsed={collapsed} onExpand={expand} />}
+    >
+      <Routes>
+        <Route path="/t/:tenant" element={<ScopedLayout />}>{scopedRoutes()}</Route>
+        <Route path="/all" element={<ScopedLayout all />}>{scopedRoutes()}</Route>
+        <Route path="/tenants" element={<TenantList />} />
+        {isSuperuser && <Route path="/servers" element={<Servers />} />}
+        {isSuperuser && <Route path="/settings/config" element={<Config />} />}
+        <Route path="/settings/profile" element={<Profile />} />
+        <Route path="*" element={<LegacyRedirect />} />
+      </Routes>
+    </SidebarLayout>
   );
 }
 
