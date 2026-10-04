@@ -19,8 +19,6 @@ import ai.starlake.quack.model.{
   TenantDbKind
 }
 import ai.starlake.quack.ondemand.EncryptionKeyGen
-
-import java.util.Locale
 import ai.starlake.quack.ondemand.state.{
   BuiltinRbac,
   ControlPlaneStore,
@@ -33,6 +31,8 @@ import ai.starlake.quack.ondemand.state.{
   RolePermission,
   RoleRowPolicy
 }
+
+import java.util.Locale
 
 object ManifestImporter:
 

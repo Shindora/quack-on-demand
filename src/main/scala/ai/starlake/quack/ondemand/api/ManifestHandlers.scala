@@ -42,8 +42,11 @@ final class ManifestHandlers(
     superuserCheck(apiKey)(scopeOf) match
       case Some(err) => Left(err)
       case None      =>
-        val m = ManifestExporter.build(store, Instant.now, managerVersion, hostname, federatedStore)
-        Right(Yaml.pretty(m.asJson))
+        ManifestExporter.build(store, Instant.now, managerVersion, hostname, federatedStore) match
+          // Same code and status as SupervisorError.ReservedName (SupervisorErrorHttp).
+          case Left(refused) =>
+            Left(StatusCode.BadRequest -> ErrorResponse("reserved_name", refused.message))
+          case Right(m) => Right(Yaml.pretty(m.asJson))
   }
 
   def importYaml(body: String, apiKey: Option[String])(

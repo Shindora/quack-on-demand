@@ -1,7 +1,12 @@
 package ai.starlake.quack.ondemand.manifest
 
 import ai.starlake.quack.model.Tenant
-import ai.starlake.quack.ondemand.state.{BuiltinRbac, InMemoryControlPlaneStore}
+import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
+  InMemoryControlPlaneStore,
+  RbacGroup,
+  RbacRole
+}
 import io.circe.yaml.v12.parser
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -21,6 +26,11 @@ class ManifestBuiltinRbacSpec extends AnyFlatSpec with Matchers:
       ManifestImporter.apply(m, store, requireEncryption = false) shouldBe Right(())
 
     def exportOf(store: InMemoryControlPlaneStore): ConfigManifest =
+      exportRaw(store).fold(e => fail(e.message), identity)
+
+    def exportRaw(
+        store: InMemoryControlPlaneStore
+    ): Either[ManifestExporter.ReservedNameRows, ConfigManifest] =
       ManifestExporter.build(store, Instant.parse("2026-10-04T00:00:00Z"), "test", "test")
 
   private def manifest(
@@ -256,3 +266,80 @@ class ManifestBuiltinRbacSpec extends AnyFlatSpec with Matchers:
         }
       }
     }
+
+  "a store-only tenant addressed by display name" should "be healed and resolve built-ins" in {
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(Tenant(id = "t1", displayName = "Acme"))
+    val m = manifest(
+      tenants = Nil,
+      users = List(
+        ManifestUser(
+          tenant = Some("Acme"),
+          username = "bob",
+          password = Some("pw"),
+          roles = List(BuiltinRbac.AllTables),
+          groups = List(BuiltinRbac.AllPools)
+        )
+      )
+    )
+    ManifestTestKit.importOk(store, m)
+    builtinNames(store, "t1") shouldBe AllBuiltins
+    val uid = store.findUser(Some("t1"), "bob").get.id
+    store.listDirectRolesForUser(uid) shouldBe
+      List(store.findRole("t1", BuiltinRbac.AllTables).get.id)
+    store.listGroupsForUser(uid) shouldBe
+      List(store.findGroup("t1", BuiltinRbac.AllPools).get.id)
+  }
+
+  "a user-made row holding a built-in name" should
+    "be renamed on import while a new reference binds to the built-in" in {
+      val store = new InMemoryControlPlaneStore()
+      store.upsertTenant(Tenant(id = "acme", displayName = "acme"))
+      store.upsertRole(RbacRole(id = "r-legacy", tenantId = "acme", name = BuiltinRbac.AllTables))
+      val aliceId = store.upsertUserWithHash(
+        tenant = Some("acme"),
+        username = "alice",
+        passwordHash = BcryptUtils.toHash("pw"),
+        kind = "user"
+      )
+      store.addUserRole(aliceId, "r-legacy")
+
+      ManifestTestKit.importOk(store, manifest(users = List(bob(List(BuiltinRbac.AllTables), Nil))))
+
+      val builtin = store.findRole("acme", BuiltinRbac.AllTables).get
+      builtin.builtin shouldBe true
+      builtin.id should not be "r-legacy"
+      val bobId = store.findUser(Some("acme"), "bob").get.id
+      store.listDirectRolesForUser(bobId) shouldBe List(builtin.id)
+      store.listDirectRolesForUser(aliceId) shouldBe List("r-legacy")
+      store.getRole("r-legacy").get.name shouldBe s"${BuiltinRbac.AllTables}_renamed"
+    }
+
+  "export" should "refuse a backfill-renamed role naming it" in {
+    val store = new InMemoryControlPlaneStore()
+    store.upsertTenant(Tenant(id = "acme", displayName = "acme"))
+    store.upsertRole(RbacRole(id = "r-legacy", tenantId = "acme", name = BuiltinRbac.AllTables))
+    store.ensureBuiltins("acme")
+    val refused = ManifestTestKit.exportRaw(store).left.toOption.get
+    refused.rows shouldBe List(s"acme/role/${BuiltinRbac.AllTables}_renamed")
+    refused.message should include(s"acme/role/${BuiltinRbac.AllTables}_renamed")
+    refused.message should include("Rename them first")
+  }
+
+  it should "refuse a user-made qod_ group, listing every offender" in {
+    val store = new InMemoryControlPlaneStore()
+    ManifestTestKit.importOk(store, manifest())
+    store.upsertGroup(RbacGroup(id = "g-legacy", tenantId = "acme", name = "qod_readers"))
+    store.upsertRole(RbacRole(id = "r-legacy", tenantId = "acme", name = "QOD_Writers"))
+    ManifestTestKit.exportRaw(store).left.toOption.get.rows shouldBe
+      List("acme/group/qod_readers", "acme/role/QOD_Writers")
+  }
+
+  it should "succeed on a store holding only built-ins" in {
+    val store = new InMemoryControlPlaneStore()
+    ManifestTestKit.importOk(store, manifest())
+    val out = ManifestTestKit.exportOf(store)
+    out.roles shouldBe empty
+    out.groups shouldBe empty
+    out.tenants.map(_.name) shouldBe List("acme")
+  }

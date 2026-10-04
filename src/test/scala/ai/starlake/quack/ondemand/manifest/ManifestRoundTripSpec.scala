@@ -34,6 +34,11 @@ import java.time.Instant
 
 class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
 
+  private def exportOk(
+      r: Either[ManifestExporter.ReservedNameRows, ConfigManifest]
+  ): ConfigManifest =
+    r.fold(e => fail(e.message), identity)
+
   private val Yaml = Printer.builder.withDropNullKeys(true).build()
 
   private val ExportedAt   = Instant.parse("2026-06-05T12:00:00Z")
@@ -160,7 +165,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     val src = buildSrc()
 
     // Step 1-2: first export
-    val manifest1 = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1 = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val yaml1     = Yaml.pretty(manifest1.asJson)
 
     // Step 3-4: parse the YAML back
@@ -205,7 +210,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     restoredPool.maxNodes shouldBe Some(4)
 
     // Step 7: second export from the imported store
-    val manifest2 = ManifestExporter.build(dst, ExportedAt, AdminVersion, Hostname)
+    val manifest2 = exportOk(ManifestExporter.build(dst, ExportedAt, AdminVersion, Hostname))
 
     // Manifest1 still carries the synthetic passwords we attached above; the
     // exporter never emits passwords, so manifest2's users all have
@@ -225,7 +230,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     val src = buildSrc()
 
     // Export
-    val manifest1 = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1 = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val yaml1     = Yaml.pretty(manifest1.asJson)
 
     // Parse
@@ -296,8 +301,9 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     )
 
     // Step 1: export from the populated source store.
-    val manifest1 = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(srcFed))
-    val yaml1     = Yaml.pretty(manifest1.asJson)
+    val manifest1 =
+      exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(srcFed)))
+    val yaml1 = Yaml.pretty(manifest1.asJson)
 
     // The raw value must NOT appear in the YAML; the redaction sentinel must.
     yaml1 should not include "super-secret"
@@ -370,7 +376,8 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
 
     // Step 4: third export from the destination stores must produce the same
     // federated-source structure as the first export (both redact the value).
-    val manifest3 = ManifestExporter.build(dstCp, ExportedAt, AdminVersion, Hostname, Some(dstFed))
+    val manifest3 =
+      exportOk(ManifestExporter.build(dstCp, ExportedAt, AdminVersion, Hostname, Some(dstFed)))
 
     manifest3.tenants.head.tenantDbs.head.federatedSources shouldBe
       manifest1.tenants.head.tenantDbs.head.federatedSources
@@ -392,7 +399,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       enabled = false
     )
 
-    val manifest1     = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1     = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val aliceManifest = manifest1.users.find(_.username == "alice").get
     aliceManifest.enabled shouldBe false
 
@@ -426,7 +433,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
   it should "round-trip a user's bcrypt hash so the same password still authenticates" in {
     val src = buildSrc()
 
-    val manifest1     = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1     = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val aliceManifest = manifest1.users.find(_.username == "alice").get
 
     // The exporter must carry the REAL hash, not a redaction placeholder,
@@ -478,7 +485,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       mustChangePassword = true
     )
 
-    val manifest1     = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1     = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val aliceManifest = manifest1.users.find(_.username == "alice").get
     aliceManifest.mustChangePassword shouldBe true
     val adminManifest = manifest1.users.find(_.username == "admin").get
@@ -494,7 +501,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
 
   it should "import a manifest without the mustChangePassword field as false" in {
     val src       = buildSrc()
-    val manifest1 = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1 = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
 
     // Simulate an older manifest that predates the field: drop it from the
     // YAML entirely and re-parse, rather than relying on the in-memory case
@@ -543,7 +550,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       email = Some("admin@x.io")
     )
 
-    val manifest1     = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1     = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val aliceManifest = manifest1.users.find(_.username == "alice").get
     aliceManifest.email shouldBe Some("alice@x.io")
     val adminManifest = manifest1.users.find(_.username == "admin").get
@@ -566,7 +573,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       kind = "user",
       email = Some("alice@x.io")
     )
-    val manifest1 = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1 = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
 
     // Simulate an older manifest that predates the field: drop it from the
     // YAML entirely and re-parse, rather than relying on the in-memory case
@@ -633,7 +640,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val manifest1     = ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname)
+    val manifest1     = exportOk(ManifestExporter.build(src, ExportedAt, AdminVersion, Hostname))
     val adminManifest = manifest1.users.find(_.username == "admin").get
 
     // The grant must resolve to the real pool name AND the tenant it
@@ -652,7 +659,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     val dst = new InMemoryControlPlaneStore()
     ManifestImporter.apply(withPasswords, dst, requireEncryption = false) shouldBe Right(())
 
-    val manifest2 = ManifestExporter.build(dst, ExportedAt, AdminVersion, Hostname)
+    val manifest2 = exportOk(ManifestExporter.build(dst, ExportedAt, AdminVersion, Hostname))
     manifest2.users.find(_.username == "admin").get.poolGrants shouldBe
       List(ManifestPoolGrant(pool = Some("reporting"), tenant = Some("other")))
 
@@ -850,8 +857,9 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val exported = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(srcFed))
-    val msrc     = exported.tenants.head.tenantDbs.head.federatedSources.head
+    val exported =
+      exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(srcFed)))
+    val msrc = exported.tenants.head.tenantDbs.head.federatedSources.head
     msrc.sourceType shouldBe "iceberg_rest"
     msrc.readOnly shouldBe true
     msrc.config shouldBe Some(cfg)
@@ -924,7 +932,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
     val fed     = new InMemoryFederatedSourceStore()
     val tooLong = "a" * 64
 
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(
@@ -961,7 +969,8 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val exported = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val exported =
+      exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     exported.tenants.head.tenantDbs.head.federatedSources.head.secrets shouldBe Nil
 
     ManifestImporter.apply(exported, cp, Some(fed), requireEncryption = false) shouldBe Right(())
@@ -1000,7 +1009,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(
@@ -1046,7 +1055,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
         setupSql = "ATTACH 'old' AS ice;"
       )
     )
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(
@@ -1076,9 +1085,9 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
   // ------------------------------------------------------------------
 
   it should "refuse a blank inline secret value on import" in {
-    val cp      = buildSrc()
-    val fed     = new InMemoryFederatedSourceStore()
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val cp   = buildSrc()
+    val fed  = new InMemoryFederatedSourceStore()
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(
@@ -1127,7 +1136,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(ManifestFederatedSource(alias = "bad-alias", setupSql = "ATTACH 'new' AS {{alias}};"))
@@ -1157,7 +1166,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(ManifestFederatedSource(alias = "bad-alias", setupSql = "ATTACH 'new' AS {{alias}};"))
@@ -1195,7 +1204,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(ManifestFederatedSource(alias = "ice", sourceType = "iceberg_rest"))
@@ -1225,9 +1234,9 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
   // ------------------------------------------------------------------
 
   it should "write nothing for an alias duplicated in the payload" in {
-    val cp      = buildSrc()
-    val fed     = new InMemoryFederatedSourceStore()
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val cp   = buildSrc()
+    val fed  = new InMemoryFederatedSourceStore()
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(
@@ -1282,7 +1291,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val base    = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed))
+    val base = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname, Some(fed)))
     val withFed = withFederatedSources(
       base,
       List(ManifestFederatedSource(alias = "sales", setupSql = "ATTACH 'new' AS {{alias}};"))
@@ -1312,7 +1321,7 @@ class ManifestRoundTripSpec extends AnyFlatSpec with Matchers:
       )
     )
 
-    val exported = ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname)
+    val exported = exportOk(ManifestExporter.build(cp, ExportedAt, AdminVersion, Hostname))
     val acl      = exported.tenants.find(_.name == "acme").flatMap(_.acl).get
     acl.mode shouldBe Some("opa")
     acl.opaToken shouldBe Some(FederatedSecret.RedactedMarker)

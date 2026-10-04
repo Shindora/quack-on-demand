@@ -1,7 +1,12 @@
 package ai.starlake.quack.ondemand.manifest
 
 import ai.starlake.quack.model.{FederatedSecret, LockdownTriState, TenantDb}
-import ai.starlake.quack.ondemand.state.{ControlPlaneStore, FederatedSourceStore}
+import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
+  ControlPlaneSnapshot,
+  ControlPlaneStore,
+  FederatedSourceStore
+}
 
 import java.time.Instant
 
@@ -15,6 +20,17 @@ import java.time.Instant
 object ManifestExporter:
 
   private val Redacted = FederatedSecret.RedactedMarker
+
+  /** Export refused: user-made roles/groups carry the reserved `qod_` prefix (case-insensitive),
+    * e.g. a backfill-renamed `qod_all_tables_renamed` or a legacy `qod_readers`. The importer
+    * refuses such names, so emitting them would produce a manifest that can never be replayed.
+    * `rows` are `<tenant>/<role|group>/<name>`, sorted. Built-in rows are not offenders: they are
+    * silently omitted from every export.
+    */
+  final case class ReservedNameRows(rows: List[String]):
+    def message: String =
+      s"export refused: ${rows.size} role(s)/group(s) use the reserved qod_ prefix, which a " +
+        s"manifest import refuses: ${rows.mkString(", ")}. Rename them first, then export again."
 
   /** Build a [[ConfigManifest]] from the live control-plane store. Named `build` rather than
     * `export` because `export` is a reserved keyword in Scala 3.
@@ -31,11 +47,30 @@ object ManifestExporter:
       managerVersion: String,
       hostname: String,
       federatedStore: Option[FederatedSourceStore] = None
-  ): ConfigManifest =
+  ): Either[ReservedNameRows, ConfigManifest] =
 
     // Pull the whole graph in one round-trip; the per-tenant loop below
     // walks the in-memory index maps instead of going back to the store.
-    val snap        = store.snapshot()
+    val snap = store.snapshot()
+
+    // Refuse the whole export (no partial manifest) when a non-built-in row holds a reserved name.
+    val offenders =
+      (snap.roles.collect {
+        case r if !r.builtin && BuiltinRbac.isReserved(r.name) => s"${r.tenantId}/role/${r.name}"
+      } ++ snap.groups.collect {
+        case g if !g.builtin && BuiltinRbac.isReserved(g.name) => s"${g.tenantId}/group/${g.name}"
+      }).sorted
+    if offenders.nonEmpty then Left(ReservedNameRows(offenders))
+    else Right(buildManifest(store, snap, exportedAt, managerVersion, hostname, federatedStore))
+
+  private def buildManifest(
+      store: ControlPlaneStore,
+      snap: ControlPlaneSnapshot,
+      exportedAt: Instant,
+      managerVersion: String,
+      hostname: String,
+      federatedStore: Option[FederatedSourceStore]
+  ): ConfigManifest =
     val dbsByTenant = snap.tenantDbs.groupBy(_.tenantId)
     val poolsByDb   = snap.pools.groupBy(_.tenantDbId)
     // Global pool -> (owning tenant addressing-name, pool name) index, used to
