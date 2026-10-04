@@ -74,16 +74,26 @@ export interface Principal {
   superuser: boolean;
   /** Tenant slug the session is bound to; null for a superuser. */
   ownTenant: string | null;
+  /** Tenant slugs a non-superuser may switch among (whoami's manageableTenants); ignored for
+    * superusers. `ownTenant` is always allowed, listed here or not. */
+  allowedTenants: string[];
 }
 
 export function defaultScope(p: Principal): Scope {
-  return p.superuser || !p.ownTenant ? ALL : { kind: 'tenant', tenant: p.ownTenant };
+  if (p.superuser) return ALL;
+  const tenant = p.ownTenant ?? p.allowedTenants[0] ?? null;
+  return tenant ? { kind: 'tenant', tenant } : ALL;
 }
 
 /** Null when `p` may use `scope`, else the scope to redirect to. Usability only: the server
   * already answers 403 tenant_forbidden for another tenant's resources. */
 export function scopeRedirect(scope: Scope, p: Principal): Scope | null {
   if (p.superuser) return null;
-  const own = defaultScope(p);
-  return sameScope(scope, own) ? null : own;
+  if (scope.kind === 'tenant'
+    && (scope.tenant === p.ownTenant || p.allowedTenants.includes(scope.tenant))) {
+    return null;
+  }
+  const def = defaultScope(p);
+  // A principal with no tenant at all defaults to ALL; do not bounce ALL onto itself.
+  return sameScope(scope, def) ? null : def;
 }

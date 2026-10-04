@@ -72,8 +72,10 @@ describe('switchTenantPath', () => {
 });
 
 describe('defaultScope / scopeRedirect', () => {
-  const su = { superuser: true, ownTenant: null };
-  const admin = { superuser: false, ownTenant: 'acme' };
+  const su = { superuser: true, ownTenant: null, allowedTenants: [] };
+  const admin = { superuser: false, ownTenant: 'acme', allowedTenants: ['acme'] };
+  const multi = { superuser: false, ownTenant: 'acme', allowedTenants: ['acme', 'globex'] };
+  const initech = { kind: 'tenant' as const, tenant: 'initech' };
   it('defaults superusers to all and tenant admins to their tenant', () => {
     expect(defaultScope(su)).toEqual(ALL);
     expect(defaultScope(admin)).toEqual(acme);
@@ -86,5 +88,29 @@ describe('defaultScope / scopeRedirect', () => {
     expect(scopeRedirect(acme, admin)).toBeNull();
     expect(scopeRedirect(ALL, admin)).toEqual(acme);
     expect(scopeRedirect(globex, admin)).toEqual(acme);
+  });
+  it('lets a multi-tenant admin use each allowed tenant', () => {
+    expect(scopeRedirect(acme, multi)).toBeNull();
+    expect(scopeRedirect(globex, multi)).toBeNull();
+  });
+  it('redirects a multi-tenant admin from a non-allowed tenant and from all to their own tenant', () => {
+    expect(scopeRedirect(initech, multi)).toEqual(acme);
+    expect(scopeRedirect(ALL, multi)).toEqual(acme);
+    expect(defaultScope(multi)).toEqual(acme);
+  });
+  it('defaults an admin with no own tenant to the first allowed tenant', () => {
+    const oidc = { superuser: false, ownTenant: null, allowedTenants: ['globex', 'acme'] };
+    expect(defaultScope(oidc)).toEqual(globex);
+    expect(scopeRedirect(acme, oidc)).toBeNull();
+    expect(scopeRedirect(ALL, oidc)).toEqual(globex);
+    expect(scopeRedirect(initech, oidc)).toEqual(globex);
+  });
+  it('treats ownTenant as allowed even when missing from allowedTenants', () => {
+    const p = { superuser: false, ownTenant: 'acme', allowedTenants: [] };
+    expect(scopeRedirect(acme, p)).toBeNull();
+    expect(scopeRedirect(globex, p)).toEqual(acme);
+  });
+  it('sends a principal with no tenant at all to all', () => {
+    expect(defaultScope({ superuser: false, ownTenant: null, allowedTenants: [] })).toEqual(ALL);
   });
 });

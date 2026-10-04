@@ -301,8 +301,8 @@ export default function Login() {
         </p>
         <p className="login-hint">
           Superusers leave Tenant blank. Tenant admins and other tenant users
-          enter their tenant name or id (both shown on the Tenants page, e.g.{' '}
-          <code>acme</code> or <code>t-02d0e86e</code>).
+          enter their tenant name or id (for example <code>acme</code> or{' '}
+          <code>t-02d0e86e</code>).
         </p>
       </form>
     </div>

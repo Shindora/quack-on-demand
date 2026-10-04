@@ -22,14 +22,22 @@ export function useTenantScope(): TenantScopeValue {
 
 /** `!authEnabled` is the no-auth dev mode: the synthetic anonymous user is a superuser. */
 export function usePrincipal(): Principal {
-  const { authEnabled, superuser, tenant } = useAuth();
+  const { authEnabled, superuser, tenant, manageableTenants } = useAuth();
+  // An OIDC admin may hold admin grants on several tenants (whoami's manageableTenants) and may
+  // switch among exactly those; a DB-login tenant admin has just their own.
+  const allowed = manageableTenants.length > 0 ? [...manageableTenants] : tenant ? [tenant] : [];
+  if (tenant && !allowed.includes(tenant)) allowed.unshift(tenant);
   // whoami's superuser flag covers a superuser signed in through a tenant URL (OIDC ?tenant=),
   // whose session still carries that tenant.
-  return { superuser: !authEnabled || superuser || tenant === null, ownTenant: tenant };
+  return {
+    superuser: !authEnabled || superuser || tenant === null,
+    ownTenant: tenant,
+    allowedTenants: allowed,
+  };
 }
 
-/** Layout route for `/t/:tenant/*` and `/all/*`: resolves the scope, pins tenant admins to their
-  * tenant, and stops tenant-only sections under All tenants with a pick-a-tenant card. */
+/** Layout route for `/t/:tenant/*` and `/all/*`: resolves the scope, keeps tenant admins inside the
+  * tenants they may manage, and stops tenant-only sections under All tenants with a pick-a-tenant card. */
 export function ScopedLayout({ all }: { all?: boolean }) {
   const params = useParams<{ tenant: string }>();
   const location = useLocation();
