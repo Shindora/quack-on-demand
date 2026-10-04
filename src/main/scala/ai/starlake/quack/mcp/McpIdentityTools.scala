@@ -261,9 +261,11 @@ final class McpIdentityTools(
       (for
         username <- required(args, "username")
         password <- required(args, "password")
-      yield (username, password)) match
-        case Left(err)                   => IO.pure(Left(err))
-        case Right((username, password)) =>
+        roles    <- strList(args, "roles", "role names")
+        groups   <- strList(args, "groups", "group names")
+      yield (username, password, roles, groups)) match
+        case Left(err)                                  => IO.pure(Left(err))
+        case Right((username, password, roles, groups)) =>
           users
             .createUser(
               UserCreateRequest(
@@ -273,8 +275,8 @@ final class McpIdentityTools(
                 kind = str(args, "kind").getOrElse("user"),
                 mustChangePassword = bool(args, "must_change_password").getOrElse(false),
                 email = str(args, "email"),
-                roles = strList(args, "roles"),
-                groups = strList(args, "groups")
+                roles = roles,
+                groups = groups
               ),
               keyOf(principal)
             )(scopeOf)

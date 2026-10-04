@@ -224,6 +224,34 @@ class McpIdentityToolsSpec extends AnyFlatSpec with Matchers:
     bad.left.toOption.get should startWith("unknown_group")
   }
 
+  it should "refuse a malformed roles or groups argument and create nothing" in {
+    val f                            = new Fixture
+    f.call("create_tenant", McpPrincipal.StaticKey, "id" -> Json.fromString("acme"))
+    def attempt(arg: (String, Json)) =
+      f.call(
+        "create_user",
+        McpPrincipal.StaticKey,
+        "tenant"   -> Json.fromString("acme"),
+        "username" -> Json.fromString("bob"),
+        "password" -> Json.fromString("s3cret-s3cret"),
+        arg
+      )
+    attempt("roles" -> Json.fromString("analyst")).left.toOption.get shouldBe
+      "the 'roles' argument must be an array of role names"
+    attempt("roles" -> Json.arr(Json.fromString("a"), Json.fromInt(5))).isLeft shouldBe true
+    attempt("groups" -> Json.arr(Json.fromString(" "))).left.toOption.get shouldBe
+      "the 'groups' argument must be an array of group names"
+    f.call("list_users", McpPrincipal.StaticKey, "tenant" -> Json.fromString("acme"))
+      .toOption
+      .get
+      .hcursor
+      .downField("users")
+      .values
+      .get
+      .size shouldBe 0
+    attempt("roles" -> Json.Null).isRight shouldBe true
+  }
+
   it should "refuse a PAT creating a superuser (no tenant arg)" in {
     val f   = new Fixture
     val out = f.call(

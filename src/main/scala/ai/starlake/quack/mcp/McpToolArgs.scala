@@ -19,9 +19,25 @@ private[mcp] object McpToolArgs:
   def bool(args: JsonObject, name: String): Option[Boolean] =
     args(name).flatMap(_.asBoolean)
 
-  /** A JSON array of non-blank strings; None when the argument is absent. */
-  def strList(args: JsonObject, name: String): Option[List[String]] =
-    args(name).flatMap(_.asArray).map(_.toList.flatMap(_.asString).map(_.trim).filter(_.nonEmpty))
+  /** A JSON array of non-blank strings. Absent or JSON null is `Right(None)`; any other shape (a
+    * bare string, an object, a non-string or blank element) is an error, never "omitted": a
+    * malformed restricting list must not fall back to a permissive default.
+    */
+  def strList(
+      args: JsonObject,
+      name: String,
+      what: String
+  ): Either[String, Option[List[String]]] =
+    val err = s"the '$name' argument must be an array of $what"
+    args(name) match
+      case None                => Right(None)
+      case Some(j) if j.isNull => Right(None)
+      case Some(j)             =>
+        j.asArray match
+          case None      => Left(err)
+          case Some(arr) =>
+            val items = arr.toList.map(_.asString.map(_.trim).filter(_.nonEmpty))
+            if items.exists(_.isEmpty) then Left(err) else Right(Some(items.flatten))
 
   def required(args: JsonObject, name: String): Either[String, String] =
     str(args, name).toRight(s"the '$name' argument is required")

@@ -47,7 +47,7 @@ import cats.syntax.all._
 import org.slf4j.LoggerFactory
 
 import scala.collection.concurrent.TrieMap
-import scala.util.{Failure, Success, Try}
+import scala.util.Try
 
 /** Patch for [[PoolSupervisor.updateTenantDb]]. Absent fields unchanged; present fields replace.
   * Map fields carry over response-redacted keys ([[TenantDb.SecretKeys]]) the incoming map omits
@@ -2843,11 +2843,16 @@ final class PoolSupervisor(
             EmailPolicy.resolve(username, email) match
               case Left(msg)       => Left(SupervisorError.InvalidEmail(msg))
               case Right(effEmail) =>
+                // An upsert over an existing row (REST create without failIfExists) attaches
+                // only the lists the caller named: the built-in defaults are for a fresh user
+                // and must never widen an existing user's access, so they are not even
+                // resolved for an existing row (a tenant missing a built-in cannot refuse it).
+                val existedBefore =
+                  !failIfExists && store.findUser(resolvedTenantId, username).isDefined
                 // Names are resolved before anything is written: a refused membership leaves
                 // no user row behind.
-                resolveMemberships(resolvedTenantId, memberships) match
-                  case Left(err)              => Left(err)
-                  case Right((roles, groups)) =>
+                resolveMemberships(resolvedTenantId, memberships, applyDefaults = !existedBefore)
+                  .flatMap { resolved =>
                     // Create always sets email, even to None (clearing is not meaningful on a
                     // brand-new row, but a fresh insert with no email is the common case).
                     val out = userStore.upsertUser(
@@ -2863,31 +2868,46 @@ final class PoolSupervisor(
                     if failIfExists && !out.inserted then
                       Left(SupervisorError.InvalidArgument(s"user already exists: $username"))
                     else
-                      // An upsert over an existing row (REST create without failIfExists)
-                      // attaches only what the caller named explicitly: the built-in defaults
-                      // are for a fresh user and must never widen an existing user's access.
-                      val (attachRoles, attachGroups) =
-                        if out.inserted then (roles, groups)
+                      // Race guards: a row seen as existing but deleted meanwhile is a fresh
+                      // insert and gets its defaults now; a row seen as fresh but created
+                      // concurrently keeps only the explicit lists.
+                      val toAttach: Either[SupervisorError, (List[RbacRole], List[RbacGroup])] =
+                        if out.inserted && existedBefore then
+                          resolveMemberships(resolvedTenantId, memberships, applyDefaults = true)
+                        else if out.inserted then Right(resolved)
                         else
                           memberships match
                             case UserMemberships.Requested(r, g) =>
-                              (
-                                if r.isDefined then roles else Nil,
-                                if g.isDefined then groups else Nil
+                              Right(
+                                (
+                                  if r.isDefined then resolved._1 else Nil,
+                                  if g.isDefined then resolved._2 else Nil
+                                )
                               )
-                            case UserMemberships.IdpManaged => (Nil, Nil)
-                      val attached =
-                        if attachRoles.isEmpty && attachGroups.isEmpty then Success(())
-                        else
-                          Try(
-                            store.addUserMemberships(
-                              out.id,
-                              attachRoles.map(_.id),
-                              attachGroups.map(_.id)
-                            )
-                          )
+                            case UserMemberships.IdpManaged => Right((Nil, Nil))
+                      val attached: Either[SupervisorError, (List[RbacRole], List[RbacGroup])] =
+                        toAttach.flatMap { case (attachRoles, attachGroups) =>
+                          if attachRoles.isEmpty && attachGroups.isEmpty then
+                            Right((attachRoles, attachGroups))
+                          else
+                            Try(
+                              store.addUserMemberships(
+                                out.id,
+                                attachRoles.map(_.id),
+                                attachGroups.map(_.id)
+                              )
+                            ).toEither.left
+                              .map { t =>
+                                logger.error(
+                                  s"createUser: could not attach memberships to user ${out.id}",
+                                  t
+                                )
+                                SupervisorError.Internal("could not attach memberships")
+                              }
+                              .map(_ => (attachRoles, attachGroups))
+                        }
                       attached match
-                        case Failure(t) =>
+                        case Left(err) =>
                           // User rows and edges live in two connection pools, so they cannot
                           // share a transaction: undo the user row we just inserted.
                           if out.inserted then
@@ -2898,12 +2918,8 @@ final class PoolSupervisor(
                                 e
                               )
                             )
-                          Left(
-                            SupervisorError.Internal(
-                              s"could not attach memberships: ${t.getMessage}"
-                            )
-                          )
-                        case Success(_) =>
+                          Left(err)
+                        case Right((attachRoles, attachGroups)) =>
                           if attachRoles.nonEmpty || attachGroups.nonEmpty then
                             invalidateEffectiveCache()
                           val u = RbacUser(
@@ -2917,13 +2933,17 @@ final class PoolSupervisor(
                           )
                           store.upsertUserIdentity(u)
                           Right(u)
+                  }
     }
   }
 
   /** Names -> rows for a user create, before anything is written. */
   private def resolveMemberships(
       tenantId: Option[String],
-      m: UserMemberships
+      m: UserMemberships,
+      // false for an existing row: an omitted list then attaches nothing, so its default is
+      // not resolved (and cannot be refused).
+      applyDefaults: Boolean
   ): Either[SupervisorError, (List[RbacRole], List[RbacGroup])] =
     m match
       case UserMemberships.IdpManaged               => Right((Nil, Nil))
@@ -2939,16 +2959,19 @@ final class PoolSupervisor(
               )
             else Right((Nil, Nil))
           case Some(tid) =>
-            val roleNames  = roles.getOrElse(BuiltinRbac.DefaultRoles).distinct
-            val groupNames = groups.getOrElse(BuiltinRbac.DefaultGroups).distinct
-            if roleNames.isEmpty then
+            def names(requested: Option[List[String]], defaults: List[String]): List[String] =
+              requested.getOrElse(if applyDefaults then defaults else Nil).distinct
+            val roleNames  = names(roles, BuiltinRbac.DefaultRoles)
+            val groupNames = names(groups, BuiltinRbac.DefaultGroups)
+            // Only an explicit empty list is refused (the defaults are never empty).
+            if roles.exists(_.isEmpty) then
               Left(
                 SupervisorError.InvalidMembership(
                   "roles_required",
                   "a tenant user needs at least one role"
                 )
               )
-            else if groupNames.isEmpty then
+            else if groups.exists(_.isEmpty) then
               Left(
                 SupervisorError.InvalidMembership(
                   "groups_required",

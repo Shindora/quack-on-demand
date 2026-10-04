@@ -2,6 +2,8 @@ package ai.starlake.quack.ondemand
 
 import ai.starlake.quack.edge.adapter.NodeLoadTracker
 import ai.starlake.quack.model.Tenant
+import ai.starlake.quack.ondemand.api.{UserCreateRequest, UserHandlers}
+import ai.starlake.quack.ondemand.auth.SessionScope
 import ai.starlake.quack.ondemand.rbac.UserMemberships
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
 import ai.starlake.quack.ondemand.state.{
@@ -143,6 +145,21 @@ class UserMembershipsSpec extends AnyFlatSpec with Matchers:
       names(store, first.id) shouldBe ((Set(BuiltinRbac.NoTables), Set(BuiltinRbac.NoPools)))
     }
 
+  it should "not resolve an omitted default for an existing user (no spurious unknown_*)" in
+    withSup { (sup, store, users) =>
+      sup.createRole("acme", "analyst").unsafeRunSync()
+      val first = create(
+        sup,
+        users,
+        Some("acme"),
+        UserMemberships.Requested(Some(List("analyst")), Some(List(BuiltinRbac.NoPools)))
+      ).toOption.get
+      // A tenant missing a built-in (store-level delete bypasses the protection).
+      store.deleteRole(store.findRole("acme", BuiltinRbac.AllTables).get.id)
+      create(sup, users, Some("acme"), UserMemberships.Requested(None, None)).isRight shouldBe true
+      names(store, first.id) shouldBe ((Set("analyst"), Set(BuiltinRbac.NoPools)))
+    }
+
   it should "add nothing for an IdP-managed (SCIM) create" in withSup { (sup, store, users) =>
     val u = create(sup, users, Some("acme"), UserMemberships.IdpManaged).toOption.get
     names(store, u.id) shouldBe ((Set.empty, Set.empty))
@@ -153,6 +170,21 @@ class UserMembershipsSpec extends AnyFlatSpec with Matchers:
       val out = create(sup, users, Some("acme"), UserMemberships.Requested(None, None))
       out.isLeft shouldBe true
       out.left.toOption.get shouldBe a[SupervisorError.Internal]
+      store.findUser(Some("acme"), "bob") shouldBe None
+    ,
+    failAttach = true
+  )
+
+  "REST user/create" should "answer 500 with a generic message when attaching fails" in withSup(
+    (sup, store, users) =>
+      val scopeOf: String => Option[SessionScope] = _ => None
+      val res                                     = new UserHandlers(sup, users)
+        .createUser(UserCreateRequest(Some("acme"), "bob", "pw"), None)(scopeOf)
+        .unsafeRunSync()
+      val (status, body) = res.left.toOption.get
+      status.code shouldBe 500
+      body.error shouldBe "internal"
+      body.message should not include "boom"
       store.findUser(Some("acme"), "bob") shouldBe None
     ,
     failAttach = true

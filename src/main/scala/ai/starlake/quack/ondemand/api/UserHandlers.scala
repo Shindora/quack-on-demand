@@ -162,6 +162,12 @@ final class UserHandlers(
                   .getOrElse(err match
                     case SupervisorError.InvalidEmail(m) =>
                       (StatusCode.BadRequest, ErrorResponse("invalid_email", m))
+                    // The supervisor logged the cause; never echo driver text to the caller.
+                    case SupervisorError.Internal(_) =>
+                      (
+                        StatusCode.InternalServerError,
+                        ErrorResponse("internal", "could not create the user")
+                      )
                     case _ =>
                       (StatusCode.BadRequest, ErrorResponse("invalid_user", err.message)))
               )
