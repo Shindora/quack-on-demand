@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react';
 import { Link, Navigate, Outlet, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import {
-  ALL, parseScope, scopePrefix, scopeRedirect, sectionNeedsTenant, type Principal, type Scope,
+  ALL, parseScope, scopePrefix, scopeRedirect, sectionNeedsTenant, sectionRoot, type Principal, type Scope,
 } from './scope';
 import { useTenants } from './TenantsContext';
 
@@ -22,8 +22,10 @@ export function useTenantScope(): TenantScopeValue {
 
 /** `!authEnabled` is the no-auth dev mode: the synthetic anonymous user is a superuser. */
 export function usePrincipal(): Principal {
-  const { authEnabled, tenant } = useAuth();
-  return { superuser: !authEnabled || tenant === null, ownTenant: tenant };
+  const { authEnabled, superuser, tenant } = useAuth();
+  // whoami's superuser flag covers a superuser signed in through a tenant URL (OIDC ?tenant=),
+  // whose session still carries that tenant.
+  return { superuser: !authEnabled || superuser || tenant === null, ownTenant: tenant };
 }
 
 /** Layout route for `/t/:tenant/*` and `/all/*`: resolves the scope, pins tenant admins to their
@@ -38,7 +40,7 @@ export function ScopedLayout({ all }: { all?: boolean }) {
 
   const redirect = scopeRedirect(scope, principal);
   if (redirect) {
-    return <Navigate replace to={`${scopePrefix(redirect)}/${section || 'dashboard'}${location.search}`} />;
+    return <Navigate replace to={`${scopePrefix(redirect)}/${sectionRoot(section)}${location.search}`} />;
   }
   if (scope.kind === 'tenant' && tenants && !tenants.some(t => t.id === scope.tenant)) {
     return (

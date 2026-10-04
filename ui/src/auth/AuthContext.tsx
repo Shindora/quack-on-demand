@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { api } from '../api/client';
+import { parseScope } from '../nav/scope';
 
 interface AuthState {
   username: string | null;
@@ -85,8 +86,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Resolve the login mode for the tenant in the URL BEFORE deciding what
       // to render, so the gate does not flash the password form then swap to
       // the SSO redirect (or vice versa).
+      // ?tenant= wins; otherwise the tenant in a scoped path (/ui/t/<tenant>/...), so a
+      // session-expiry reload on a scoped page keeps that tenant's login mode.
+      const pathScope = parseScope(window.location.pathname.replace(/^\/ui/, ''))?.scope;
       const urlTenant =
-        new URLSearchParams(window.location.search).get('tenant') || undefined;
+        new URLSearchParams(window.location.search).get('tenant')
+        || (pathScope?.kind === 'tenant' ? pathScope.tenant : undefined)
+        || undefined;
       try {
         const m = await api.authMode(urlTenant);
         setIdentitySource(m.mode);

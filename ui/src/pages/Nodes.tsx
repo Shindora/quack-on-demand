@@ -165,6 +165,9 @@ export default function Nodes() {
   const visible = rows
     .filter(r => !filter || r.tenant === filter)
     .filter(r => !nodeFilter || r.nodeId === nodeFilter);
+  const visibleActive = active
+    .filter(a => !filter || a.tenant === filter)
+    .filter(a => !nodeFilter || a.nodeId === nodeFilter);
   const sumTotal    = visible.reduce((s, n) => s + n.totalServed, 0);
   const sumInFlight = visible.reduce((s, n) => s + n.inFlight, 0);
   const sumQps      = visible.reduce((s, n) => s + n.qps, 0);
@@ -339,12 +342,12 @@ export default function Nodes() {
 
       <div className="card" style={{ marginTop: '1rem' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '1rem' }}>
-          <div className="card-title">Running statements ({active.length})</div>
+          <div className="card-title">Running statements ({visibleActive.length})</div>
           {killNote && (
             <span className="subtle" style={{ fontSize: '.85rem' }}>{killNote}</span>
           )}
         </div>
-        {active.length === 0 ? (
+        {visibleActive.length === 0 ? (
           <p style={{ color: '#888' }}>Nothing running right now.</p>
         ) : (
           <table>
@@ -355,7 +358,7 @@ export default function Nodes() {
               </tr>
             </thead>
             <tbody>
-              {active.map((a, i) => {
+              {visibleActive.map((a, i) => {
                 const isOpen = activeExpanded === i;
                 const liveElapsed = a.elapsedMs + (activeFetchedAt ? Date.now() - activeFetchedAt : 0);
                 return (

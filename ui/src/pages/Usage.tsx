@@ -132,7 +132,7 @@ export default function Usage() {
   const filterRef = useRef({ month, custom, fromDate, toDate, groupBy, tenant, pool });
   filterRef.current = { month, custom, fromDate, toDate, groupBy, tenant, pool };
 
-  const { poolNamesFor } = useTenantPoolOptions(superuser);
+  const { poolNamesFor } = useTenantPoolOptions();
 
   const fetchUsage = useCallback(() => {
     const f = filterRef.current;

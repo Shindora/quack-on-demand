@@ -205,7 +205,7 @@ function StmtStatusBadge({ status }: { status: string }) {
 }
 
 export default function History() {
-  const { superuser, telemetryEnabled } = useAuth();
+  const { telemetryEnabled } = useAuth();
   const { scopedTenant } = useTenantScope();
 
   const [range, setRange]   = useState<Range>('24h');
@@ -240,7 +240,7 @@ export default function History() {
   filterRef.current = { range, tenant, pool, userFilter, statusFilter, sqlFilter };
 
   // Filter select options (mirrors the Usage page).
-  const { poolNamesFor } = useTenantPoolOptions(superuser);
+  const { poolNamesFor } = useTenantPoolOptions();
 
   const fetch = useCallback(() => {
     const { range: r, tenant: t, pool: p } = filterRef.current;

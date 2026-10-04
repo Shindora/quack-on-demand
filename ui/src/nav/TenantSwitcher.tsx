@@ -45,6 +45,10 @@ export default function TenantSwitcher({ scope, collapsed, onExpand }: {
       <span className="switcher-label">Tenant</span>
       <select value={current} onChange={e => onChange(e.target.value)} aria-label="Switch tenant">
         <option value={ALL_VALUE}>All tenants</option>
+        {/* Keep the URL's tenant selectable while the list is loading or failed to load. */}
+        {scope.kind === 'tenant' && !(tenants ?? []).some(t => t.id === scope.tenant) && (
+          <option value={scope.tenant}>{scope.tenant}</option>
+        )}
         {(tenants ?? []).map(t => <option key={t.id} value={t.id}>{t.displayName}</option>)}
         <option disabled>----------</option>
         <option value={MANAGE_VALUE}>Manage tenants...</option>

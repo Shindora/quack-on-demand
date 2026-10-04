@@ -74,14 +74,16 @@ export function AuthProviderPage() {
 
 export function AccessControlPage() {
   const tenant = useScopedTenant();
-  const { tenants, reload } = useTenants();
+  const { tenants, error, reload } = useTenants();
   const row = tenants?.find(t => t.id === tenant);
   return (
     <>
       <TenantHeader title="Access Control" />
       {row
         ? <AccessControlSection tenant={row} onSaved={() => { void reload(); }} />
-        : <div className="loading">Loading...</div>}
+        : error
+          ? <div className="login-err">Error: {error}</div>
+          : <div className="loading">Loading...</div>}
     </>
   );
 }
