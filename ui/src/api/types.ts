@@ -466,6 +466,8 @@ export interface UserCreateRequest {
   mustChangePassword?: boolean;
   // Optional contact address, used by forgot-password. Omit to leave the row emailless.
   email?: string | null;
+  roles?: string[];                 // RBAC role names; omit = qod_all_tables; never []
+  groups?: string[];                // group names; omit = qod_all_pools; never []
 }
 
 export interface UserUpdateRequest {
@@ -578,6 +580,7 @@ export interface RoleResponse {
   name:        string;
   description: string | null;
   createdAt:   string;
+  builtin?:    boolean;             // qod_* built-in: no delete, no permission/policy edits
 }
 
 export interface RoleCreateRequest {
@@ -672,6 +675,7 @@ export interface GroupResponse {
   tenantId:    string;
   name:        string;
   description: string | null;
+  builtin?:    boolean;             // qod_* built-in: no delete, role bindings or pool grants
 }
 
 export interface GroupCreateRequest {

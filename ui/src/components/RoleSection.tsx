@@ -184,14 +184,22 @@ export default function RoleSection({ tenant }: { tenant: string | null }) {
           </tr></thead>
           <tbody>{roles.map(r => (
             <tr key={r.id}>
-              <td><code>{r.name}</code></td>
+              <td>
+                <code>{r.name}</code>
+                {r.builtin && <>{' '}<span className="subtle">built-in</span></>}
+              </td>
               {VERBS.map(v => (
                 <td key={v}>{verbCounts[r.id]?.[v] ?? '-'}</td>
               ))}
               <td className="actions">
-                <button className="icon-btn" title="Edit" aria-label="Edit" onClick={() => setSelected(r)}><EditIcon /></button>
-                {' '}
-                <button className="icon-btn danger" title="Delete" aria-label="Delete" onClick={() => handleDelete(r)}><DeleteIcon /></button>
+                <button className="icon-btn" title={r.builtin ? 'View' : 'Edit'} aria-label={r.builtin ? 'View' : 'Edit'} onClick={() => setSelected(r)}><EditIcon /></button>
+                {/* Built-in roles refuse delete server-side (409 builtin_protected). */}
+                {!r.builtin && (
+                  <>
+                    {' '}
+                    <button className="icon-btn danger" title="Delete" aria-label="Delete" onClick={() => handleDelete(r)}><DeleteIcon /></button>
+                  </>
+                )}
               </td>
             </tr>
           ))}</tbody>
@@ -200,7 +208,15 @@ export default function RoleSection({ tenant }: { tenant: string | null }) {
 
       {selected && (
         <Modal maxWidth={720} height="80vh" onClose={() => setSelected(null)}>
-            <div className="card-title">Edit role <code>{selected.name}</code></div>
+            <div className="card-title">
+              {selected.builtin ? 'Role' : 'Edit role'} <code>{selected.name}</code>
+              {selected.builtin && <>{' '}<span className="subtle">built-in</span></>}
+            </div>
+            {selected.builtin && (
+              <p className="subtle">
+                Built-in roles are fixed: their permissions and policies cannot be changed.
+              </p>
+            )}
             <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
               <Tabs
                 tabs={[
@@ -209,6 +225,7 @@ export default function RoleSection({ tenant }: { tenant: string | null }) {
                     label: 'Permissions',
                     body: (
                       <>
+                        {!selected.builtin && (
                         <form onSubmit={handleGrant} className="row" style={{ gap: 8, marginBottom: 8, alignItems: 'center' }}>
                           <input style={{ flex: 1, minWidth: 80 }} value={grantCatalog} onChange={ev => setGrantCatalog(ev.target.value)} placeholder="Catalog" />
                           <input style={{ flex: 1, minWidth: 80 }} value={grantSchema}  onChange={ev => setGrantSchema(ev.target.value)}  placeholder="Schema" />
@@ -218,6 +235,7 @@ export default function RoleSection({ tenant }: { tenant: string | null }) {
                           </select>
                           <button type="submit" style={{ whiteSpace: 'nowrap' }}>+ Grant</button>
                         </form>
+                        )}
                         {perms.length === 0 ? (
                           <div className="empty">(no permissions yet)</div>
                         ) : (
@@ -233,7 +251,9 @@ export default function RoleSection({ tenant }: { tenant: string | null }) {
                                   <td><code>{p.tableName}</code></td>
                                   <td><code>{p.verb}</code></td>
                                   <td className="actions">
-                                    <button className="icon-btn danger" title="Revoke" aria-label="Revoke" onClick={() => handleRevoke(p)}><DeleteIcon /></button>
+                                    {!selected.builtin && (
+                                      <button className="icon-btn danger" title="Revoke" aria-label="Revoke" onClick={() => handleRevoke(p)}><DeleteIcon /></button>
+                                    )}
                                   </td>
                                 </tr>
                               ))}
@@ -243,16 +263,20 @@ export default function RoleSection({ tenant }: { tenant: string | null }) {
                       </>
                     ),
                   },
-                  {
-                    id: 'column-policies',
-                    label: 'Column policies',
-                    body: <RoleColumnPoliciesSection roleId={selected.id} />,
-                  },
-                  {
-                    id: 'row-policies',
-                    label: 'Row policies',
-                    body: <RoleRowPoliciesSection roleId={selected.id} />,
-                  },
+                  // Built-in roles carry no policies and refuse new ones, so
+                  // their policy tabs (all create/edit/delete controls) are hidden.
+                  ...(selected.builtin ? [] : [
+                    {
+                      id: 'column-policies',
+                      label: 'Column policies',
+                      body: <RoleColumnPoliciesSection roleId={selected.id} />,
+                    },
+                    {
+                      id: 'row-policies',
+                      label: 'Row policies',
+                      body: <RoleRowPoliciesSection roleId={selected.id} />,
+                    },
+                  ]),
                 ]}
               />
             </div>

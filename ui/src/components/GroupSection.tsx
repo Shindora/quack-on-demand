@@ -268,6 +268,8 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
 
   const rolesTab = !selected ? null : (
     <>
+      {/* Built-in groups never carry role bindings (409 builtin_protected). */}
+      {!selected.builtin && (
       <form onSubmit={handleAddRole} className="row" style={{ gap: 8, marginBottom: 8, alignItems: 'center' }}>
         <select style={{ flex: 1 }} value={addRoleId} onChange={ev => setAddRoleId(ev.target.value)}>
           <option value="">(pick a role)</option>
@@ -277,13 +279,18 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
         </select>
         <button type="submit" disabled={!addRoleId} style={{ whiteSpace: 'nowrap' }}>+ Add role</button>
       </form>
+      )}
       {groupRoles.length === 0 ? <div className="empty">(no role memberships)</div> : (
         <table>
           <thead><tr><th>Role</th><th className="actions"></th></tr></thead>
           <tbody>{groupRoles.map(r => (
             <tr key={r.id}>
               <td><code>{r.name}</code></td>
-              <td className="actions"><button className="icon-btn danger" title="Remove" aria-label="Remove" onClick={() => handleRemoveRole(r.id)}><DeleteIcon /></button></td>
+              <td className="actions">
+                {!selected.builtin && (
+                  <button className="icon-btn danger" title="Remove" aria-label="Remove" onClick={() => handleRemoveRole(r.id)}><DeleteIcon /></button>
+                )}
+              </td>
             </tr>
           ))}</tbody>
         </table>
@@ -293,6 +300,8 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
 
   const poolsTab = !selected ? null : (
     <>
+      {/* A built-in group's pool grants are fixed (409 builtin_protected). */}
+      {!selected.builtin && (
       <form onSubmit={handleGrantPool} className="row" style={{ gap: 8, marginBottom: 8, alignItems: 'center' }}>
         <select
           style={{ flex: 1 }}
@@ -306,6 +315,7 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
         </select>
         <button type="submit" style={{ whiteSpace: 'nowrap' }}>+ Grant pool</button>
       </form>
+      )}
       {poolPerms.length === 0 ? <div className="empty">(no pool grants)</div> : (
         <table>
           <thead><tr><th>Pool</th><th className="actions"></th></tr></thead>
@@ -317,7 +327,11 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
               return (
                 <tr key={p.id}>
                   <td><code>{name}</code></td>
-                  <td className="actions"><button className="icon-btn danger" title="Revoke" aria-label="Revoke" onClick={() => handleRevokePool(p)}><DeleteIcon /></button></td>
+                  <td className="actions">
+                    {!selected.builtin && (
+                      <button className="icon-btn danger" title="Revoke" aria-label="Revoke" onClick={() => handleRevokePool(p)}><DeleteIcon /></button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -350,14 +364,22 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
           </tr></thead>
           <tbody>{groups.map(g => (
             <tr key={g.id}>
-              <td><code>{g.name}</code></td>
+              <td>
+                <code>{g.name}</code>
+                {g.builtin && <>{' '}<span className="subtle">built-in</span></>}
+              </td>
               <td>{userCount(g)}</td>
               <td>{roleCounts[g.id] ?? '-'}</td>
               <td>{poolCounts[g.id] ?? 0}</td>
               <td className="actions">
                 <button className="icon-btn" title="Edit" aria-label="Edit" onClick={() => setSelected(g)}><EditIcon /></button>
-                {' '}
-                <button className="icon-btn danger" title="Delete" aria-label="Delete" onClick={() => handleDelete(g)}><DeleteIcon /></button>
+                {/* Built-in groups refuse delete server-side (409 builtin_protected). */}
+                {!g.builtin && (
+                  <>
+                    {' '}
+                    <button className="icon-btn danger" title="Delete" aria-label="Delete" onClick={() => handleDelete(g)}><DeleteIcon /></button>
+                  </>
+                )}
               </td>
             </tr>
           ))}</tbody>
@@ -386,7 +408,15 @@ export default function GroupSection({ tenant }: { tenant: string | null }) {
 
       {selected && (
         <Modal maxWidth={720} height="80vh" onClose={() => setSelected(null)}>
-            <div className="card-title">Edit group <code>{selected.name}</code></div>
+            <div className="card-title">
+              Edit group <code>{selected.name}</code>
+              {selected.builtin && <>{' '}<span className="subtle">built-in</span></>}
+            </div>
+            {selected.builtin && (
+              <p className="subtle">
+                Built-in group: members can be added and removed; its roles and pool grants are fixed.
+              </p>
+            )}
             <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
               <Tabs
                 tabs={[
