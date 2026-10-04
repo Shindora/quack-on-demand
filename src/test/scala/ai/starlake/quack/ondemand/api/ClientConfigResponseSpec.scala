@@ -25,3 +25,18 @@ class ClientConfigResponseSpec extends AnyFlatSpec with Matchers:
     json should include("\"identitySource\":\"oidc\"")
     json should include("\"ssoProviderName\":\"accounts.google.com\"")
   }
+
+  it should "default fleetEnabled to false and serialize it" in {
+    ClientConfigResponse(
+      flightSqlHost = "h",
+      flightSqlPort = 1,
+      flightSqlTls = true
+    ).fleetEnabled shouldBe false
+    val json = ClientConfigResponse(
+      flightSqlHost = "h",
+      flightSqlPort = 1,
+      flightSqlTls = true,
+      fleetEnabled = true
+    ).asJson.noSpaces
+    json should include("\"fleetEnabled\":true")
+  }

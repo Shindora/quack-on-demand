@@ -1272,6 +1272,11 @@ final class PoolSupervisor(
     */
   def supportsPlacement: Boolean = backend.supportsPlacement
 
+  /** True when the runtime backend is fleet. Exposed so `/client-config` can flag the UI to show
+    * the Fleet servers page only where servers can exist.
+    */
+  def fleetEnabled: Boolean = backend.isFleet
+
   def get(key: PoolKey): Option[PoolState] = pools.get(key)
 
   /** Slots the distribution wants that no node row fills (fleet: waiting for a free server). A dead

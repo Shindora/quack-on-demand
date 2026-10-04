@@ -52,6 +52,8 @@ final class FleetQuackBackend(
 ) extends QuackBackend
     with LazyLogging:
 
+  override val isFleet: Boolean = true
+
   def livenessOf(row: FleetServerRow): ServerLiveness =
     FleetLiveness.classify(row.silentSeconds, cfg.heartbeatTimeoutSec, cfg.reassignAfterSec)
 

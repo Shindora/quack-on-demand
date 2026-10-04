@@ -37,6 +37,11 @@ final class PoolHandlers(
     */
   def supportsPlacement: Boolean = sup.supportsPlacement
 
+  /** Exposed for `/api/config/client` so the UI shows the Fleet servers page only when the runtime
+    * backend is fleet.
+    */
+  def fleetEnabled: Boolean = sup.fleetEnabled
+
   /** Hide secret-like keys from the API response: see
     * [[ai.starlake.quack.model.TenantDb.SecretKeys]] (`pgPassword` plus the object-store secret
     * keys).

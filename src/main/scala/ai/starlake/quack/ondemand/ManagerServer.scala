@@ -991,6 +991,7 @@ final class ManagerServer(
               quackTls = quackCfg.exists(_.tlsEnabled),
               authEnabled = authEnabled,
               placementSupported = pools.supportsPlacement,
+              fleetEnabled = pools.fleetEnabled,
               identitySource =
                 if cfg.auth.management.identitySource.trim.equalsIgnoreCase("oidc") then "oidc"
                 else "db",

@@ -249,6 +249,9 @@ final case class ClientConfigResponse(
     // nodeSelector / tolerations placement). The UI hides the per-pool
     // cohort/placement controls when false.
     placementSupported: Boolean = false,
+    // True iff the runtime backend is fleet (QOD_RUNTIME_TYPE=fleet). The UI shows the
+    // Fleet servers page only when true.
+    fleetEnabled: Boolean = false,
     // "db" or "oidc". When "oidc" the UI renders no password form and instead
     // redirects to /api/auth/oidc/start.
     identitySource: String = "db",

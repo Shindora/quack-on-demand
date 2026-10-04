@@ -21,6 +21,11 @@ trait QuackBackend:
     */
   def supportsPlacement: Boolean = false
 
+  /** True for the fleet backend (bare servers joined via `qod fleet join`). Surfaced to the UI so
+    * it shows the Fleet servers page only where servers can exist.
+    */
+  def isFleet: Boolean = false
+
   /** Register a node that the backend didn't start (e.g. survived a manager restart) so subsequent
     * stop / port-allocation operations see it. Backends that don't need internal bookkeeping for
     * adopted nodes (K8s - pods live on the apiserver) can no-op.

@@ -239,6 +239,9 @@ export interface ClientConfigResponse {
   // True iff the runtime backend supports node placement (Kubernetes).
   // The UI hides cohort/placement controls when false.
   placementSupported?: boolean;
+  // True iff the runtime backend is fleet (QOD_RUNTIME_TYPE=fleet). The sidebar shows
+  // "Fleet servers" only when true.
+  fleetEnabled?: boolean;
   /** True when a telemetry store is configured (telemetry.store != none). The UI hides
    *  the Audit page when false. */
   telemetryEnabled?: boolean;
