@@ -1962,7 +1962,13 @@ opt-in except pod security:
 
 ## Common UI URLs
 
-- `http://localhost:20900/ui/` → Nodes dashboard (landing page)
+Pages are scoped by tenant in the path: `/ui/t/<tenant>/...` for one tenant, `/ui/all/...` for every tenant (superusers only; tenant admins are kept on their own tenant). The sidebar's tenant switcher changes the scope.
+
+- `http://localhost:20900/ui/` → Nodes dashboard (landing page; redirects to `/ui/all/dashboard` or `/ui/t/<tenant>/dashboard`)
 - `http://localhost:20900/ui/tenants` → Tenants list
-- `http://localhost:20900/ui/tenant/<tenant>` → tenant detail + ACL editor
-- `http://localhost:20900/ui/pool/<tenant>/<pool>` → per-pool nodes + JDBC URLs
+- `http://localhost:20900/ui/t/<tenant>/databases` → tenant databases
+- `http://localhost:20900/ui/t/<tenant>/pools` → tenant pools
+- `http://localhost:20900/ui/t/<tenant>/pools/<db>/<pool>` → per-pool nodes + JDBC URLs
+- `http://localhost:20900/ui/t/<tenant>/catalog` → catalog browser
+- `http://localhost:20900/ui/t/<tenant>/access-control` → tenant ACL settings (users, groups and roles under `/users`, `/groups`, `/roles`)
+- `http://localhost:20900/ui/t/<tenant>/audit/statements` → statement history (`/ui/all/audit/statements` across tenants)
