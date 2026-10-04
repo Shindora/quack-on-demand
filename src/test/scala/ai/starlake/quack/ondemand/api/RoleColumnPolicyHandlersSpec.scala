@@ -5,7 +5,7 @@ import ai.starlake.quack.model.Tenant
 import ai.starlake.quack.ondemand.PoolSupervisor
 import ai.starlake.quack.ondemand.runtime.QuackBackend
 import ai.starlake.quack.ondemand.runtime.testkit.StubQuackBackend
-import ai.starlake.quack.ondemand.state.{BuiltinRbac, InMemoryControlPlaneStore}
+import ai.starlake.quack.ondemand.state.InMemoryControlPlaneStore
 import cats.effect.unsafe.implicits.global
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -15,16 +15,15 @@ class RoleColumnPolicyHandlersSpec extends AnyFlatSpec with Matchers:
 
   private def stubBackend: QuackBackend = new StubQuackBackend()
 
-  /** Build a fresh supervisor with tenant `acme`. `createTenant` automatically seeds the
-    * built-in `qod_all_tables` role; use that role id for policy tests.
+  /** Build a fresh supervisor with tenant `acme` and a custom role for the policy tests. The
+    * built-in roles `createTenant` seeds refuse policies, so they cannot serve here.
     */
   private def freshSetup(): (RoleColumnPolicyHandlers, String) =
     val store = new InMemoryControlPlaneStore()
     val sup   = new PoolSupervisor(stubBackend, new NodeLoadTracker, store)
     sup.createTenant(Tenant("acme")).unsafeRunSync()
     val tenantId = sup.listTenants().find(_.id == "acme").get.id
-    // createTenant seeds the built-in qod_all_tables role - fetch its id
-    val roleId = sup.listRoles(tenantId).find(_.name == BuiltinRbac.AllTables).get.id
+    val roleId   = sup.createRole(tenantId, "analyst").unsafeRunSync().toOption.get.id
     val handler = new RoleColumnPolicyHandlers(sup)
     (handler, roleId)
 

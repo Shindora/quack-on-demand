@@ -21,13 +21,22 @@ package ai.starlake.quack.ondemand
   *     historically map these to `409 exists` (the catch-all), not `400`.
   *   - [[Internal]]: infrastructure or control-plane-state failure (Postgres provisioning failed,
   *     in-memory pool cache out of sync with the store). Only ever consumed by catch-all arms.
+  *   - [[BuiltinProtected]]: the target is a built-in role or group
+  *     ([[ai.starlake.quack.ondemand.state.BuiltinRbac]]); REST 409 `builtin_protected`.
+  *   - [[ReservedName]]: a create used the reserved `qod_` prefix; REST 400 `reserved_name`.
+  *   - [[InvalidMembership]]: user-create roles/groups were empty or named an unknown object;
+  *     `code` is the REST error code (`roles_required`, `groups_required`, `unknown_role`,
+  *     `unknown_group`, `memberships_not_applicable`).
   */
 enum SupervisorError(val message: String):
-  case NotFound(msg: String)        extends SupervisorError(msg)
-  case AlreadyExists(msg: String)   extends SupervisorError(msg)
-  case Conflict(msg: String)        extends SupervisorError(msg)
-  case InvalidArgument(msg: String) extends SupervisorError(msg)
-  case InvalidName(msg: String)     extends SupervisorError(msg)
-  case Internal(msg: String)        extends SupervisorError(msg)
-  case QuotaExceeded(msg: String)   extends SupervisorError(msg)
-  case InvalidEmail(msg: String)    extends SupervisorError(msg)
+  case NotFound(msg: String)                        extends SupervisorError(msg)
+  case AlreadyExists(msg: String)                   extends SupervisorError(msg)
+  case Conflict(msg: String)                        extends SupervisorError(msg)
+  case InvalidArgument(msg: String)                 extends SupervisorError(msg)
+  case InvalidName(msg: String)                     extends SupervisorError(msg)
+  case Internal(msg: String)                        extends SupervisorError(msg)
+  case QuotaExceeded(msg: String)                   extends SupervisorError(msg)
+  case InvalidEmail(msg: String)                    extends SupervisorError(msg)
+  case BuiltinProtected(msg: String)                extends SupervisorError(msg)
+  case ReservedName(msg: String)                    extends SupervisorError(msg)
+  case InvalidMembership(code: String, msg: String) extends SupervisorError(msg)

@@ -134,14 +134,17 @@ final class AdminStatementExecutor(
             else Left(RouterFailure.AccessDenied("admin_required"))
 
   private def toFailure(e: SupervisorError): RouterFailure = e match
-    case SupervisorError.NotFound(m)        => RouterFailure.NotFound(m)
-    case SupervisorError.AlreadyExists(m)   => RouterFailure.AlreadyExists(m)
-    case SupervisorError.Conflict(m)        => RouterFailure.BadRequest(m)
-    case SupervisorError.InvalidArgument(m) => RouterFailure.BadRequest(m)
-    case SupervisorError.InvalidName(m)     => RouterFailure.BadRequest(m)
-    case SupervisorError.InvalidEmail(m)    => RouterFailure.BadRequest(m)
-    case SupervisorError.QuotaExceeded(m)   => RouterFailure.BadRequest(m)
-    case SupervisorError.Internal(m)        => RouterFailure.Internal(m)
+    case SupervisorError.NotFound(m)             => RouterFailure.NotFound(m)
+    case SupervisorError.AlreadyExists(m)        => RouterFailure.AlreadyExists(m)
+    case SupervisorError.Conflict(m)             => RouterFailure.BadRequest(m)
+    case SupervisorError.InvalidArgument(m)      => RouterFailure.BadRequest(m)
+    case SupervisorError.InvalidName(m)          => RouterFailure.BadRequest(m)
+    case SupervisorError.InvalidEmail(m)         => RouterFailure.BadRequest(m)
+    case SupervisorError.QuotaExceeded(m)        => RouterFailure.BadRequest(m)
+    case SupervisorError.Internal(m)             => RouterFailure.Internal(m)
+    case SupervisorError.BuiltinProtected(m)     => RouterFailure.AccessDenied(m)
+    case SupervisorError.ReservedName(m)         => RouterFailure.BadRequest(m)
+    case SupervisorError.InvalidMembership(_, m) => RouterFailure.BadRequest(m)
 
   private def mut[A](op: IO[Either[SupervisorError, A]])(
       render: A => QueryResult

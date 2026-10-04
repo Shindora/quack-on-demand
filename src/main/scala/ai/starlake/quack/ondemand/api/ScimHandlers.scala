@@ -182,6 +182,10 @@ final class ScimHandlers(
     case SupervisorError.NotFound(msg)     => scimError(StatusCode.NotFound, msg)
     case SupervisorError.InvalidEmail(msg) =>
       scimError(StatusCode.BadRequest, msg, Some("invalidValue"))
+    case SupervisorError.BuiltinProtected(msg) =>
+      scimError(StatusCode.Conflict, msg, Some("mutability"))
+    case SupervisorError.ReservedName(msg) =>
+      scimError(StatusCode.BadRequest, msg, Some("invalidValue"))
     case other => scimError(StatusCode.BadRequest, other.toString, Some("invalidValue"))
 
   private def randomPassword(): String = SessionTokenStore.randomSecret()

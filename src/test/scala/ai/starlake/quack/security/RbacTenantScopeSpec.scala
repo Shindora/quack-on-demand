@@ -4,6 +4,7 @@ package ai.starlake.quack.security
 import ai.starlake.quack.edge.StatementRecord
 import ai.starlake.quack.model.{Pool, RoleDistribution}
 import ai.starlake.quack.ondemand.state.{
+  BuiltinRbac,
   InMemoryControlPlaneStore,
   PoolPermission,
   RbacGroup,
@@ -182,6 +183,24 @@ class RbacTenantScopeSpec extends AnyFlatSpec with Matchers with SecurityHttpHel
       val resp = post(h.httpClient, s"${h.baseUrl}/api/role/delete", body, apiKey = Some(token))
       withClue(s"missing-id -> /role/delete body: ${resp.body()}") {
         resp.statusCode() shouldBe 404
+      }
+    finally h.shutdown()
+  }
+
+  it should "409 builtin_protected when the role is a built-in, even for a superuser" in {
+    val fix = SecurityFixtures.freshStore()
+    addTenantB(fix)
+    // The store seeds the built-ins with `builtin = true` (upsertRole never can).
+    fix.store.ensureBuiltins(GlobexTenantId)
+    val builtinId = fix.store.findRole(GlobexTenantId, BuiltinRbac.AllTables).get.id
+    val h         = ManagerServerHarness.boot(fix.store, staticApiKey = None)
+    try
+      val token = h.mintToken(SecurityFixtures.RootUsername, SecurityFixtures.RootPassword)
+      val body  = s"""{"id":"$builtinId"}"""
+      val resp  = post(h.httpClient, s"${h.baseUrl}/api/role/delete", body, apiKey = Some(token))
+      withClue(s"superuser -> /role/delete on a built-in body: ${resp.body()}") {
+        resp.statusCode() shouldBe 409
+        errorCode(resp.body()) shouldBe Some("builtin_protected")
       }
     finally h.shutdown()
   }

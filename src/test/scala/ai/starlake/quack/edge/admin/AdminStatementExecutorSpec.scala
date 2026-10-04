@@ -280,6 +280,16 @@ class AdminStatementExecutorSpec extends AnyFlatSpec with Matchers:
       case Left(RouterFailure.AlreadyExists(_)) => succeed
       case other                                => fail(s"expected AlreadyExists, got $other")
 
+  it should "refuse DROP ROLE on a built-in role and CREATE ROLE with the reserved prefix" in:
+    val (sup, _, exec) = setup()
+    run(exec, sup, s"DROP ROLE ${BuiltinRbac.AllTables}") match
+      case Left(RouterFailure.AccessDenied(reason)) => reason should include("built-in")
+      case other                                    => fail(s"expected AccessDenied, got $other")
+    sup.listRoles(tenantId(sup)).map(_.name) should contain(BuiltinRbac.AllTables)
+    run(exec, sup, "CREATE ROLE qod_mine") match
+      case Left(RouterFailure.BadRequest(reason)) => reason should include("reserved prefix")
+      case other                                  => fail(s"expected BadRequest, got $other")
+
   "GRANT/REVOKE table" should "store the mapped verb, dedupe, and count revokes" in:
     val (sup, _, exec) = setup()
     run(exec, sup, "CREATE ROLE analyst").isRight shouldBe true

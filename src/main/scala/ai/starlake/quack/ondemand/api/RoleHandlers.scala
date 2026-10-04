@@ -66,7 +66,11 @@ final class RoleHandlers(
                 val code = err match
                   case SupervisorError.AlreadyExists(_) => StatusCode.Conflict
                   case _                                => StatusCode.BadRequest
-                Left((code, ErrorResponse("invalid_role", err.message)))
+                Left(
+                  SupervisorErrorHttp
+                    .special(err)
+                    .getOrElse((code, ErrorResponse("invalid_role", err.message)))
+                )
             }
 
   def deleteRole(req: RoleDeleteRequest, apiKey: Option[String])(
@@ -95,7 +99,12 @@ final class RoleHandlers(
               target = Some(req.id)
             )
             Right(())
-          case Left(err) => Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+          case Left(err) =>
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+            )
         }
 
   def listRoles(tenant: String, apiKey: Option[String])(
@@ -146,7 +155,11 @@ final class RoleHandlers(
             val code = err match
               case SupervisorError.NotFound(_) => StatusCode.NotFound
               case _                           => StatusCode.BadRequest
-            Left((code, ErrorResponse("invalid_permission", err.message)))
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((code, ErrorResponse("invalid_permission", err.message)))
+            )
         }
 
   def revokePermission(req: RolePermissionRevokeRequest, apiKey: Option[String])(
@@ -175,7 +188,12 @@ final class RoleHandlers(
               target = Some(req.id)
             )
             Right(())
-          case Left(err) => Left((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+          case Left(err) =>
+            Left(
+              SupervisorErrorHttp
+                .special(err)
+                .getOrElse((StatusCode.NotFound, ErrorResponse("not_found", err.message)))
+            )
         }
 
   def listPermissions(roleId: String, apiKey: Option[String])(

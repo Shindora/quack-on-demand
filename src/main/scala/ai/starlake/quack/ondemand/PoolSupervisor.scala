@@ -3000,15 +3000,44 @@ final class PoolSupervisor(
 
   // ---------- RBAC: roles ----------
 
+  /** Built-in roles and groups ([[state.BuiltinRbac]]) are frozen: their own definition (delete,
+    * permissions, policies, role bindings, pool grants) is refused here, while user memberships
+    * stay editable. Each guard runs after the existence check so a missing id still 404s.
+    */
+  private def builtinRoleError(roleId: String): Option[SupervisorError] =
+    rbacResolver
+      .role(roleId)
+      .filter(_.builtin)
+      .map(r =>
+        SupervisorError.BuiltinProtected(s"role '${r.name}' is built-in and cannot be modified")
+      )
+
+  private def builtinGroupError(groupId: String): Option[SupervisorError] =
+    rbacResolver
+      .group(groupId)
+      .filter(_.builtin)
+      .map(g =>
+        SupervisorError.BuiltinProtected(s"group '${g.name}' is built-in and cannot be modified")
+      )
+
+  private def reservedNameError(kind: String, name: String): Option[SupervisorError] =
+    Option.when(state.BuiltinRbac.isReserved(name))(
+      SupervisorError.ReservedName(
+        s"$kind name '$name' uses the reserved prefix '${state.BuiltinRbac.ReservedPrefix}'"
+      )
+    )
+
   def createRole(
       tenantId: String,
       name: String,
       description: Option[String] = None
   ): IO[Either[SupervisorError, RbacRole]] = IO.blocking {
     withCacheRecovery("createRole") {
+      val reserved = reservedNameError("role", name)
       if name.isEmpty then Left(SupervisorError.InvalidArgument("role name must be non-empty"))
       else if !tenants.contains(tenantId) then
         Left(SupervisorError.NotFound(s"tenant not found: $tenantId"))
+      else if reserved.isDefined then Left(reserved.get)
       else if store.findRole(tenantId, name).isDefined then
         Left(SupervisorError.AlreadyExists(s"role '$name' already exists in tenant '$tenantId'"))
       else
@@ -3025,10 +3054,13 @@ final class PoolSupervisor(
       rbacResolver.role(id) match
         case None    => Left(SupervisorError.NotFound(s"role not found: $id"))
         case Some(_) =>
-          store.deleteRole(id)
-          rbacResolver.removeRole(id)
-          invalidateEffectiveCache()
-          Right(())
+          builtinRoleError(id) match
+            case Some(err) => Left(err)
+            case None      =>
+              store.deleteRole(id)
+              rbacResolver.removeRole(id)
+              invalidateEffectiveCache()
+              Right(())
     }
   }
 
@@ -3042,7 +3074,8 @@ final class PoolSupervisor(
       verb: String
   ): IO[Either[SupervisorError, RolePermission]] = IO.blocking {
     withCacheRecovery("grantRolePermission") {
-      val upper = verb.toUpperCase(Locale.ROOT)
+      val builtin = builtinRoleError(roleId)
+      val upper   = verb.toUpperCase(Locale.ROOT)
       if !RolePermission.ValidVerbs.contains(upper) then
         Left(
           SupervisorError.InvalidArgument(
@@ -3051,6 +3084,7 @@ final class PoolSupervisor(
         )
       else if rbacResolver.role(roleId).isEmpty then
         Left(SupervisorError.NotFound(s"role not found: $roleId"))
+      else if builtin.isDefined then Left(builtin.get)
       else
         val p         = RolePermission(newId("rp"), roleId, catalog, schema, table, upper)
         val persisted = store.insertRolePermission(p)
@@ -3062,7 +3096,9 @@ final class PoolSupervisor(
 
   def revokeRolePermission(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("revokeRolePermission") {
-      if store.deleteRolePermission(id) then
+      val builtin = store.getRolePermission(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deleteRolePermission(id) then
         rbacResolver.removeRolePermission(id)
         invalidateEffectiveCache()
         Right(())
@@ -3092,7 +3128,9 @@ final class PoolSupervisor(
   ): IO[Either[SupervisorError, state.RoleColumnPolicy]] = IO.blocking {
     withCacheRecovery("createColumnPolicy") {
       val normalisedTransform = transformSql.map(_.trim).filter(_.nonEmpty)
-      if !state.RoleColumnPolicy.ValidActions.contains(action) then
+      val builtin             = builtinRoleError(roleId)
+      if builtin.isDefined then Left(builtin.get)
+      else if !state.RoleColumnPolicy.ValidActions.contains(action) then
         Left(
           SupervisorError.InvalidArgument(
             s"action must be one of ${state.RoleColumnPolicy.ValidActions.mkString(", ")}"
@@ -3145,7 +3183,9 @@ final class PoolSupervisor(
   ): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("updateColumnPolicy") {
       val normalisedTransform = transformSql.map(_.trim).filter(_.nonEmpty)
-      if !state.RoleColumnPolicy.ValidActions.contains(action) then
+      val builtin             = store.getColumnPolicy(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if !state.RoleColumnPolicy.ValidActions.contains(action) then
         Left(
           SupervisorError.InvalidArgument(
             s"action must be one of ${state.RoleColumnPolicy.ValidActions.mkString(", ")}"
@@ -3186,7 +3226,9 @@ final class PoolSupervisor(
 
   def deleteColumnPolicy(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("deleteColumnPolicy") {
-      if store.deleteColumnPolicy(id) then { invalidateEffectiveCache(); Right(()) }
+      val builtin = store.getColumnPolicy(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deleteColumnPolicy(id) then { invalidateEffectiveCache(); Right(()) }
       else Left(SupervisorError.NotFound(s"column policy $id not found"))
     }
   }
@@ -3207,40 +3249,48 @@ final class PoolSupervisor(
       predicateSql: String
   ): IO[Either[SupervisorError, state.RoleRowPolicy]] = IO.blocking {
     withCacheRecovery("createRowPolicy") {
-      ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
-        case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
-          Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
-        case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
-          val p = state.RoleRowPolicy(
-            id = newId("rp"),
-            roleId = roleId,
-            catalogName = catalogName,
-            schemaName = schemaName,
-            tableName = tableName,
-            predicateSql = canon
-          )
-          val persisted = store.insertRowPolicy(p)
-          invalidateEffectiveCache()
-          Right(persisted)
+      builtinRoleError(roleId) match
+        case Some(err) => Left(err)
+        case None      =>
+          ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
+            case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
+              Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
+            case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
+              val p = state.RoleRowPolicy(
+                id = newId("rp"),
+                roleId = roleId,
+                catalogName = catalogName,
+                schemaName = schemaName,
+                tableName = tableName,
+                predicateSql = canon
+              )
+              val persisted = store.insertRowPolicy(p)
+              invalidateEffectiveCache()
+              Right(persisted)
     }
   }
 
   def updateRowPolicy(id: String, predicateSql: String): IO[Either[SupervisorError, Unit]] =
     IO.blocking {
       withCacheRecovery("updateRowPolicy") {
-        ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
-          case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
-            Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
-          case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
-            val ok = store.updateRowPolicy(id, canon)
-            if ok then { invalidateEffectiveCache(); Right(()) }
-            else Left(SupervisorError.NotFound(s"row policy $id not found"))
+        store.getRowPolicy(id).flatMap(p => builtinRoleError(p.roleId)) match
+          case Some(err) => Left(err)
+          case None      =>
+            ai.starlake.quack.edge.rls.RowPredicateValidator.validate(predicateSql) match
+              case ai.starlake.quack.edge.rls.RowPredicateValidator.Invalid(reason) =>
+                Left(SupervisorError.InvalidArgument(s"invalid predicateSql: $reason"))
+              case ai.starlake.quack.edge.rls.RowPredicateValidator.Valid(canon) =>
+                val ok = store.updateRowPolicy(id, canon)
+                if ok then { invalidateEffectiveCache(); Right(()) }
+                else Left(SupervisorError.NotFound(s"row policy $id not found"))
       }
     }
 
   def deleteRowPolicy(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("deleteRowPolicy") {
-      if store.deleteRowPolicy(id) then { invalidateEffectiveCache(); Right(()) }
+      val builtin = store.getRowPolicy(id).flatMap(p => builtinRoleError(p.roleId))
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deleteRowPolicy(id) then { invalidateEffectiveCache(); Right(()) }
       else Left(SupervisorError.NotFound(s"row policy $id not found"))
     }
   }
@@ -3256,9 +3306,11 @@ final class PoolSupervisor(
       description: Option[String] = None
   ): IO[Either[SupervisorError, RbacGroup]] = IO.blocking {
     withCacheRecovery("createGroup") {
+      val reserved = reservedNameError("group", name)
       if name.isEmpty then Left(SupervisorError.InvalidArgument("group name must be non-empty"))
       else if !tenants.contains(tenantId) then
         Left(SupervisorError.NotFound(s"tenant not found: $tenantId"))
+      else if reserved.isDefined then Left(reserved.get)
       else if store.findGroup(tenantId, name).isDefined then
         Left(SupervisorError.AlreadyExists(s"group '$name' already exists in tenant '$tenantId'"))
       else
@@ -3275,10 +3327,13 @@ final class PoolSupervisor(
       rbacResolver.group(id) match
         case None    => Left(SupervisorError.NotFound(s"group not found: $id"))
         case Some(_) =>
-          store.deleteGroup(id)
-          rbacResolver.removeGroup(id)
-          invalidateEffectiveCache()
-          Right(())
+          builtinGroupError(id) match
+            case Some(err) => Left(err)
+            case None      =>
+              store.deleteGroup(id)
+              rbacResolver.removeGroup(id)
+              invalidateEffectiveCache()
+              Right(())
     }
   }
 
@@ -3362,20 +3417,26 @@ final class PoolSupervisor(
               )
             )
           case (Some(_), Some(_)) =>
-            store.addGroupRole(groupId, roleId)
-            rbacResolver.addGroupRoleEdge(groupId, roleId)
-            invalidateEffectiveCache()
-            Right(())
+            builtinGroupError(groupId) match
+              case Some(err) => Left(err)
+              case None      =>
+                store.addGroupRole(groupId, roleId)
+                rbacResolver.addGroupRoleEdge(groupId, roleId)
+                invalidateEffectiveCache()
+                Right(())
       }
     }
 
   def removeGroupRole(groupId: String, roleId: String): IO[Either[SupervisorError, Unit]] =
     IO.blocking {
       withCacheRecovery("removeGroupRole") {
-        store.removeGroupRole(groupId, roleId)
-        rbacResolver.removeGroupRoleEdge(groupId, roleId)
-        invalidateEffectiveCache()
-        Right(())
+        builtinGroupError(groupId) match
+          case Some(err) => Left(err)
+          case None      =>
+            store.removeGroupRole(groupId, roleId)
+            rbacResolver.removeGroupRoleEdge(groupId, roleId)
+            invalidateEffectiveCache()
+            Right(())
       }
     }
 
@@ -3459,6 +3520,7 @@ final class PoolSupervisor(
                   SupervisorError.InvalidArgument("principal does not belong to the target tenant")
                 )
             }
+            .orElse(groupId.flatMap(builtinGroupError))
 
       problem match
         case Some(err) => Left(err)
@@ -3473,7 +3535,10 @@ final class PoolSupervisor(
 
   def revokePoolPermission(id: String): IO[Either[SupervisorError, Unit]] = IO.blocking {
     withCacheRecovery("revokePoolPermission") {
-      if store.deletePoolPermission(id) then
+      val builtin =
+        store.getPoolPermission(id).flatMap(_.groupId).flatMap(builtinGroupError)
+      if builtin.isDefined then Left(builtin.get)
+      else if store.deletePoolPermission(id) then
         rbacResolver.removePoolPermission(id)
         invalidateEffectiveCache()
         Right(())
