@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom';
 import Breadcrumb from '../components/Breadcrumb';
 import PoolDetailBody from '../components/PoolDetailBody';
+import { poolsPath, tenantHome } from '../nav/links';
 
 export default function PoolDetail() {
   const { tenant, tenantDb, pool } = useParams<{ tenant: string; tenantDb: string; pool: string }>();
@@ -13,8 +14,8 @@ export default function PoolDetail() {
     <div>
       <Breadcrumb
         items={[
-          { label: 'Tenants', to: '/tenants' },
-          { label: tenant,    to: `/tenant/${encodeURIComponent(tenant)}` },
+          { label: tenant, to: tenantHome(tenant) },
+          { label: 'Pools', to: poolsPath(tenant) },
           { label: tenantDb },
           { label: pool },
         ]}

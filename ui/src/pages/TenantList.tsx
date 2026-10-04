@@ -1,12 +1,16 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, errorMessage } from '../api/client';
 import { PROVIDER_FIELDS, PROVIDER_LABELS } from '../api/authProviders';
 import type { AuthProvider, TenantResponse } from '../api/types';
 import { DeleteIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
+import { tenantHome } from '../nav/links';
+import { useTenants } from '../nav/TenantsContext';
 
 export default function TenantList() {
+  const shared = useTenants();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [tenants, setTenants] = useState<TenantResponse[]>([]);
   const [error, setError]     = useState<string | null>(null);
 
@@ -33,12 +37,22 @@ export default function TenantList() {
   }
 
   function reload() {
+    void shared.reload();
     return api.listTenants()
       .then(r => setTenants(r.tenants))
       .catch(e => setError(errorMessage(e)));
   }
 
   useEffect(() => { void reload(); }, []);
+
+  // "New tenant" in the sidebar switcher links here with ?new=1.
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      openCreate();
+      setSearchParams({}, { replace: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   function openCreate() {
     setNewDisplayName(''); setNewId(''); setIdEdited(false);
@@ -192,7 +206,7 @@ export default function TenantList() {
           {tenants.map(t => (
             <tr key={t.id} style={{ borderTop: '1px solid #eee', opacity: t.disabled ? 0.55 : 1 }}>
               <td>
-                <Link to={`/tenant/${t.id}`}>{t.displayName}</Link>
+                <Link to={tenantHome(t.id)}>{t.displayName}</Link>
                 {t.disabled && <span className="subtle"> (disabled)</span>}
                 <div className="subtle" style={{ fontSize: '0.85em' }}>
                   <code>{t.id}</code>

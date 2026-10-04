@@ -63,14 +63,20 @@ import Audit from './pages/Audit';
 import History from './pages/History';
 import Usage from './pages/Usage';
 import TenantList from './pages/TenantList';
-import TenantDetail from './pages/TenantDetail';
 import PoolDetail from './pages/PoolDetail';
 import Nodes from './pages/Nodes';
 import Servers from './pages/Servers';
 import Catalog from './pages/Catalog';
 import CatalogTableDetail from './pages/CatalogTableDetail';
 import IcebergTableDetail from './pages/IcebergTableDetail';
-import Users from './pages/Users';
+import UsersPage, { GroupsPage, RolesPage } from './pages/Users';
+import {
+  AccessControlPage, AuthProviderPage, BranchesPage, DatabasesPage, MaintenancePage, PoolsPage,
+} from './pages/TenantPages';
+import { ScopedLayout, usePrincipal } from './nav/TenantScope';
+import { TenantsProvider } from './nav/TenantsContext';
+import { defaultScope, scopePrefix } from './nav/scope';
+import { legacyRedirect } from './nav/legacy';
 import Config from './pages/Config';
 import Profile from './pages/Profile';
 import NavDropdown from './components/NavDropdown';
@@ -105,7 +111,7 @@ function ProfileShell() {
           <img src="/ui/mark-dark.svg" alt="" className="brand-mark" />
           Quack on Demand
         </span>
-        <NavLink to="/profile" className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
+        <NavLink to="/settings/profile" className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
         {starlakeUrl && (
           <button type="button" className="nav-link-btn" onClick={() => { void goToStarlake(starlakeUrl); }}>
             Workbench
@@ -123,12 +129,47 @@ function ProfileShell() {
       </nav>
       <main>
         <Routes>
-          <Route path="/profile" element={<Profile />} />
-          <Route path="*" element={<Navigate to="/profile" replace />} />
+          <Route path="/settings/profile" element={<Profile />} />
+          <Route path="*" element={<Navigate to="/settings/profile" replace />} />
         </Routes>
       </main>
     </>
   );
+}
+
+/** Routes shared by `/t/:tenant` and `/all`; ScopedLayout decides what a scope may show. */
+function scopedRoutes() {
+  return (
+    <>
+      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route path="dashboard" element={<Nodes />} />
+      <Route path="databases" element={<DatabasesPage />} />
+      <Route path="catalog" element={<Catalog />} />
+      <Route path="catalog/:tenantDb/:schema/:table" element={<CatalogTableDetail />} />
+      <Route path="catalog/:tenantDb/iceberg/:alias/:schema/:table" element={<IcebergTableDetail />} />
+      <Route path="pools" element={<PoolsPage />} />
+      <Route path="pools/:tenantDb/:pool" element={<PoolDetail />} />
+      <Route path="maintenance" element={<MaintenancePage />} />
+      <Route path="branches" element={<BranchesPage />} />
+      <Route path="auth-provider" element={<AuthProviderPage />} />
+      <Route path="access-control" element={<AccessControlPage />} />
+      <Route path="users" element={<UsersPage />} />
+      <Route path="groups" element={<GroupsPage />} />
+      <Route path="roles" element={<RolesPage />} />
+      <Route path="audit/control-plane" element={<Audit />} />
+      <Route path="audit/statements" element={<History />} />
+      <Route path="audit/usage" element={<Usage />} />
+      <Route path="*" element={<Navigate to="dashboard" replace />} />
+    </>
+  );
+}
+
+/** Catch-all: an old bookmark goes to its new home, anything else to the default dashboard. */
+function LegacyRedirect() {
+  const location = useLocation();
+  const def = defaultScope(usePrincipal());
+  const to = legacyRedirect(location.pathname, location.search, def) ?? `${scopePrefix(def)}/dashboard`;
+  return <Navigate to={to} replace />;
 }
 
 function Shell() {
@@ -141,6 +182,9 @@ function Shell() {
   // leak. `authEnabled === false` is the no-auth dev mode; treat the
   // synthetic anonymous user as a superuser there.
   const isSuperuser = !authEnabled || tenant === null;
+  // Temporary top-nav targets in the scoped URL scheme (the sidebar replaces this nav).
+  const home = `${scopePrefix(defaultScope(usePrincipal()))}/dashboard`;
+  const prefix = home.replace(/\/dashboard$/, '');
   return (
     <>
       <nav className="app-nav">
@@ -148,10 +192,10 @@ function Shell() {
           <img src="/ui/mark-dark.svg" alt="" className="brand-mark" />
           Quack on Demand
         </span>
-        <NavLink to="/"        end className={({ isActive }) => isActive ? 'active' : ''}>Nodes</NavLink>
+        <NavLink to={home}          className={({ isActive }) => isActive ? 'active' : ''}>Nodes</NavLink>
         <NavLink to="/tenants"     className={({ isActive }) => isActive ? 'active' : ''}>Tenants</NavLink>
-        <NavLink to="/catalog"     className={({ isActive }) => isActive ? 'active' : ''}>Catalog</NavLink>
-        <NavLink to="/users"       className={({ isActive }) => isActive ? 'active' : ''}>Users</NavLink>
+        <NavLink to={`${prefix}/catalog`} className={({ isActive }) => isActive ? 'active' : ''}>Catalog</NavLink>
+        <NavLink to={`${prefix}/users`}   className={({ isActive }) => isActive ? 'active' : ''}>Users</NavLink>
         {role === 'admin' && isSuperuser && (
           <NavLink to="/servers"    className={({ isActive }) => isActive ? 'active' : ''}>Servers</NavLink>
         )}
@@ -159,16 +203,16 @@ function Shell() {
           <NavDropdown
             label="Audit"
             items={[
-              { to: '/audit', label: 'Control Plane' },
-              { to: '/history', label: 'Statements' },
-              { to: '/usage', label: 'Usage' },
+              { to: `${prefix}/audit/control-plane`, label: 'Control Plane' },
+              { to: `${prefix}/audit/statements`, label: 'Statements' },
+              { to: `${prefix}/audit/usage`, label: 'Usage' },
             ]}
           />
         )}
         {role === 'admin' && isSuperuser && (
-          <NavLink to="/config"    className={({ isActive }) => isActive ? 'active' : ''}>Config</NavLink>
+          <NavLink to="/settings/config" className={({ isActive }) => isActive ? 'active' : ''}>Config</NavLink>
         )}
-        <NavLink to="/profile"     className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
+        <NavLink to="/settings/profile" className={({ isActive }) => isActive ? 'active' : ''}>Profile</NavLink>
         {starlakeUrl && (
           <button type="button" className="nav-link-btn" onClick={() => { void goToStarlake(starlakeUrl); }}>
             Workbench
@@ -190,28 +234,13 @@ function Shell() {
       </nav>
       <main>
         <Routes>
-          <Route path="/"                                 element={<Nodes />} />
-          <Route path="/tenants"                          element={<TenantList />} />
-          <Route path="/tenant/:tenant"                   element={<TenantDetail />} />
-          <Route path="/pool/:tenant/:tenantDb/:pool"              element={<PoolDetail />} />
-          <Route path="/nodes"                                     element={<Nodes />} />
-          {isSuperuser && (
-            <Route path="/servers"                                 element={<Servers />} />
-          )}
-          <Route path="/users"                                     element={<Users />} />
-          <Route path="/catalog"                                   element={<Catalog />} />
-          <Route path="/catalog/:tenant/:tenantDb/:schema/:table"  element={<CatalogTableDetail />} />
-          <Route
-            path="/catalog/:tenant/:tenantDb/iceberg/:alias/:schema/:table"
-            element={<IcebergTableDetail />}
-          />
-          {isSuperuser && (
-            <Route path="/config"                                  element={<Config />} />
-          )}
-          <Route path="/audit"                                     element={<Audit />} />
-          <Route path="/history"                                   element={<History />} />
-          <Route path="/usage"                                     element={<Usage />} />
-          <Route path="/profile"                                   element={<Profile />} />
+          <Route path="/t/:tenant" element={<ScopedLayout />}>{scopedRoutes()}</Route>
+          <Route path="/all" element={<ScopedLayout all />}>{scopedRoutes()}</Route>
+          <Route path="/tenants" element={<TenantList />} />
+          {isSuperuser && <Route path="/servers" element={<Servers />} />}
+          {isSuperuser && <Route path="/settings/config" element={<Config />} />}
+          <Route path="/settings/profile" element={<Profile />} />
+          <Route path="*" element={<LegacyRedirect />} />
         </Routes>
       </main>
     </>
@@ -241,7 +270,11 @@ function AuthGate() {
   if (username && role == null) return <div className="loading">Loading session…</div>;
   // Case-insensitive to match the server's equalsIgnoreCase("admin") gate --
   // a qodstate role of "Admin" is admin server-side and must get the full shell.
-  if (username) return role?.toLowerCase() === 'admin' ? <Shell /> : <ProfileShell />;
+  if (username) {
+    return role?.toLowerCase() === 'admin'
+      ? <TenantsProvider><Shell /></TenantsProvider>
+      : <ProfileShell />;
+  }
   // OIDC mode: redirect to the IdP, or show an error card when the callback
   // returned with ?error=<code>.
   if (identitySource === 'oidc') {
