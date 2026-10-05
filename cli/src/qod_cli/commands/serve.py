@@ -205,6 +205,7 @@ def _banner(
     *, tenant: str, db: str, pool: str, size: int, first_boot: bool,
     edge_host: str, edge_port: int, manager_url: str, pg_port: int, pg_data_dir: str,
     description: str, attached: bool = False, quack_port: int = 0,
+    admin_names: list[str] | None = None,
 ) -> str:
     """The connect snippet. The admin password never appears: it is chosen at
     the first boot (FIRST_BOOT), passed to the manager once and stored nowhere,
@@ -219,7 +220,11 @@ def _banner(
     rather than booting its own. The embedded-postgres lines make no sense there
     - that manager's control plane might be external and this process never
     touched it - so the header and tail change; everything else (credentials,
-    connect strings) is identical either way."""
+    connect strings) is identical either way.
+
+    ADMIN_NAMES: every configured QOD_ADMIN_USERNAME (None = the built-in
+    default). They were seeded as one credential, so each one is rotated
+    separately: the banner names a change-password line per name."""
     # The seeded admin is a SUPERUSER row (tenant IS NULL): the FlightSQL edge picks
     # the auth realm off a "superuser" header (JDBC/ADBC/ODBC params become gRPC
     # headers), and with tenant= present but no superuser flag it auths in the
@@ -294,12 +299,14 @@ def _banner(
             )
         )
         lines.append("  CLI session   : if qod commands answer 401, run qod login")
-    lines.append(
-        typer.style(
-            f"  rotate password: qod auth change-password --username {_ADMIN_USER}",
-            fg=typer.colors.YELLOW,
+    names = admin_names if admin_names else admin_password.admin_usernames({})
+    for name in names:
+        lines.append(
+            typer.style(
+                f"  rotate password: qod auth change-password --username {name}",
+                fg=typer.colors.YELLOW,
+            )
         )
-    )
     # Native Quack front door: the token string is the JDBC query string. Loopback hosts
     # speak plain HTTP by default on the DuckDB side, which is what a local serve listens on.
     quack_token = f"tenant={tenant}&pool={pool}&user={_ADMIN_USER}&password=<password>&superuser=true"
@@ -323,12 +330,21 @@ def _banner(
     return "\n".join(lines)
 
 
+def _failure_tail(attached: bool) -> str:
+    if attached:
+        return (
+            "  the gateway is still running; fix the credentials (qod login, or export "
+            "QOD_API_KEY) and re-run qod serve"
+        )
+    return "  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop."
+
+
 def _provision(
     *, manager_url: str, tenant: str, target, pool: str, size: int, profile: str,
     ready_timeout: float, pg_port: int, pg_data_dir: str, echo,
     api_key: str = "", token: str = "", password: str | None = None,
     first_boot: bool = False, attached: bool = False, node_timeout: float = 60.0,
-    node_sleep=time.sleep, node_now=time.monotonic,
+    node_sleep=time.sleep, node_now=time.monotonic, admin_names: list[str] | None = None,
 ) -> bool:
     """Wait for the manager, authenticate, ensure tenant/database/pool, persist
     the profile, print the banner. Returns True once the banner has printed,
@@ -413,6 +429,7 @@ def _provision(
                 quack_port=quack_port,
                 manager_url=manager_url, pg_port=pg_port, pg_data_dir=pg_data_dir,
                 description=target.description, attached=attached,
+                admin_names=admin_names,
             )
         )
         return True
@@ -420,15 +437,15 @@ def _provision(
         echo(f"\nqod serve: {exc.step} failed: {exc.detail}")
         if exc.manual:
             echo(f"  finish by hand: {exc.manual}")
-        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+        echo(_failure_tail(attached))
         return False
     except ApiError as exc:
         echo(f"\nqod serve: provisioning failed: {exc}")
-        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+        echo(_failure_tail(attached))
         return False
     except Exception as exc:  # noqa: BLE001 - never raises, see the docstring above.
         echo(f"\nqod serve: provisioning failed unexpectedly: {exc!r}")
-        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+        echo(_failure_tail(attached))
         return False
 
 
@@ -647,7 +664,13 @@ def serve(
         # profile's session (QOD_TOKEN wins), then a prompt on a terminal.
         start_env = {**load_start_env(), **os.environ}
         api_key = start_env.get("QOD_API_KEY") or ""
-        token = "" if api_key else (load_settings(ctx.obj.profile).token or "")
+        # An expired session JWT counts as absent, so a terminal still reaches
+        # the prompt instead of provisioning with a token the manager will 401.
+        token = (
+            ""
+            if api_key
+            else admin_password.usable_session_token(load_settings(ctx.obj.profile).token)
+        )
         password = None
         if not api_key and not token:
             if admin_password.is_interactive():
@@ -675,6 +698,7 @@ def serve(
             api_key=api_key,
             token=token,
             password=password,
+            admin_names=admin_password.admin_usernames(start_env),
         )
         if not ok:
             raise typer.Exit(1)
@@ -779,6 +803,7 @@ def serve(
         api_key=env["QOD_API_KEY"],
         password=password,
         first_boot=first_boot,
+        admin_names=admin_password.admin_usernames(env),
     )
 
     if sf_plan is not None:

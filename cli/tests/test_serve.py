@@ -1,4 +1,5 @@
 import pathlib
+import time
 
 import httpx
 from click import unstyle
@@ -164,6 +165,16 @@ def test_serve_keeps_a_configured_api_key(runner, wired, tmp_path, monkeypatch):
     f.write_bytes(b"")
     _invoke(runner, wired, str(f))
     assert wired["provision"]["api_key"] == "mine"
+
+
+def test_serve_hands_every_configured_admin_name_to_the_banner(
+    runner, wired, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("QOD_ADMIN_USERNAME", "ops,root")
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    _invoke(runner, wired, str(f))
+    assert wired["provision"]["admin_names"] == ["ops", "root"]
 
 
 def test_serve_passes_the_resolved_target_to_provisioning(runner, wired, tmp_path):
@@ -742,14 +753,106 @@ def test_serve_attach_uses_the_api_key_then_token_then_errors(
     assert "no admin credential" in result.output
     assert "qod setup" not in result.output
 
-    monkeypatch.setenv("QOD_TOKEN", "jwt-x")
+    live = _jwt(exp=time.time() + 3600)
+    monkeypatch.setenv("QOD_TOKEN", live)
     result = _invoke(runner, wired, str(f))
     assert result.exit_code == 0, result.output
-    assert captured["token"] == "jwt-x"
+    assert captured["token"] == live
 
     monkeypatch.setenv("QOD_API_KEY", "k")
     _invoke(runner, wired, str(f))
     assert captured["api_key"] == "k"
+    assert captured["token"] == ""
+
+
+def _jwt(**claims) -> str:
+    import base64
+    import json
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{seg({'alg': 'HS256'})}.{seg(claims)}.sig"
+
+
+def test_serve_attach_treats_an_expired_token_as_absent_and_prompts(
+    runner, wired, respx_mock, tmp_path, monkeypatch
+):
+    from qod_cli import admin_password as ap
+    from qod_cli.commands import serve as serve_cmd
+    from qod_cli.main import app
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    captured = {}
+    monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: captured.update(kw) or True)
+    monkeypatch.setenv("QOD_TOKEN", _jwt(exp=time.time() - 60))
+    monkeypatch.setattr(ap, "is_interactive", lambda: True)
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+
+    result = runner.invoke(
+        app, ["serve", str(f), "--jar", str(wired["jar"])], input="s3cret\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["token"] == ""
+    assert captured["password"] == "s3cret"
+    assert captured["admin_names"] == ["admin@localhost.local", "admin"]
+
+
+def test_serve_attach_expired_token_without_a_terminal_refuses(
+    runner, wired, respx_mock, tmp_path, monkeypatch
+):
+    from qod_cli.commands import serve as serve_cmd
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    captured = {}
+    monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: captured.update(kw) or True)
+    monkeypatch.setenv("QOD_TOKEN", _jwt(exp=time.time() - 60))
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 1
+    assert "no admin credential" in result.output
+    assert captured == {}
+
+
+def test_attach_provision_failure_tail_points_at_the_credentials(respx_mock, tmp_path):
+    from qod_cli.commands.serve import _provision
+    from qod_cli.serve_target import resolve
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.post(f"{BASE}/api/auth/login").mock(return_value=httpx.Response(200, json={}))
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    lines = []
+    ok = _provision(
+        manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
+        pool="bi", size=1, password="pw", profile="default", attached=True,
+        ready_timeout=5, pg_port=0, pg_data_dir="", echo=lines.append,
+    )
+    out = "\n".join(lines)
+    assert ok is False
+    assert "the gateway is still running; fix the credentials (qod login, or export " in out
+    assert "QOD_API_KEY) and re-run qod serve" in out
+    assert "Ctrl-C" not in out
+
+
+def test_banner_names_a_rotate_line_per_configured_admin(respx_mock, tmp_path):
+    from qod_cli.commands.serve import _banner
+
+    kw = dict(
+        tenant="default", db="sales", pool="bi", size=1, first_boot=False,
+        edge_host="localhost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    )
+    banner = unstyle(_banner(**kw))
+    assert "qod auth change-password --username admin@localhost.local" in banner
+    assert "qod auth change-password --username admin\n" in banner
+    banner = unstyle(_banner(**kw, admin_names=["ops", "root"]))
+    assert "qod auth change-password --username ops" in banner
+    assert "qod auth change-password --username root" in banner
+    assert "--username admin" not in banner
 
 
 def test_serve_refuses_to_attach_to_a_non_loopback_manager(

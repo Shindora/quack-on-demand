@@ -9,8 +9,11 @@ password through `qod admin reset-password`.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 import sys
+import time
 
 import typer
 
@@ -57,6 +60,31 @@ def refusal(command: str) -> str:
         f"error: first boot needs an admin password; run {command} in a terminal or "
         f"export {KEY}"
     )
+
+
+PAT_PREFIX = "qod_pat_"
+
+
+def usable_session_token(token, now=None) -> str:
+    """TOKEN, or "" when it is a session JWT past its `exp`.
+
+    The payload is decoded without verification (the manager verifies it);
+    this only spares a request that would 401. Any decode failure, or a JWT
+    with no numeric `exp`, counts as expired. A personal access token
+    (`qod_pat_...`) is opaque, not a JWT, and is returned as-is."""
+    if not token:
+        return ""
+    if token.startswith(PAT_PREFIX):
+        return token
+    try:
+        segment = token.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+        exp = payload["exp"]
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+            return ""
+    except Exception:  # noqa: BLE001 - anything undecodable is unusable
+        return ""
+    return token if exp > (time.time() if now is None else now) else ""
 
 
 def _sqlstate(exc: Exception):

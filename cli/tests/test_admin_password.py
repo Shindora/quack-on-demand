@@ -87,3 +87,25 @@ def test_migration_removes_the_stored_value_and_prints_it_once():
     lines.clear()
     ap.migrate_stored_password(lines.append)
     assert lines == []
+
+
+def _jwt(payload_json: str) -> str:
+    import base64
+
+    seg = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=").decode()
+    return f"aGVhZGVy.{seg}.sig"
+
+
+def test_usable_session_token_keeps_a_live_jwt_and_drops_an_expired_one():
+    assert ap.usable_session_token(_jwt('{"exp": 2000}'), now=1000) == _jwt('{"exp": 2000}')
+    assert ap.usable_session_token(_jwt('{"exp": 500}'), now=1000) == ""
+
+
+def test_usable_session_token_treats_undecodable_as_absent():
+    for bad in ("", None, "jwt-x", "a.!!!.c", _jwt("not json"), _jwt('{"sub": "x"}'),
+                _jwt('{"exp": "soon"}'), _jwt('{"exp": true}')):
+        assert ap.usable_session_token(bad, now=1000) == ""
+
+
+def test_usable_session_token_keeps_an_opaque_pat():
+    assert ap.usable_session_token("qod_pat_abc", now=1000) == "qod_pat_abc"
