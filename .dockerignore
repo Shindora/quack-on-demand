@@ -41,3 +41,6 @@ docs/TPCH_SF1*
 
 # Existing assembly jar (the build stage produces a fresh one)
 distrib/quack-on-demand-assembly-*.jar
+
+# Starflow projects + DAGs (starflow compose profile)
+starflow
