@@ -575,3 +575,23 @@ def test_probe_duckdb_version_fails_soft(tmp_path):
     def missing(*a, **kw):
         raise FileNotFoundError("duckdb")
     assert probe_duckdb_version(tmp_path / "duckdb", run=missing) is None
+
+
+def test_probe_duckdb_version_tolerates_non_utf8_output(tmp_path):
+    binary = tmp_path / "duckdb"
+    binary.write_text("#!/bin/sh\nprintf 'v1.5.6 \\377\\376 junk\\n'\n")
+    binary.chmod(0o755)
+    assert probe_duckdb_version(binary) == "1.5.6"
+
+
+def test_probe_duckdb_version_none_stdout_is_none(tmp_path):
+    class NoOut:
+        stdout = None
+
+    assert probe_duckdb_version(tmp_path / "duckdb", run=lambda *a, **kw: NoOut()) is None
+
+
+def test_probe_duckdb_version_non_executable_is_none(tmp_path):
+    binary = tmp_path / "duckdb"
+    binary.write_text("#!/bin/sh\necho v1.5.6\n")
+    assert probe_duckdb_version(binary) is None

@@ -144,7 +144,13 @@ def probe_duckdb_version(binary: Path, run=subprocess.run) -> str | None:
     """The version a caller-supplied duckdb reports (`v1.5.6 (Variegata) <sha>` -> "1.5.6"), or
     None when it cannot be run or says nothing parsable."""
     try:
-        out = run([str(binary), "--version"], capture_output=True, text=True, timeout=5).stdout
+        out = run(
+            [str(binary), "--version"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=5,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     for token in (out or "").split():
