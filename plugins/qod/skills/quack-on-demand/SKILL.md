@@ -1851,7 +1851,7 @@ The node does NOT inherit the join process's whole environment (it holds the joi
 
 ### Fleet servers as Docker containers
 
-Manager and servers can all be containers. One container per server host, from
+Manager and servers can all be containers. One container per server (normally one per host), from
 `starlakeai/quack-on-demand-worker` (it runs `qod fleet join` and bundles DuckDB):
 
     docker run -d --name qod-worker --restart unless-stopped --stop-timeout 70 \

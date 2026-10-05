@@ -42,6 +42,16 @@ services:
     build:
       context: .
       dockerfile: docker/fleet-worker/Dockerfile
+      # Same proxy build args and host-gateway alias as the base quack build.
+      args:
+        HTTP_PROXY:  ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY:    ${NO_PROXY:-}
+        http_proxy:  ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy:    ${no_proxy:-}
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
     image: starlakeai/quack-on-demand-worker:${QOD_VERSION:-latest}
     container_name: quack-on-demand-fleet-worker-1
     restart: unless-stopped
@@ -65,6 +75,9 @@ services:
       QOD_S3_REGION: ${QOD_S3_REGION:-us-east-1}
       QOD_S3_URL_STYLE: path
       QOD_S3_USE_SSL: "false"
+      # The manager, Postgres and SeaweedFS are all dialed through host.docker.internal.
+      NO_PROXY: "localhost,127.0.0.1,host.docker.internal${NO_PROXY:+,${NO_PROXY}}"
+      no_proxy: "localhost,127.0.0.1,host.docker.internal${no_proxy:+,${no_proxy}}"
 
   fleet-worker-2:
     <<: *fleet-worker
