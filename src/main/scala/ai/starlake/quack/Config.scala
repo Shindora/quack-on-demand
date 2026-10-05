@@ -72,7 +72,7 @@ final case class AdminConfig(
     username: String,
     @field @ConfigField(
       envVar = "QOD_ADMIN_PASSWORD",
-      description = "Bootstrap admin password (re-hashed on every boot).",
+      description = "Bootstrap admin password, used only when the admin row does not exist yet.",
       sensitive = true
     )
     password: String,
