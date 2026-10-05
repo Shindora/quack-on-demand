@@ -167,6 +167,10 @@ object Main extends IOApp with LazyLogging:
             mgrCfg.requireEncryption
           )
         }.map(rc => if rc == 0 then ExitCode.Success else ExitCode.Error)
+      case "admin" :: "reset-password" :: rest =>
+        IO.blocking(
+          ai.starlake.quack.cli.AdminResetCli.run(rest, System.in, System.out, System.err)
+        ).map(ExitCode(_))
       case "demo" :: rest =>
         ai.starlake.quack.ondemand.demo.DemoRunner.runDemo(rest)
       case _ =>
