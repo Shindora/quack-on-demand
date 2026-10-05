@@ -141,6 +141,34 @@ class FleetQuackBackendSpec extends AnyFlatSpec with Matchers:
       Some("SET threads = 2;\nSET memory_limit = '1024MiB';\nSET threads = 8;")
   }
 
+  it should "hand servers the node-facing Postgres address of the managed metastore" in {
+    clockNow = Instant.parse("2026-09-25T10:00:00Z")
+    val store = new InMemoryFleetServerStore(clock = () => clockNow)
+    val cfg   = FleetConfig(
+      joinToken = "j",
+      startupTimeoutSec = 2,
+      stopTimeoutSec = 1,
+      nodePgHost = "host.docker.internal",
+      nodePgPort = "15432"
+    )
+    val backend = new FleetQuackBackend(
+      store,
+      cfg,
+      clock = () => clockNow,
+      pollInterval = 20.millis,
+      defaultPgHost = "postgres",
+      defaultPgPort = "5432"
+    )
+    val agent   = new FakeAgent(store, "srv-1"); agent.beat()
+    val managed =
+      spec("n1").copy(metastore =
+        Map("pgHost" -> "postgres", "pgPort" -> "5432", "pgPassword" -> "pw")
+      )
+    withAgent(agent)(backend.start(managed))
+    store.get("srv-1").get.assignment.map(a => (a.env("pgHost"), a.env("pgPort"))) shouldBe
+      Some(("host.docker.internal", "15432"))
+  }
+
   it should "raise NoFreeServer with a reason" in {
     val (store, backend, _, _) = fixture()
     the[NoFreeServer] thrownBy backend.start(spec("n1")).unsafeRunSync() should have message

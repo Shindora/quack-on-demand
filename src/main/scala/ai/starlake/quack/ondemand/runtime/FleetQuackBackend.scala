@@ -2,7 +2,12 @@ package ai.starlake.quack.ondemand.runtime
 
 import ai.starlake.quack.FleetConfig
 import ai.starlake.quack.model.{NodeSpec, PoolKey, RunningNode}
-import ai.starlake.quack.ondemand.fleet.{FleetLiveness, NodeResourceSql, ServerLiveness}
+import ai.starlake.quack.ondemand.fleet.{
+  FleetLiveness,
+  NodePgAddress,
+  NodeResourceSql,
+  ServerLiveness
+}
 import ai.starlake.quack.ondemand.state.{
   ClaimMiss,
   FleetAssignment,
@@ -48,7 +53,9 @@ final class FleetQuackBackend(
     store: FleetServerStore,
     cfg: FleetConfig,
     clock: () => Instant = () => Instant.now(),
-    pollInterval: FiniteDuration = 1.second
+    pollInterval: FiniteDuration = 1.second,
+    defaultPgHost: String = "",
+    defaultPgPort: String = ""
 ) extends QuackBackend
     with LazyLogging:
 
@@ -70,7 +77,15 @@ final class FleetQuackBackend(
       port = 0, // the store stamps the claimed server's node_port
       token = token,
       kind = spec.kindWire,
-      env = spec.metastore,
+      // The managed Postgres as servers reach it (QOD_FLEET_NODE_PG_HOST), never the manager's
+      // own connection.
+      env = NodePgAddress.rewrite(
+        spec.metastore,
+        defaultPgHost,
+        defaultPgPort,
+        cfg.nodePgHost,
+        cfg.nodePgPort
+      ),
       // Pool cpu/memory as DuckDB SETs, ahead of the tenant-db's own dbInitSql so an explicit
       // operator SET there still wins (later SET overrides).
       dbInitSql = NodeResourceSql.render(spec.cpu, spec.memory) + spec.dbInitSql,

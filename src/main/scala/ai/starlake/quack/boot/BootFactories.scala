@@ -68,7 +68,12 @@ object BootFactories extends LazyLogging:
                  else list.mkString(",")) +
                 s"; trusted proxies: $proxies"
             )
-        new FleetQuackBackend(fleetStore, mgrCfg.fleet)
+        new FleetQuackBackend(
+          fleetStore,
+          mgrCfg.fleet,
+          defaultPgHost = mgrCfg.defaultMetastore.pgHost,
+          defaultPgPort = mgrCfg.defaultMetastore.pgPort
+        )
       case other => sys.error(s"unknown runtime: $other")
 
   /** Backend for maintenance and branch-merge nodes. Same as `main` unless fleet mode asks for them
