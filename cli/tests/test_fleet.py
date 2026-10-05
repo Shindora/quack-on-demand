@@ -1,3 +1,6 @@
+import sys
+
+import pytest
 from typer.testing import CliRunner
 from qod_cli.main import app
 import qod_cli.rest as rest
@@ -79,6 +82,7 @@ def test_fleet_join_is_a_fleet_subcommand_and_agent_is_gone():
     assert old.exit_code != 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="qod fleet join is POSIX-only")
 def test_fleet_join_reads_its_options_from_the_environment(monkeypatch, tmp_path):
     import qod_cli.commands.fleet as fleet_cmd
     captured = {}
