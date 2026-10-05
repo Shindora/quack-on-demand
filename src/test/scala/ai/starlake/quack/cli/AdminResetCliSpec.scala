@@ -1,5 +1,7 @@
 package ai.starlake.quack.cli
 
+import ai.starlake.quack.ManagerConfig
+import ai.starlake.quack.Main.given
 import ai.starlake.quack.boot.EmbeddedControlPlane
 import ai.starlake.quack.ondemand.state.{LiquibaseRunner, UserStore}
 import ai.starlake.quack.ondemand.state.testkit.TestPostgres
@@ -95,4 +97,32 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
     EmbeddedControlPlane.attachOrStart(cfg).left.toOption.get should include(
       "nothing to reset; run qod serve first"
     )
+  }
+
+  "runWith" should "exit 2 when config loading or the embedded start throws" in {
+    val err = new ByteArrayOutputStream()
+    def go(
+        load: () => ManagerConfig,
+        attach: ai.starlake.quack.EmbeddedPostgresConfig => Either[
+          String,
+          EmbeddedControlPlane.Handle
+        ]
+    ) =
+      AdminResetCli.runWith(
+        List("root"),
+        new ByteArrayInputStream("pw\n".getBytes("UTF-8")),
+        new PrintStream(new ByteArrayOutputStream()),
+        new PrintStream(err),
+        load,
+        attach
+      )
+    go(() => throw new IllegalStateException("bad conf"), _ => Left("unused")) shouldBe 2
+    err.toString should include("error: control plane unreachable: bad conf")
+    val cfg = pureconfig.ConfigSource.default
+      .at("quack-on-demand")
+      .loadOrThrow[ManagerConfig]
+    val embedded = cfg.copy(embeddedPostgres = cfg.embeddedPostgres.copy(enabled = true))
+    go(() => embedded, _ => throw new IllegalStateException("start boom")) shouldBe 2
+    err.toString should include("error: control plane unreachable: start boom")
+    go(() => embedded, _ => Left("nothing to reset; run qod serve first")) shouldBe 1
   }
