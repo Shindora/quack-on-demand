@@ -42,6 +42,9 @@ class DuckDbPinParitySpec extends AnyFlatSpec with Matchers:
       "DUCKDB_CLI_VERSION"
     )
 
+  "Dockerfile" should "bake the pinned DuckDB CLI and libduckdb into the manager image" in
+    fileMustContain("Dockerfile", s"ARG DUCKDB_VERSION=$enginePin", "ARG DUCKDB_VERSION")
+
   "docker/quack-node/Dockerfile" should "bake the pinned DuckDB CLI into the node image" in
     fileMustContain(
       "docker/quack-node/Dockerfile",
