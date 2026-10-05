@@ -42,6 +42,8 @@ docs/TPCH_SF1*
 # Existing assembly jar (the build stage produces a fresh one)
 distrib/quack-on-demand-assembly-*.jar
 
+# Starflow projects + DAGs (starflow compose profile)
+starflow
 # Nested Python tooling caches (cli/.venv alone is ~170MB of build context)
 **/.venv
 **/.pytest_cache

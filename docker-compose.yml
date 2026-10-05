@@ -7,6 +7,10 @@
 #                metadata lives inside each tenant-db.
 #   - quack    : the manager (REST + UI + FlightSQL edge) built from ./Dockerfile
 #
+# Optional profiles: `seaweedfs` (in-compose S3), `observability`
+# (Prometheus + Grafana), `starflow` (Starlake API + UI paired with the
+# manager over SSO, see the starflow section below).
+#
 # All persistent state is bind-mounted onto the host. Each host path
 # defaults to a repo-relative folder but accepts an EXTERNAL override (env
 # var, absolute or relative) so the data can live off the repo on a
@@ -16,6 +20,7 @@
 #   ./certs           -> self-signed TLS cert + key (auto-gen first boot)  [CERTS_DIR]
 #   ./seaweedfs       -> SeaweedFS object data (seaweedfs profile)     [SEAWEEDFS_DIR]
 #   ./seaweedfs-config-> SeaweedFS S3 creds   (seaweedfs profile) [SEAWEEDFS_CONFIG_DIR]
+#   ./starflow        -> Starflow projects + DAGs (starflow profile)    [STARFLOW_DIR]
 #
 # NOTE: `NUKE=1 scripts/run-docker-compose.sh` only wipes the repo-relative
 # defaults; external folders you point these vars at are left untouched.
@@ -132,6 +137,16 @@ services:
       QOD_ADMIN_PASSWORD:  ${ADMIN_PASSWORD:-admin}
       QOD_API_KEY:         ${API_KEY:-}
       PROXY_TLS_ENABLED:        ${TLS:-false}
+
+      # ----- Starflow pairing (starflow profile; inert unless STARFLOW_ENABLED=true) -----
+      # Empty values equal unset: the Starlake menu/SSO stays off and boot
+      # generates a session secret, exactly as without these lines.
+      SL_ENABLED:             ${STARFLOW_ENABLED:-false}
+      SL_URL:                 ${STARFLOW_URL:-http://localhost:${STARFLOW_PORT:-9900}}
+      QOD_SESSION_JWT_SECRET: ${SESSION_JWT_SECRET:-}
+      # The edge's bearer provider verifies the tokens Starflow mints.
+      JWT_SECRET_KEY:         ${SESSION_JWT_SECRET:-}
+      QOD_PUBLIC_BASE_URL:    ${QOD_PUBLIC_URL:-}
 
       # ----- Local-mode Quack node port range -----
       QOD_MIN_PORT: "${QUACK_MIN_PORT:-21900}"
@@ -342,6 +357,110 @@ services:
         echo "s3.bucket.create -name $${S3_BUCKET}" | weed shell -master=seaweedfs:9333 \
           || echo "bucket create returned non-zero (already exists?); continuing."
         echo "seaweedfs bucket ready: $${S3_BUCKET}"
+
+  # --- Starflow: Starlake API + UI (starflow profile) ----------------------
+  # The compose twin of `qod start --with-starflow`. Bring up with
+  #   STARFLOW_ENABLED=true docker compose --profile starflow up -d --build
+  # (or put STARFLOW_ENABLED=true and COMPOSE_PROFILES=starflow in .env).
+  #
+  # Required in .env, stable across restarts so SSO and the Starflow -> QoD
+  # calls keep working (starflow-db-init refuses to proceed without them):
+  #   API_KEY=$(openssl rand -hex 32)              # QOD_API_KEY on both sides
+  #   SESSION_JWT_SECRET=$(openssl rand -hex 48)   # QoD session secret = Starflow JWT key
+  #
+  # Optional: STARFLOW_VERSION (release baked into the image, default 1.8.8),
+  # STARFLOW_PORT (host port, 9900), STARFLOW_URL (browser-facing URL,
+  # http://localhost:$STARFLOW_PORT), STARFLOW_DOMAIN (its host, localhost),
+  # QOD_PUBLIC_URL (browser-facing QoD URL, http://localhost:$MANAGER_PORT),
+  # STARFLOW_DB (metadata database on the same Postgres server, starlake),
+  # STARFLOW_QOD_FLIGHT_URL (http://quack:31338; https://quack:31338 with TLS=true).
+  starflow-db-init:
+    image: postgres:16-alpine
+    container_name: quack-on-demand-starflow-db-init
+    profiles: ["starflow"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST:     postgres
+      PGPORT:     "5432"
+      PGUSER:     ${PG_USER:-postgres}
+      PGPASSWORD: ${PG_PASSWORD:-azizam}
+      PGDATABASE: postgres
+      STARFLOW_DB:        ${STARFLOW_DB:-starlake}
+      STARFLOW_ENABLED:   ${STARFLOW_ENABLED:-false}
+      API_KEY:            ${API_KEY:-}
+      SESSION_JWT_SECRET: ${SESSION_JWT_SECRET:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        missing=""
+        [ "$${STARFLOW_ENABLED}" = "true" ] || missing="$$missing STARFLOW_ENABLED=true"
+        [ -n "$${API_KEY}" ] || missing="$$missing API_KEY"
+        [ -n "$${SESSION_JWT_SECRET}" ] || missing="$$missing SESSION_JWT_SECRET"
+        if [ -n "$$missing" ]; then
+          echo "starflow profile needs in .env:$$missing (see the starflow section of docker-compose.yml)" >&2
+          exit 1
+        fi
+        # Idempotent CREATE DATABASE next to the qod control plane.
+        echo "SELECT 'CREATE DATABASE \"$${STARFLOW_DB}\"' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$${STARFLOW_DB}')\gexec" \
+          | psql -v ON_ERROR_STOP=1 -q
+        echo "database $${STARFLOW_DB} ready"
+
+  starflow:
+    build:
+      context: docker/starflow
+      args:
+        STARFLOW_VERSION: ${STARFLOW_VERSION:-1.8.8}
+        HTTP_PROXY:  ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY:    ${NO_PROXY:-}
+        http_proxy:  ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy:    ${no_proxy:-}
+    image: qod-starflow:${STARFLOW_VERSION:-1.8.8}
+    container_name: quack-on-demand-starflow
+    profiles: ["starflow"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      starflow-db-init:
+        condition: service_completed_successfully
+      quack:
+        condition: service_started
+    environment:
+      # Pairing with the manager, server-to-server over the compose network.
+      QOD_ENABLED:      "true"
+      QOD_URL:          http://quack:20900
+      QOD_FLIGHT_URL:   ${STARFLOW_QOD_FLIGHT_URL:-http://quack:31338}
+      # The edge's certificate is self-signed when TLS=true.
+      QOD_TLS_INSECURE: "true"
+      # Browser-facing: must work from the user's machine.
+      QOD_UI_URL:       ${QOD_PUBLIC_URL:-http://localhost:${MANAGER_PORT:-20900}}/ui
+      QOD_API_KEY:      ${API_KEY:-}
+      JWT_SECRET_KEY:   ${SESSION_JWT_SECRET:-}
+      # Starflow itself; metadata in its own database on the same Postgres.
+      SL_API_HTTP_PORT:        "9900"
+      SL_API_HTTP_FRONT_URL:   ${STARFLOW_URL:-http://localhost:${STARFLOW_PORT:-9900}}
+      SL_API_DOMAIN:           ${STARFLOW_DOMAIN:-localhost}
+      SL_API_ORCHESTRATOR_URL: ${STARFLOW_URL:-http://localhost:${STARFLOW_PORT:-9900}}/airflow/
+      SL_API_JDBC_URL:         jdbc:postgresql://postgres:5432/${STARFLOW_DB:-starlake}
+      SL_API_JDBC_USER:        ${PG_USER:-postgres}
+      SL_API_JDBC_PASSWORD:    ${PG_PASSWORD:-azizam}
+      SL_API_JDBC_DRIVER:      org.postgresql.Driver
+      SL_LOG_LEVEL:            ${SL_LOG_LEVEL:-info}
+      HTTP_PROXY:  ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY:    "localhost,127.0.0.1,postgres,quack${NO_PROXY:+,${NO_PROXY}}"
+      http_proxy:  ${http_proxy:-}
+      https_proxy: ${https_proxy:-}
+      no_proxy:    "localhost,127.0.0.1,postgres,quack${no_proxy:+,${no_proxy}}"
+    ports:
+      - "${STARFLOW_PORT:-9900}:9900"
+    volumes:
+      - ${STARFLOW_DIR:-./starflow}/projects:/app/starlake/projects
+      - ${STARFLOW_DIR:-./starflow}/dags:/app/starlake/dags
 
   # --- Prometheus + Grafana (observability profile) ------------------------
   # Optional. Bring up with
