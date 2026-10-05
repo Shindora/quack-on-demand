@@ -10,15 +10,17 @@ import java.io.{BufferedReader, InputStream, InputStreamReader, PrintStream}
 import java.nio.charset.StandardCharsets
 import scala.util.control.NonFatal
 
-/** `java -jar qod.jar admin reset-password <username> [--must-change]`, password on the first stdin
-  * line. Break-glass recovery of a superuser password straight in the control-plane database, so it
-  * works with the manager down and every login path blocked. Authority = reaching that database
-  * with the configured credentials. Exit 0 updated, 1 no such superuser / usage / control plane not
-  * initialized, 2 control plane unreachable.
+/** `java -jar qod.jar admin reset-password <username>... [--must-change]`, password on the first
+  * stdin line. Break-glass recovery of superuser passwords straight in the control-plane database,
+  * so it works with the manager down and every login path blocked. Every named superuser that
+  * exists is reset to the same password in one store session (the default admin names are seeded as
+  * one credential). Authority = reaching that database with the configured credentials. Exit 0 at
+  * least one updated, 1 none of the names is a superuser / usage / control plane not initialized, 2
+  * control plane unreachable.
   */
 object AdminResetCli:
 
-  private val Usage = "usage: admin reset-password <username> [--must-change]"
+  private val Usage = "usage: admin reset-password <username>... [--must-change]"
 
   def run(args: List[String], in: InputStream, out: PrintStream, err: PrintStream): Int =
     runWith(args, in, out, err, loadConfig, EmbeddedControlPlane.attachOrStart)
@@ -36,13 +38,13 @@ object AdminResetCli:
   ): Int =
     val mustChange = args.contains("--must-change")
     args.filterNot(_ == "--must-change") match
-      case username :: Nil =>
+      case usernames @ (_ :: _) =>
         val reader   = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))
         val password = Option(reader.readLine()).getOrElse("")
         if password.isEmpty then
           err.println("error: empty password on stdin")
           1
-        else resetConfigured(username, password, mustChange, out, err, loadCfg, attach)
+        else resetConfigured(usernames, password, mustChange, out, err, loadCfg, attach)
       case _ =>
         err.println(Usage)
         1
@@ -59,8 +61,11 @@ object AdminResetCli:
       .takeWhile(_ != null)
       .collectFirst { case e: java.sql.SQLException => e }
 
+  private val NoSuperuserHint =
+    "if the first boot never created it, export QOD_ADMIN_PASSWORD and restart the manager once"
+
   private def resetConfigured(
-      username: String,
+      usernames: List[String],
       password: String,
       mustChange: Boolean,
       out: PrintStream,
@@ -93,15 +98,18 @@ object AdminResetCli:
           try
             val store = UserStore.fromDefaultMetastore(meta, mgrCfg.auth.lockout)
             try
-              reset(store, username, password, mustChange) match
-                case 0 =>
-                  out.println(
-                    s"password reset for superuser '$username'. Existing sessions are not revoked."
-                  )
-                  0
-                case code =>
-                  err.println(s"error: no superuser named '$username'")
-                  code
+              val updated =
+                usernames.distinct.filter(u => reset(store, u, password, mustChange) == 0)
+              updated.foreach { u =>
+                out.println(
+                  s"password reset for superuser '$u'. Existing sessions are not revoked."
+                )
+              }
+              if updated.nonEmpty then 0
+              else
+                val names = usernames.distinct.map(u => s"'$u'").mkString(", ")
+                err.println(s"error: no superuser named $names; $NoSuperuserHint")
+                1
             finally store.close()
           catch
             case NonFatal(e)
@@ -109,5 +117,9 @@ object AdminResetCli:
               err.println("error: control plane not initialized; start the manager once first")
               1
             case NonFatal(e) => unreachable(e)
-          finally release()
+          finally
+            try release()
+            catch
+              case NonFatal(e) =>
+                err.println(s"warning: could not stop the embedded Postgres: ${e.getMessage}")
     catch case NonFatal(e) => unreachable(e)

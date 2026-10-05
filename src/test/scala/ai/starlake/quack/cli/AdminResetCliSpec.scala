@@ -79,7 +79,7 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
         new PrintStream(err)
       )
     run(Nil, "pw\n") shouldBe 1
-    err.toString should include("usage: admin reset-password <username> [--must-change]")
+    err.toString should include("usage: admin reset-password <username>... [--must-change]")
     run(List("root"), "\n") shouldBe 1
     err.toString should include("empty password")
   }
@@ -125,4 +125,93 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
     go(() => embedded, _ => throw new IllegalStateException("start boom")) shouldBe 2
     err.toString should include("error: control plane unreachable: start boom")
     go(() => embedded, _ => Left("nothing to reset; run qod serve first")) shouldBe 1
+  }
+
+  /** runWith against a fresh control-plane DB through the embedded seam: the handle points at the
+    * test Postgres, `stop` is the injected release.
+    */
+  private def runOnDb(
+      url: String,
+      names: List[String],
+      release: () => Unit = () => ()
+  ): (Int, String, String) =
+    val dbName = url.substring(url.lastIndexOf('/') + 1)
+    val base   = pureconfig.ConfigSource.default
+      .at("quack-on-demand")
+      .loadOrThrow[ManagerConfig]
+    val cfg = base.copy(
+      embeddedPostgres = base.embeddedPostgres.copy(enabled = true),
+      defaultMetastore = base.defaultMetastore.copy(dbName = dbName)
+    )
+    val handle = EmbeddedControlPlane.Handle(
+      TestPostgres.pgHost,
+      TestPostgres.pgPort,
+      TestPostgres.pgUser,
+      TestPostgres.pgPass,
+      release
+    )
+    val out  = new ByteArrayOutputStream()
+    val err  = new ByteArrayOutputStream()
+    val code = AdminResetCli.runWith(
+      names,
+      new ByteArrayInputStream("new-pw\n".getBytes("UTF-8")),
+      new PrintStream(out),
+      new PrintStream(err),
+      () => cfg,
+      _ => Right(handle)
+    )
+    (code, out.toString, err.toString)
+
+  private def verifies(url: String, username: String, pw: String): Boolean =
+    val hash = column(
+      url,
+      s"SELECT password_hash FROM qodstate_user WHERE tenant IS NULL AND username = '$username'"
+    )
+    BCrypt.verifyer().verify(pw.toCharArray, hash).verified
+
+  it should "reset every named superuser that exists and exit 0" in withFreshDb { url =>
+    val store = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      store.upsertUser(None, "admin@localhost.local", "old-pw", "admin")
+      store.upsertUser(None, "admin", "old-pw", "admin")
+    finally store.close()
+    val (code, out, _) = runOnDb(url, List("admin@localhost.local", "admin"))
+    code shouldBe 0
+    out should include("password reset for superuser 'admin@localhost.local'")
+    out should include("password reset for superuser 'admin'")
+    verifies(url, "admin@localhost.local", "new-pw") shouldBe true
+    verifies(url, "admin", "new-pw") shouldBe true
+  }
+
+  it should "exit 0 when one of two names is missing, updating the existing one" in withFreshDb {
+    url =>
+      val store = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+      try store.upsertUser(None, "root", "old-pw", "admin")
+      finally store.close()
+      val (code, out, _) = runOnDb(url, List("root", "ghost"))
+      code shouldBe 0
+      out should include("password reset for superuser 'root'")
+      out should not include "ghost"
+      verifies(url, "root", "new-pw") shouldBe true
+  }
+
+  it should "exit 1 with the first-boot hint when no name is a superuser" in withFreshDb { url =>
+    val (code, _, err) = runOnDb(url, List("ghost", "phantom"))
+    code shouldBe 1
+    err should include("no superuser named 'ghost', 'phantom'")
+    err should include(
+      "if the first boot never created it, export QOD_ADMIN_PASSWORD and restart the manager once"
+    )
+  }
+
+  it should "keep exit 0 and warn when stopping the embedded Postgres throws" in withFreshDb {
+    url =>
+      val store = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+      try store.upsertUser(None, "root", "old-pw", "admin")
+      finally store.close()
+      val (code, _, err) =
+        runOnDb(url, List("root"), () => throw new IllegalStateException("stop boom"))
+      code shouldBe 0
+      err should include("warning: could not stop the embedded Postgres: stop boom")
+      verifies(url, "root", "new-pw") shouldBe true
   }
