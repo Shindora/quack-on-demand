@@ -9,7 +9,7 @@ Without `--demo` this is not the demo: `qod serve --demo` (and its deprecated al
 `qod start --demo`) is ephemeral, seeded with TPC-H, and deliberately insecure (its
 posture comes from DemoConfig.overlay and lives only on that code path); the default
 `qod serve` path is persistent and keeps the normal secure posture: TLS on, DB auth
-on, ACL on, a generated admin password instead of 'admin'.
+on, ACL on, an admin password chosen at first boot instead of 'admin'.
 
 Provisioning runs in a thread beside the output relay because the manager has to
 be up before the REST calls can land, and `_run_supervised` owns the foreground
@@ -29,8 +29,8 @@ from urllib.parse import urlparse
 import httpx
 import typer
 
-from .. import launcher, starflow
-from ..config import Settings, load_start_env, save_profile, save_start_env
+from .. import admin_password, launcher, starflow
+from ..config import Settings, load_settings, load_start_env, save_profile
 from ..rest import ApiError, RestClient
 from ..serve_provision import (
     ProvisionError,
@@ -49,23 +49,6 @@ from .demo import run_demo
 # The seeded superuser. QOD_ADMIN_USERNAME defaults to "admin@localhost.local,admin",
 # so both names exist; the short one is what a person types.
 _ADMIN_USER = "admin"
-
-
-def _resolve_admin_password() -> tuple[str, bool]:
-    """(password, generated_now).
-
-    Precedence is the CLI's usual one: a real QOD_ADMIN_PASSWORD wins, then the
-    value a previous `qod serve` (or `qod setup`) stored, and only a completely
-    fresh install generates. Reusing the stored value is what makes the password
-    printed on the first serve keep working on every later one.
-    """
-    from_env = os.environ.get("QOD_ADMIN_PASSWORD")
-    if from_env:
-        return from_env, False
-    stored = load_start_env().get("QOD_ADMIN_PASSWORD")
-    if stored:
-        return stored, False
-    return secrets.token_urlsafe(12), True
 
 
 def _manager_running(manager_url: str) -> bool:
@@ -219,28 +202,29 @@ def _credential_tail_note(target: str | None, tables: list[str]) -> str | None:
 
 
 def _banner(
-    *, tenant: str, db: str, pool: str, size: int, password: str, generated: bool,
+    *, tenant: str, db: str, pool: str, size: int, first_boot: bool,
     edge_host: str, edge_port: int, manager_url: str, pg_port: int, pg_data_dir: str,
     description: str, attached: bool = False, quack_port: int = 0,
+    admin_names: list[str] | None = None,
 ) -> str:
-    """The connect snippet. The PLAINTEXT password appears only on the run that
-    generated it: reprinting a stored secret on every boot would put it in every
-    terminal scrollback and CI log for no benefit. The "stored in <config path>"
-    line is unconditional (generated or not), so a JVM death before the generating
-    run's banner still leaves the user a way back in.
+    """The connect snippet. The admin password never appears: it is chosen at
+    the first boot (FIRST_BOOT), passed to the manager once and stored nowhere,
+    so the banner only says where it came from and, on later boots, how to
+    recover it (qod admin reset-password).
 
-    The connect lines (JDBC/ADBC/ODBC/UI) and the one-time plaintext password
-    line are styled (bold, colored) so they stand out for copy-pasting; click
-    auto-strips the ANSI codes when the destination isn't a terminal, so piped
-    output and CI logs stay plain text.
+    The connect lines (JDBC/ADBC/ODBC/UI) are styled (bold, colored) so they
+    stand out for copy-pasting; click auto-strips the ANSI codes when the
+    destination isn't a terminal, so piped output and CI logs stay plain text.
 
     ATTACHED (B1, #100): this run provisioned into an already-running manager
     rather than booting its own. The embedded-postgres lines make no sense there
     - that manager's control plane might be external and this process never
     touched it - so the header and tail change; everything else (credentials,
-    connect strings) is identical either way."""
-    from ..config import config_path
+    connect strings) is identical either way.
 
+    ADMIN_NAMES: every configured QOD_ADMIN_USERNAME (None = the built-in
+    default). They were seeded as one credential, so each one is rotated
+    separately: the banner names a change-password line per name."""
     # The seeded admin is a SUPERUSER row (tenant IS NULL): the FlightSQL edge picks
     # the auth realm off a "superuser" header (JDBC/ADBC/ODBC params become gRPC
     # headers), and with tenant= present but no superuser flag it auths in the
@@ -299,41 +283,30 @@ def _banner(
             f"  tenant/db/pool: {tenant} / {db} / {pool}  ({size} dual node)",
             typer.style(f"  admin user    : {_ADMIN_USER}", fg=typer.colors.YELLOW),
         ]
-    if generated:
-        # Bold+yellow so the one-time plaintext doesn't blend into the rest of the
-        # scrollback. typer.style() only wraps the whole string (ANSI codes go at
-        # the very start and end, never mid-string), so the literal
-        # "password      : <value>" text stays contiguous for anything matching on
-        # it, and click.echo strips the codes automatically when stdout/stderr
-        # isn't a terminal (piped output, CI logs stay plain).
+    if first_boot:
         lines.append(
             typer.style(
-                f"  password      : {password}   (generated, shown once)",
-                fg=typer.colors.YELLOW,
-                bold=True,
-            )
-        )
-        lines.append(
-            typer.style(
-                f"                  stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}",
+                "  password      : the one you just set (not stored anywhere)",
                 fg=typer.colors.YELLOW,
             )
         )
     else:
-        # No preceding "password :" line to hang off of here, so this is its own
-        # aligned row rather than a continuation.
         lines.append(
             typer.style(
-                f"  password      : stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}",
+                "  password      : set at first boot, not stored; forgot it? "
+                "qod admin reset-password",
                 fg=typer.colors.YELLOW,
             )
         )
-    lines.append(
-        typer.style(
-            f"  rotate password: qod auth change-password --username {_ADMIN_USER}",
-            fg=typer.colors.YELLOW,
+        lines.append("  CLI session   : if qod commands answer 401, run qod login")
+    names = admin_names if admin_names else admin_password.admin_usernames({})
+    for name in names:
+        lines.append(
+            typer.style(
+                f"  rotate password: qod auth change-password --username {name}",
+                fg=typer.colors.YELLOW,
+            )
         )
-    )
     # Native Quack front door: the token string is the JDBC query string. Loopback hosts
     # speak plain HTTP by default on the DuckDB side, which is what a local serve listens on.
     quack_token = f"tenant={tenant}&pool={pool}&user={_ADMIN_USER}&password=<password>&superuser=true"
@@ -357,15 +330,31 @@ def _banner(
     return "\n".join(lines)
 
 
+def _failure_tail(attached: bool) -> str:
+    if attached:
+        return (
+            "  the gateway is still running; fix the credentials (qod login, or export "
+            "QOD_API_KEY) and re-run qod serve"
+        )
+    return "  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop."
+
+
 def _provision(
-    *, manager_url: str, tenant: str, target, pool: str, size: int, password: str,
-    profile: str, generated: bool, ready_timeout: float, pg_port: int, pg_data_dir: str,
-    echo, attached: bool = False, node_timeout: float = 60.0,
-    node_sleep=time.sleep, node_now=time.monotonic,
+    *, manager_url: str, tenant: str, target, pool: str, size: int, profile: str,
+    ready_timeout: float, pg_port: int, pg_data_dir: str, echo,
+    api_key: str = "", token: str = "", password: str | None = None,
+    first_boot: bool = False, attached: bool = False, node_timeout: float = 60.0,
+    node_sleep=time.sleep, node_now=time.monotonic, admin_names: list[str] | None = None,
 ) -> bool:
-    """Wait for the manager, log in, ensure tenant/database/pool, persist the
-    session, print the banner. Returns True once the banner has printed, False
-    on any failure arm.
+    """Wait for the manager, authenticate, ensure tenant/database/pool, persist
+    the profile, print the banner. Returns True once the banner has printed,
+    False on any failure arm.
+
+    Authentication is whichever credential the caller has: API_KEY (the per-boot
+    key a booting serve hands its own manager, or a configured one), TOKEN (an
+    existing session, attach mode), or PASSWORD, which logs in as the seeded
+    admin and saves the resulting session to the profile. Without a password the
+    profile's stored token is left as it was.
 
     Never raises: this runs on a background thread whose exception would be
     invisible, and the manager must stay up either way so the user can read the
@@ -384,10 +373,12 @@ def _provision(
     client = RestClient(settings)
     try:
         wait_ready(client, timeout_s=ready_timeout)
-        login = client.request(
-            "POST", "/api/auth/login", body={"username": _ADMIN_USER, "password": password}
-        )
-        token = login["token"]
+        if password is not None:
+            login = client.request(
+                "POST", "/api/auth/login", body={"username": _ADMIN_USER, "password": password}
+            )
+            token = login["token"]
+        settings.api_key = api_key
         settings.token = token
         client = RestClient(settings)
         ensure_tenant(client, tenant)
@@ -413,7 +404,9 @@ def _provision(
             profile,
             {
                 "manager_url": manager_url,
-                "token": token,
+                # save_profile skips None: a run that did not log in keeps the
+                # profile's stored session.
+                "token": token if password is not None else None,
                 "sql_user": _ADMIN_USER,
                 # The login just above authenticated in the SYSTEM realm (the seeded
                 # admin is a superuser row, tenant IS NULL): the FlightSQL handshake
@@ -431,11 +424,12 @@ def _provision(
         )
         echo(
             _banner(
-                tenant=tenant, db=db_full, pool=pool, size=size, password=password,
-                generated=generated, edge_host=edge_host, edge_port=edge_port,
+                tenant=tenant, db=db_full, pool=pool, size=size,
+                first_boot=first_boot, edge_host=edge_host, edge_port=edge_port,
                 quack_port=quack_port,
                 manager_url=manager_url, pg_port=pg_port, pg_data_dir=pg_data_dir,
                 description=target.description, attached=attached,
+                admin_names=admin_names,
             )
         )
         return True
@@ -443,15 +437,15 @@ def _provision(
         echo(f"\nqod serve: {exc.step} failed: {exc.detail}")
         if exc.manual:
             echo(f"  finish by hand: {exc.manual}")
-        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+        echo(_failure_tail(attached))
         return False
     except ApiError as exc:
         echo(f"\nqod serve: provisioning failed: {exc}")
-        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+        echo(_failure_tail(attached))
         return False
     except Exception as exc:  # noqa: BLE001 - never raises, see the docstring above.
         echo(f"\nqod serve: provisioning failed unexpectedly: {exc!r}")
-        echo("  the manager is still running; re-run qod serve to resume, or Ctrl-C to stop.")
+        echo(_failure_tail(attached))
         return False
 
 
@@ -637,6 +631,8 @@ def serve(
         )
         raise typer.Exit(1)
 
+    admin_password.migrate_stored_password(lambda line: typer.echo(line, err=True))
+
     if _manager_running(manager_url):
         if sf_request is not None:
             # qod cannot know, or inject, the running manager's API key and
@@ -653,7 +649,7 @@ def serve(
             # `qod login` profile against someone else's deployment, and
             # attaching would quietly create tenant/db/pool rows there with a
             # local filesystem dataPath its nodes cannot read, using whatever
-            # QOD_ADMIN_PASSWORD happens to be set locally. Refuse outright;
+            # admin credential happens to be set locally. Refuse outright;
             # point at the admin flows that are meant for a remote manager.
             typer.echo(
                 f"error: a manager is already running at {manager_url}, but qod serve only "
@@ -663,34 +659,46 @@ def serve(
             )
             raise typer.Exit(1)
         # Attach mode (B1, #100): a manager is already up, so provision into it
-        # in the foreground instead of booting a second JVM. A fresh password
-        # cannot possibly match an already-running manager, so this path never
-        # generates one - only a real env var or an earlier `qod serve`'s stored
-        # value will do. Reuses _resolve_admin_password so the env-then-stored
-        # precedence has exactly one implementation.
-        password, generated = _resolve_admin_password()
-        if generated:
-            typer.echo(
-                f"error: a manager is already running at {manager_url}, but no admin "
-                "password is available to attach with; export QOD_ADMIN_PASSWORD or run "
-                "qod setup / qod login",
-                err=True,
-            )
-            raise typer.Exit(1)
+        # in the foreground instead of booting a second JVM. The admin password is
+        # stored nowhere, so the credential is a configured API key, then the
+        # profile's session (QOD_TOKEN wins), then a prompt on a terminal.
+        start_env = {**load_start_env(), **os.environ}
+        api_key = start_env.get("QOD_API_KEY") or ""
+        # An expired session JWT counts as absent, so a terminal still reaches
+        # the prompt instead of provisioning with a token the manager will 401.
+        token = (
+            ""
+            if api_key
+            else admin_password.usable_session_token(load_settings(ctx.obj.profile).token)
+        )
+        password = None
+        if not api_key and not token:
+            if admin_password.is_interactive():
+                password = typer.prompt("Admin password", hide_input=True)
+            else:
+                typer.echo(
+                    f"error: a manager is already running at {manager_url}, but no admin "
+                    "credential is available to attach with; export QOD_API_KEY, run qod "
+                    "login, or run qod serve in a terminal",
+                    err=True,
+                )
+                raise typer.Exit(1)
         ok = _provision(
             manager_url=manager_url,
             tenant=tenant,
             target=resolved,
             pool=pool,
             size=size,
-            password=password,
             profile=ctx.obj.profile,
-            generated=False,
             ready_timeout=ready_timeout,
             pg_port=0,
             pg_data_dir="",
             echo=lambda line: typer.echo(line, err=True),
             attached=True,
+            api_key=api_key,
+            token=token,
+            password=password,
+            admin_names=admin_password.admin_usernames(start_env),
         )
         if not ok:
             raise typer.Exit(1)
@@ -710,12 +718,6 @@ def serve(
 
     state_dir = launcher.default_data_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
-
-    password, generated = _resolve_admin_password()
-    if generated:
-        # Persisted BEFORE the manager boots: the seeded password must survive a
-        # restart, or the banner's credentials stop working on the second run.
-        save_start_env({"QOD_ADMIN_PASSWORD": password})
 
     # Precedence for --pg-port/--pg-data-dir mirrors the rest of the CLI: explicit
     # flag > real env var / a value persisted by `qod setup` > built-in default.
@@ -745,6 +747,17 @@ def serve(
         if pg_data_dir is not None
         else (base_env.get("QOD_PG_EMBEDDED_DATA_DIR") or str(state_dir / "pg"))
     )
+    # First boot = the embedded control plane has no data dir yet: the manager
+    # will seed the admin row from this password, once. It is never stored.
+    first_boot = not (Path(effective_pg_dir) / "pgdata").is_dir()
+    password = None
+    if first_boot:
+        password = admin_password.first_boot_password(
+            os.environ.get(admin_password.KEY), admin_password.is_interactive()
+        )
+        if password is None:
+            typer.echo(admin_password.refusal("qod serve"), err=True)
+            raise typer.Exit(1)
 
     env = launcher.runtime_env(
         base_env, app_home, duckdb_bin, spawn_sh, spawn_ps1, libduckdb_lib=libduckdb
@@ -753,9 +766,14 @@ def serve(
     env["QOD_PG_EMBEDDED"] = "true"
     env["QOD_PG_EMBEDDED_PORT"] = str(effective_pg_port)
     env["QOD_PG_EMBEDDED_DATA_DIR"] = effective_pg_dir
-    env["QOD_ADMIN_PASSWORD"] = password
+    if password is not None:
+        env[admin_password.KEY] = password
     if sf_plan is not None:
         env.update(starflow.manager_env(sf_plan.url, sf_plan.api_key, sf_plan.secret))
+    # Provisioning authenticates with a per-boot key held in memory only, so no
+    # admin password is needed after the first boot. A configured key wins.
+    if not env.get("QOD_API_KEY"):
+        env["QOD_API_KEY"] = secrets.token_urlsafe(32)
     # quack-on-demand.acl.enabled defaults to FALSE, so a persistent install has to
     # ask for it. TLS and DB auth are already on by default. A real env var or a
     # persisted `qod setup` value wins over this default.
@@ -777,13 +795,15 @@ def serve(
         target=resolved,
         pool=pool,
         size=size,
-        password=password,
         profile=ctx.obj.profile,
-        generated=generated,
         ready_timeout=ready_timeout,
         pg_port=effective_pg_port,
         pg_data_dir=effective_pg_dir,
         echo=lambda line: typer.echo(line, err=True),
+        api_key=env["QOD_API_KEY"],
+        password=password,
+        first_boot=first_boot,
+        admin_names=admin_password.admin_usernames(env),
     )
 
     if sf_plan is not None:

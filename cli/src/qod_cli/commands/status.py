@@ -156,7 +156,7 @@ def status(ctx: typer.Context):
 
     start_env = load_start_env()
 
-    # `qod serve` persists only QOD_ADMIN_PASSWORD to the [start] table, so there is
+    # `qod serve` persists nothing to the [start] table, so there is
     # no stored QOD_PG_EMBEDDED* state to read here - the filesystem is the only
     # ground truth, and it is also the one source that still answers when the
     # manager (and so the process that would have reported its own coordinates) is

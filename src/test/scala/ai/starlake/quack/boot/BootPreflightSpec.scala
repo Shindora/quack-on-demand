@@ -162,6 +162,108 @@ class BootPreflightSpec extends AnyFlatSpec with Matchers:
       store.close()
   }
 
+  it should "never touch an existing admin row on a later boot" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      val first = AdminConfig(username = "root", password = "first-pw", kind = "admin")
+      BootPreflight.seedAdminUsers(userStore, first, _ => None)
+      val conn = DriverManager.getConnection(url, TestPostgres.pgUser, TestPostgres.pgPass)
+      def row(): (String, String, Int) =
+        val rs = conn
+          .createStatement()
+          .executeQuery(
+            "SELECT password_hash, kind, failed_attempts FROM qodstate_user " +
+              "WHERE tenant IS NULL AND username = 'root'"
+          )
+        rs.next()
+        (rs.getString(1), rs.getString(2), rs.getInt(3))
+      try
+        conn
+          .createStatement()
+          .executeUpdate(
+            "UPDATE qodstate_user SET failed_attempts = 3 WHERE username = 'root'"
+          )
+        val before = row()
+        BootPreflight.seedAdminUsers(
+          userStore,
+          AdminConfig(username = "root", password = "second-pw", kind = "user"),
+          _ => None
+        )
+        row() shouldBe before
+      finally conn.close()
+    finally userStore.close()
+  }
+
+  it should "create a missing name while leaving an existing one alone" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    val store     = new PostgresControlPlaneStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "pw", kind = "admin"),
+        _ => None
+      )
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root,ops", password = "pw", kind = "admin"),
+        _ => None
+      )
+      store.findUser(None, "ops") shouldBe defined
+    finally
+      userStore.close()
+      store.close()
+  }
+
+  it should "warn only when QOD_ADMIN_PASSWORD is set and the row already exists" in withFreshDb {
+    url =>
+      val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+      try
+        val cfg     = AdminConfig(username = "root", password = "pw", kind = "admin")
+        val withEnv = (k: String) => Option.when(k == "QOD_ADMIN_PASSWORD")("pw")
+        BootPreflight.seedAdminUsers(userStore, cfg, withEnv) shouldBe Nil
+        BootPreflight.seedAdminUsers(userStore, cfg, _ => None) shouldBe Nil
+        val warnings = BootPreflight.seedAdminUsers(userStore, cfg, withEnv)
+        warnings should have size 1
+        warnings.head should include("admin 'root' already exists")
+        warnings.head should include("QOD_ADMIN_PASSWORD is ignored")
+        warnings.head should include("qod admin reset-password")
+      finally userStore.close()
+  }
+
+  it should "seed nothing for a missing row when no password is configured" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    val store     = new PostgresControlPlaneStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      val warnings = BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "", kind = "admin"),
+        _ => None
+      )
+      store.findUser(None, "root") shouldBe None
+      warnings should have size 1
+      warnings.head should include("admin 'root' not seeded: QOD_ADMIN_PASSWORD is not set")
+    finally
+      userStore.close()
+      store.close()
+  }
+
+  it should "stay silent for an existing row when no password is configured" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "pw", kind = "admin"),
+        _ => None
+      )
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "", kind = "admin"),
+        _ => None
+      ) shouldBe Nil
+      userStore.userIdOf(None, "root") shouldBe defined
+    finally userStore.close()
+  }
+
   "AdminConfig" should "read admin.kind (QOD_ADMIN_KIND), defaulting to admin" in {
     import Main.given
     def load(overlay: String): AdminConfig =
@@ -174,6 +276,8 @@ class BootPreflightSpec extends AnyFlatSpec with Matchers:
     // Guarded on the env so a developer shell exporting QOD_ADMIN_KIND cannot flip it.
     if sys.env.get("QOD_ADMIN_KIND").isEmpty then load("").kind shouldBe "admin"
     load("quack-on-demand.admin.kind = user").kind shouldBe "user"
+    // No built-in password: an unset QOD_ADMIN_PASSWORD means "never seed a missing admin".
+    if sys.env.get("QOD_ADMIN_PASSWORD").isEmpty then load("").password shouldBe ""
     // The old key is gone with no alias: it no longer reaches the field.
     if sys.env.get("QOD_ADMIN_KIND").isEmpty then
       load("quack-on-demand.admin.role = user").kind shouldBe "admin"

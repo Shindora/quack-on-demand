@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from .. import launcher, starflow
+from .. import admin_password, launcher, starflow
 from ..config import config_path, load_start_env
 from . import _starflow
 from ._launch import _exec, resolve_jar, resolve_java
@@ -250,6 +250,8 @@ def start(
     # `qod setup` persists QOD_*/PROXY_* vars to the CLI config file; a real
     # process env var still wins (same precedence as everywhere else in the
     # CLI: explicit > env var > file > built-in default).
+    # The admin password is no longer kept in the [start] table (see admin_password).
+    admin_password.migrate_stored_password(lambda line: typer.echo(line, err=True))
     base_env = {**load_start_env(), **os.environ}
     sf_plan = _starflow.prepare(sf_request, base_env, java) if sf_request else None
     env = launcher.runtime_env(
@@ -270,6 +272,17 @@ def start(
     if env.get("NUKE") == "1":
         _nuke(state_dir, pg)
     _ensure_catalog_db(pg)
+    # First boot of this control plane: the one time the admin password is
+    # needed. Later boots pass none (the manager seeds insert-only).
+    state = admin_password.control_plane_admin_state(pg, admin_password.admin_usernames(env))
+    if state == admin_password.ABSENT:
+        chosen = admin_password.first_boot_password(
+            os.environ.get(admin_password.KEY), admin_password.is_interactive()
+        )
+        if chosen is None:
+            typer.echo(admin_password.refusal("qod start"), err=True)
+            raise typer.Exit(1)
+        env[admin_password.KEY] = chosen
     loader_scripts = launcher.materialize_loader_scripts(app_home / "scripts")
     _spawn_loaders(env, loader_scripts, state_dir, pg)
 

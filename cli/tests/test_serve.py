@@ -1,4 +1,5 @@
 import pathlib
+import time
 
 import httpx
 from click import unstyle
@@ -38,9 +39,19 @@ def wired(monkeypatch, tmp_path):
     # The provisioning thread would otherwise poll a manager that never boots.
     monkeypatch.setattr(serve_cmd, "_spawn_provisioning", lambda **kw: captured.setdefault("provision", kw))
     monkeypatch.setattr(serve_cmd.os, "chdir", lambda d: captured.setdefault("cwd", d))
+    from qod_cli import admin_password as ap
+
+    monkeypatch.setattr(ap, "is_interactive", lambda: False)
+    # A later boot by default (the embedded pgdata exists), so tests about other
+    # behavior need no admin password; the first-boot tests remove it.
+    (tmp_path / "state" / "pg" / "pgdata").mkdir(parents=True)
     captured["jar"] = jar
     captured["tmp"] = tmp_path
     return captured
+
+
+def _first_boot(wired):
+    (wired["tmp"] / "state" / "pg" / "pgdata").rmdir()
 
 
 def _invoke(runner, wired, *args):
@@ -91,31 +102,79 @@ def test_serve_turns_acl_on_explicitly(runner, wired, tmp_path):
     assert wired["env"]["QOD_ACL_ENABLED"] == "true"
 
 
-def test_serve_generates_and_persists_an_admin_password(runner, wired, tmp_path):
+def test_serve_first_boot_refuses_without_terminal_or_env(runner, wired, tmp_path):
+    _first_boot(wired)
     f = tmp_path / "sales.duckdb"
     f.write_bytes(b"")
-    _invoke(runner, wired, str(f))
-    generated = wired["env"]["QOD_ADMIN_PASSWORD"]
-    assert len(generated) >= 12
-    assert load_start_env()["QOD_ADMIN_PASSWORD"] == generated
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 1
+    assert "first boot needs an admin password; run qod serve" in result.output
+    assert "cmd" not in wired
 
 
-def test_serve_reuses_a_stored_admin_password(runner, wired, tmp_path):
-    from qod_cli.config import save_start_env
-
-    save_start_env({"QOD_ADMIN_PASSWORD": "already-set"})
-    f = tmp_path / "sales.duckdb"
-    f.write_bytes(b"")
-    _invoke(runner, wired, str(f))
-    assert wired["env"]["QOD_ADMIN_PASSWORD"] == "already-set"
-
-
-def test_serve_lets_a_real_env_var_win(runner, wired, tmp_path, monkeypatch):
+def test_serve_first_boot_takes_the_env_password_and_never_stores_it(
+    runner, wired, tmp_path, monkeypatch
+):
+    _first_boot(wired)
     monkeypatch.setenv("QOD_ADMIN_PASSWORD", "from-env")
     f = tmp_path / "sales.duckdb"
     f.write_bytes(b"")
-    _invoke(runner, wired, str(f))
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 0, result.output
     assert wired["env"]["QOD_ADMIN_PASSWORD"] == "from-env"
+    assert "QOD_ADMIN_PASSWORD" not in load_start_env()
+    assert wired["provision"]["password"] == "from-env"
+    assert wired["provision"]["first_boot"] is True
+
+
+def test_serve_first_boot_prompts_on_a_terminal(runner, wired, tmp_path, monkeypatch):
+    from qod_cli import admin_password as ap
+    from qod_cli.main import app
+
+    _first_boot(wired)
+    monkeypatch.setattr(ap, "is_interactive", lambda: True)
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    result = runner.invoke(
+        app, ["serve", str(f), "--jar", str(wired["jar"])], input="pw1\npw1\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert wired["env"]["QOD_ADMIN_PASSWORD"] == "pw1"
+
+
+def test_serve_later_boot_needs_no_password_and_provisions_with_an_api_key(
+    runner, wired, tmp_path
+):
+    (tmp_path / "state" / "pg" / "pgdata").mkdir(parents=True, exist_ok=True)
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 0, result.output
+    assert "QOD_ADMIN_PASSWORD" not in wired["env"]
+    key = wired["env"]["QOD_API_KEY"]
+    assert len(key) >= 32
+    assert wired["provision"]["api_key"] == key
+    assert wired["provision"]["password"] is None
+    assert "QOD_API_KEY" not in load_start_env()
+
+
+def test_serve_keeps_a_configured_api_key(runner, wired, tmp_path, monkeypatch):
+    (tmp_path / "state" / "pg" / "pgdata").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("QOD_API_KEY", "mine")
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    _invoke(runner, wired, str(f))
+    assert wired["provision"]["api_key"] == "mine"
+
+
+def test_serve_hands_every_configured_admin_name_to_the_banner(
+    runner, wired, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("QOD_ADMIN_USERNAME", "ops,root")
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    _invoke(runner, wired, str(f))
+    assert wired["provision"]["admin_names"] == ["ops", "root"]
 
 
 def test_serve_passes_the_resolved_target_to_provisioning(runner, wired, tmp_path):
@@ -130,7 +189,9 @@ def test_serve_passes_the_resolved_target_to_provisioning(runner, wired, tmp_pat
     assert wired["provision"]["pool"] == "bi"
 
 
-def test_serve_honors_the_port_and_data_dir_flags(runner, wired, tmp_path):
+def test_serve_honors_the_port_and_data_dir_flags(runner, wired, tmp_path, monkeypatch):
+    # /custom/pg holds no pgdata, so this is a first boot there.
+    monkeypatch.setenv("QOD_ADMIN_PASSWORD", "pw")
     f = tmp_path / "sales.duckdb"
     f.write_bytes(b"")
     _invoke(runner, wired, str(f), "--pg-port", "26000", "--pg-data-dir", "/custom/pg")
@@ -455,7 +516,7 @@ def test_provisioning_logs_in_and_ensures_everything(respx_mock, tmp_path):
     ticks = iter([0.0, 1.0, 2.0, 3.0])
     ok = _provision(
         manager_url=BASE, tenant="default", target=target, pool="bi", size=1,
-        password="pw", profile="default", generated=True, ready_timeout=5,
+        password="pw", first_boot=True, profile="default", ready_timeout=5,
         pg_port=25432, pg_data_dir=str(tmp_path / "pg"), echo=lines.append,
         node_timeout=10, node_sleep=lambda _s: None, node_now=lambda: next(ticks),
     )
@@ -463,13 +524,58 @@ def test_provisioning_logs_in_and_ensures_everything(respx_mock, tmp_path):
     banner = "\n".join(lines)
     assert "jdbc:arrow-flight-sql://localhost:31338/" in banner
     assert "tenant=default" in banner and "pool=bi" in banner
-    assert "pw" in banner  # generated passwords are shown once
+    assert "pw" not in banner  # the password is never printed
     assert load_settings().token == "jwt-1"
     # Round 2 item 6: the seeded admin is a SUPERUSER row (tenant IS NULL), and the
     # login _provision just did was in that system realm - the saved profile must
     # say so, or a later `qod sql` authenticates in the tenant realm instead (where
     # no admin row exists) and fails the FlightSQL handshake with "Invalid password".
     assert load_settings().superuser is True
+
+
+def test_provisioning_with_an_api_key_skips_login_and_keeps_the_profile_token(
+    respx_mock, tmp_path
+):
+    from qod_cli.commands.serve import _provision
+    from qod_cli.config import save_profile
+    from qod_cli.serve_target import resolve
+
+    save_profile("default", {"token": "old-jwt"})
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    target = resolve(str(f), data_root=tmp_path)
+    login = respx_mock.post(f"{BASE}/api/auth/login")
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    tenants = respx_mock.get(f"{BASE}/api/tenant/list").mock(
+        return_value=httpx.Response(200, json={"tenants": [{"id": "default"}]})
+    )
+    # Every row already exists (ensure_database matches name, dataPath, kind and
+    # initSql), so an unmocked create would fail the run.
+    respx_mock.get(f"{BASE}/api/database/list").mock(
+        return_value=httpx.Response(200, json={"tenantDbs": [{
+            "name": "default_sales", "dataPath": target.data_path, "kind": target.kind,
+            "initSql": target.init_sql,
+        }]})
+    )
+    respx_mock.get(f"{BASE}/api/pool/list").mock(
+        return_value=httpx.Response(200, json={"pools": [
+            {"tenant": "default", "tenantDb": "default_sales", "pool": "bi",
+             "nodes": [{"healthy": True}]}
+        ]})
+    )
+    respx_mock.get(f"{BASE}/api/config/client").mock(
+        return_value=httpx.Response(200, json={"flightSqlPort": 31338})
+    )
+    ok = _provision(
+        manager_url=BASE, tenant="default", target=target,
+        pool="bi", size=1, profile="default", ready_timeout=5, pg_port=25432,
+        pg_data_dir=str(tmp_path / "pg"), echo=lambda _l: None, api_key="k",
+        node_timeout=10, node_sleep=lambda _s: None,
+    )
+    assert ok is True
+    assert not login.called
+    assert tenants.calls[0].request.headers["X-API-Key"] == "k"
+    assert load_settings().token == "old-jwt"
 
 
 def test_provisioning_reports_and_keeps_the_manager_on_failure(respx_mock, tmp_path):
@@ -488,7 +594,7 @@ def test_provisioning_reports_and_keeps_the_manager_on_failure(respx_mock, tmp_p
     lines = []
     ok = _provision(
         manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
-        pool="bi", size=1, password="pw", profile="default", generated=True,
+        pool="bi", size=1, password="pw", first_boot=True, profile="default",
         ready_timeout=5, pg_port=25432, pg_data_dir=str(tmp_path / "pg"), echo=lines.append,
     )
     assert ok is False
@@ -496,42 +602,6 @@ def test_provisioning_reports_and_keeps_the_manager_on_failure(respx_mock, tmp_p
     assert "list tenants" in out
     assert "still running" in out
     assert "qod tenant list" in out
-
-
-def test_stored_password_is_not_reprinted(respx_mock, tmp_path):
-    from qod_cli.commands.serve import _banner
-
-    banner = _banner(
-        tenant="default", db="sales", pool="bi", size=1, password="secret", generated=False,
-        edge_host="localhost", edge_port=31338, manager_url=BASE,
-        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
-    )
-    banner = unstyle(banner)
-    assert "secret" not in banner
-    assert "qod auth change-password" in banner
-    # M-2: the "stored in <config_path>" line must survive even when this run did
-    # not generate the password, so a JVM death before the generating run's banner
-    # doesn't strand the user with zero mention of where the password lives.
-    # F7: with generated=False there is no preceding "password :" line for it to
-    # hang off of, so it renders as its own aligned row instead of a continuation.
-    from qod_cli.config import config_path
-
-    assert f"password      : stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}" in banner
-
-
-def test_generated_password_banner_still_shows_the_plaintext_once(respx_mock, tmp_path):
-    from qod_cli.commands.serve import _banner
-    from qod_cli.config import config_path
-
-    banner = _banner(
-        tenant="default", db="sales", pool="bi", size=1, password="secret", generated=True,
-        edge_host="localhost", edge_port=31338, manager_url=BASE,
-        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
-    )
-    banner = unstyle(banner)
-    assert "password      : secret" in banner
-    assert f"stored as QOD_ADMIN_PASSWORD ([start] table) in {config_path()}" in banner
-
 
 
 def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path):
@@ -543,8 +613,8 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
     from qod_cli.commands.serve import _banner
 
     banner = _banner(
-        tenant="default", db="sales", pool="bi", size=1, password="sup3rs3cret",
-        generated=False, edge_host="edgehost", edge_port=31338, manager_url=BASE,
+        tenant="default", db="sales", pool="bi", size=1,
+        first_boot=False, edge_host="edgehost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
     banner = unstyle(banner)
@@ -571,23 +641,18 @@ def test_banner_prints_all_three_protocols_with_real_values(respx_mock, tmp_path
     assert "PWD=<password>" in odbc_line
     assert "SUPERUSER=true" in odbc_line
 
-    # The real password must appear at most once per credential lifetime (the
-    # generated-run line) - never baked into a connect string printed on every boot.
-    assert "sup3rs3cret" not in adbc_line
-    assert "sup3rs3cret" not in odbc_line
-
 
 def test_banner_highlights_connect_urls_and_password_for_readability(respx_mock, tmp_path):
-    # The connect strings and the one-time plaintext password are the two things
-    # a user must copy off this screen; they should visually stand out from the
-    # rest of the banner instead of blending into ordinary scrollback text.
+    # The connect strings are what a user must copy off this screen; they should
+    # visually stand out from the rest of the banner instead of blending into
+    # ordinary scrollback text.
     import click
 
     from qod_cli.commands.serve import _banner
 
     banner = _banner(
-        tenant="default", db="sales", pool="bi", size=1, password="sup3rs3cret",
-        generated=True, edge_host="edgehost", edge_port=31338, manager_url=BASE,
+        tenant="default", db="sales", pool="bi", size=1,
+        first_boot=False, edge_host="edgehost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
     )
     plain_to_raw = {click.unstyle(line): line for line in banner.splitlines()}
@@ -596,9 +661,7 @@ def test_banner_highlights_connect_urls_and_password_for_readability(respx_mock,
         plain_line = next(p for p in plain_to_raw if p.startswith(prefix))
         assert plain_to_raw[plain_line] != plain_line, f"{prefix.strip()} line is not styled"
 
-    password_plain = "  password      : sup3rs3cret   (generated, shown once)"
-    assert password_plain in plain_to_raw
-    assert plain_to_raw[password_plain] != password_plain, "password line is not styled"
+    assert "qod admin reset-password" in click.unstyle(banner)
 
     # Styling must be cosmetic only: the ANSI-stripped banner still reads exactly
     # like the plain content every other banner test asserts against.
@@ -620,7 +683,7 @@ def test_provisioning_never_raises_on_a_tokenless_login(respx_mock, tmp_path):
     lines = []
     _provision(
         manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
-        pool="bi", size=1, password="pw", profile="default", generated=True,
+        pool="bi", size=1, password="pw", first_boot=True, profile="default",
         ready_timeout=5, pg_port=25432, pg_data_dir=str(tmp_path / "pg"), echo=lines.append,
     )
     out = "\n".join(lines)
@@ -655,10 +718,9 @@ def test_serve_attaches_to_a_running_manager(runner, wired, respx_mock, tmp_path
     # B1: with a manager already answering /ready, serve must not boot a second
     # JVM - it attaches and provisions inline instead.
     from qod_cli.commands import serve as serve_cmd
-    from qod_cli.config import save_start_env
 
     respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
-    save_start_env({"QOD_ADMIN_PASSWORD": "stored-pw"})
+    monkeypatch.setenv("QOD_API_KEY", "k")
     captured = {}
     monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: captured.update(kw) or True)
 
@@ -669,29 +731,128 @@ def test_serve_attaches_to_a_running_manager(runner, wired, respx_mock, tmp_path
     assert "cmd" not in wired
     assert "provision" not in wired  # _spawn_provisioning (the thread path) never runs
     assert captured["attached"] is True
-    assert captured["password"] == "stored-pw"
+    assert captured["api_key"] == "k"
     assert captured["manager_url"] == BASE
     assert captured["tenant"] == "default"
     assert captured["target"].name == "sales"
 
 
-def test_serve_attach_without_any_password_errors_cleanly(
+def test_serve_attach_uses_the_api_key_then_token_then_errors(
     runner, wired, respx_mock, tmp_path, monkeypatch
 ):
     from qod_cli.commands import serve as serve_cmd
 
     respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
-    called = []
-    monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: called.append(kw) or True)
-
+    captured = {}
+    monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: captured.update(kw) or True)
     f = tmp_path / "sales.duckdb"
     f.write_bytes(b"")
+
     result = _invoke(runner, wired, str(f))
     assert result.exit_code == 1
-    assert "QOD_ADMIN_PASSWORD" in result.output
-    assert "qod setup" in result.output or "qod login" in result.output
-    assert called == []
-    assert "cmd" not in wired
+    assert "no admin credential" in result.output
+    assert "qod setup" not in result.output
+
+    live = _jwt(exp=time.time() + 3600)
+    monkeypatch.setenv("QOD_TOKEN", live)
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 0, result.output
+    assert captured["token"] == live
+
+    monkeypatch.setenv("QOD_API_KEY", "k")
+    _invoke(runner, wired, str(f))
+    assert captured["api_key"] == "k"
+    assert captured["token"] == ""
+
+
+def _jwt(**claims) -> str:
+    import base64
+    import json
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{seg({'alg': 'HS256'})}.{seg(claims)}.sig"
+
+
+def test_serve_attach_treats_an_expired_token_as_absent_and_prompts(
+    runner, wired, respx_mock, tmp_path, monkeypatch
+):
+    from qod_cli import admin_password as ap
+    from qod_cli.commands import serve as serve_cmd
+    from qod_cli.main import app
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    captured = {}
+    monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: captured.update(kw) or True)
+    monkeypatch.setenv("QOD_TOKEN", _jwt(exp=time.time() - 60))
+    monkeypatch.setattr(ap, "is_interactive", lambda: True)
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+
+    result = runner.invoke(
+        app, ["serve", str(f), "--jar", str(wired["jar"])], input="s3cret\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["token"] == ""
+    assert captured["password"] == "s3cret"
+    assert captured["admin_names"] == ["admin@localhost.local", "admin"]
+
+
+def test_serve_attach_expired_token_without_a_terminal_refuses(
+    runner, wired, respx_mock, tmp_path, monkeypatch
+):
+    from qod_cli.commands import serve as serve_cmd
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    captured = {}
+    monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: captured.update(kw) or True)
+    monkeypatch.setenv("QOD_TOKEN", _jwt(exp=time.time() - 60))
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 1
+    assert "no admin credential" in result.output
+    assert captured == {}
+
+
+def test_attach_provision_failure_tail_points_at_the_credentials(respx_mock, tmp_path):
+    from qod_cli.commands.serve import _provision
+    from qod_cli.serve_target import resolve
+
+    respx_mock.get(f"{BASE}/ready").mock(return_value=httpx.Response(200, json={}))
+    respx_mock.post(f"{BASE}/api/auth/login").mock(return_value=httpx.Response(200, json={}))
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    lines = []
+    ok = _provision(
+        manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
+        pool="bi", size=1, password="pw", profile="default", attached=True,
+        ready_timeout=5, pg_port=0, pg_data_dir="", echo=lines.append,
+    )
+    out = "\n".join(lines)
+    assert ok is False
+    assert "the gateway is still running; fix the credentials (qod login, or export " in out
+    assert "QOD_API_KEY) and re-run qod serve" in out
+    assert "Ctrl-C" not in out
+
+
+def test_banner_names_a_rotate_line_per_configured_admin(respx_mock, tmp_path):
+    from qod_cli.commands.serve import _banner
+
+    kw = dict(
+        tenant="default", db="sales", pool="bi", size=1, first_boot=False,
+        edge_host="localhost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    )
+    banner = unstyle(_banner(**kw))
+    assert "qod auth change-password --username admin@localhost.local" in banner
+    assert "qod auth change-password --username admin\n" in banner
+    banner = unstyle(_banner(**kw, admin_names=["ops", "root"]))
+    assert "qod auth change-password --username ops" in banner
+    assert "qod auth change-password --username root" in banner
+    assert "--username admin" not in banner
 
 
 def test_serve_refuses_to_attach_to_a_non_loopback_manager(
@@ -702,12 +863,11 @@ def test_serve_refuses_to_attach_to_a_non_loopback_manager(
     # attaching would quietly create rows there with a local dataPath the
     # remote nodes cannot read. Refuse outright - no attach, no local boot.
     from qod_cli.commands import serve as serve_cmd
-    from qod_cli.config import save_start_env
 
     remote = "http://example.com:20900"
     monkeypatch.setenv("QOD_MANAGER_URL", remote)
     respx_mock.get(f"{remote}/ready").mock(return_value=httpx.Response(200, json={}))
-    save_start_env({"QOD_ADMIN_PASSWORD": "stored-pw"})
+    monkeypatch.setenv("QOD_API_KEY", "k")
     called = []
     monkeypatch.setattr(serve_cmd, "_provision", lambda **kw: called.append(kw) or True)
 
@@ -771,11 +931,24 @@ def test_manager_running_probe_uses_a_per_phase_bounded_timeout(monkeypatch):
     assert timeout.read == timeout.write == timeout.pool == 2.0
 
 
+def test_banner_first_boot_says_the_password_is_not_stored(respx_mock, tmp_path):
+    from qod_cli.commands.serve import _banner
+
+    banner = unstyle(_banner(
+        tenant="default", db="sales", pool="bi", size=1, first_boot=True,
+        edge_host="localhost", edge_port=31338, manager_url=BASE,
+        pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
+    ))
+    assert "password      : the one you just set (not stored anywhere)" in banner
+    assert "qod admin reset-password" not in banner
+    assert "QOD_ADMIN_PASSWORD" not in banner
+
+
 def test_banner_attached_render(respx_mock, tmp_path):
     from qod_cli.commands.serve import _banner
 
     banner = _banner(
-        tenant="default", db="sales", pool="bi", size=1, password="secret", generated=False,
+        tenant="default", db="sales", pool="bi", size=1, first_boot=False,
         edge_host="localhost", edge_port=31338, manager_url=BASE,
         pg_port=25432, pg_data_dir="/x/pg", description="DuckDB file /abs/sales.duckdb",
         attached=True,
@@ -893,10 +1066,23 @@ def test_provisioning_substitutes_a_null_flight_sql_host(respx_mock, tmp_path):
     ticks = iter([0.0, 1.0, 2.0, 3.0])
     _provision(
         manager_url=BASE, tenant="default", target=resolve(str(f), data_root=tmp_path),
-        pool="bi", size=1, password="pw", profile="default", generated=True,
+        pool="bi", size=1, password="pw", first_boot=True, profile="default",
         ready_timeout=5, pg_port=25432, pg_data_dir=str(tmp_path / "pg"), echo=lines.append,
         node_timeout=10, node_sleep=lambda _s: None, node_now=lambda: next(ticks),
     )
     banner = "\n".join(lines)
     assert "jdbc:arrow-flight-sql://localhost:31338/" in banner
     assert "None" not in banner
+
+
+def test_serve_migrates_a_stored_admin_password_out_of_the_config(runner, wired, tmp_path):
+    from qod_cli.config import save_start_env
+
+    save_start_env({"QOD_ADMIN_PASSWORD": "old-stored"})
+    f = tmp_path / "sales.duckdb"
+    f.write_bytes(b"")
+    result = _invoke(runner, wired, str(f))
+    assert result.exit_code == 0, result.output
+    assert "Your current admin password is: old-stored" in result.output
+    assert "QOD_ADMIN_PASSWORD" not in load_start_env()
+    assert "QOD_ADMIN_PASSWORD" not in wired["env"]

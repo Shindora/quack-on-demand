@@ -34,6 +34,14 @@ def wired(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(start_cmd.shutil, "which", lambda name: None)
 
+    from qod_cli import admin_password as ap
+
+    captured["admin_state"] = ap.PRESENT
+    monkeypatch.setattr(
+        ap, "control_plane_admin_state", lambda pg, names, connect=None: captured["admin_state"]
+    )
+    monkeypatch.setattr(ap, "is_interactive", lambda: False)
+
     def fake_exec(cmd, env=None):
         captured["cmd"], captured["env"] = cmd, env
 
@@ -636,3 +644,65 @@ def test_start_with_starflow_silent_when_secrets_exist(runner, starflow_wired, m
     result = runner.invoke(app, ["start", "--jar", str(starflow_wired["jar"]), "--with-starflow"])
     assert result.exit_code == 0, result.output
     assert "generated" not in result.output
+
+
+def test_start_first_boot_uses_the_exported_password(runner, wired, monkeypatch):
+    from qod_cli.main import app
+
+    wired["admin_state"] = "absent"
+    monkeypatch.setenv("QOD_ADMIN_PASSWORD", "from-shell")
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert wired["env"]["QOD_ADMIN_PASSWORD"] == "from-shell"
+
+
+def test_start_first_boot_prompts_on_a_terminal(runner, wired, monkeypatch):
+    from qod_cli import admin_password as ap
+    from qod_cli.main import app
+
+    wired["admin_state"] = "absent"
+    monkeypatch.setattr(ap, "is_interactive", lambda: True)
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])], input="s3cret\ns3cret\n")
+    assert result.exit_code == 0, result.output
+    assert wired["env"]["QOD_ADMIN_PASSWORD"] == "s3cret"
+    cfg = pathlib.Path(wired["jar"]).parent / "config.toml"
+    assert not cfg.exists() or "s3cret" not in cfg.read_text()
+
+
+def test_start_first_boot_refuses_without_terminal_or_env(runner, wired):
+    from qod_cli.main import app
+
+    wired["admin_state"] = "absent"
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 1
+    assert "first boot needs an admin password" in result.output
+    assert "cmd" not in wired
+
+
+def test_start_later_boot_never_prompts_and_passes_nothing(runner, wired):
+    from qod_cli.main import app
+
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert "QOD_ADMIN_PASSWORD" not in wired["env"]
+
+
+def test_start_unreachable_postgres_does_not_prompt(runner, wired):
+    from qod_cli.main import app
+
+    wired["admin_state"] = "unreachable"
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert "QOD_ADMIN_PASSWORD" not in wired["env"]
+
+
+def test_start_migrates_a_stored_password(runner, wired):
+    from qod_cli.config import load_start_env, save_start_env
+    from qod_cli.main import app
+
+    save_start_env({"QOD_ADMIN_PASSWORD": "legacy"})
+    result = runner.invoke(app, ["start", "--jar", str(wired["jar"])])
+    assert result.exit_code == 0, result.output
+    assert "Your current admin password is: legacy" in result.output
+    assert "QOD_ADMIN_PASSWORD" not in load_start_env()
+    assert "QOD_ADMIN_PASSWORD" not in wired["env"]

@@ -23,7 +23,24 @@ class DemoConfigSpec extends AnyFlatSpec with Matchers:
     DemoHome(Paths.get("/x"), Paths.get("/x/pg"), Paths.get("/x/dl"), Paths.get("/x/native"))
   private val pg = PgCoords("localhost", 54321, "postgres", "")
 
-  "DemoConfig.overlay" should "force the approved demo posture" in {
+  "DemoConfig.overlay" should "give the demo admin the advertised password unless one is exported" in {
+    def overlayWith(pw: String) =
+      DemoConfig
+        .overlay(
+          baseManager.copy(admin = baseManager.admin.copy(password = pw)),
+          baseFlight,
+          baseAcl,
+          pg,
+          home
+        )
+        .manager
+        .admin
+        .password
+    overlayWith("") shouldBe "admin"
+    overlayWith("from-shell") shouldBe "from-shell"
+  }
+
+  it should "force the approved demo posture" in {
     val out = DemoConfig.overlay(baseManager, baseFlight, baseAcl, pg, home)
     out.manager.defaultMetastore.pgHost shouldBe "localhost"
     out.manager.defaultMetastore.pgPort shouldBe "54321"

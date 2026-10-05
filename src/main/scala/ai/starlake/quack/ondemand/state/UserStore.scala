@@ -346,6 +346,33 @@ final class UserStore(
       finally ps.close()
     }
 
+  /** Break-glass reset of a SUPERUSER row (`tenant IS NULL`) by username, used only by the
+    * `admin reset-password` jar subcommand. One statement: new bcrypt hash, lockout cleared,
+    * `must_change_password` set to `mustChange`. Returns the row id, or None when no such superuser
+    * exists (a tenant user of the same name is never matched).
+    */
+  def resetSuperuserPassword(
+      username: String,
+      plaintext: String,
+      mustChange: Boolean
+  ): Option[String] =
+    withConn { c =>
+      val hash = BCrypt.withDefaults().hashToString(12, plaintext.toCharArray)
+      val ps   = c.prepareStatement(
+        "UPDATE qodstate_user SET password_hash = ?, must_change_password = ?, " +
+          "failed_attempts = 0, locked_at = NULL, updated_at = NOW() " +
+          "WHERE tenant IS NULL AND username = ? RETURNING id"
+      )
+      try
+        ps.setString(1, hash)
+        ps.setBoolean(2, mustChange)
+        ps.setString(3, username)
+        val rs = ps.executeQuery()
+        try if rs.next() then Some(rs.getString(1)) else None
+        finally rs.close()
+      finally ps.close()
+    }
+
   // ------------------------------------------------------------------
   // LockoutStore -- lockout columns, read/written directly by (tenant, username).
   // ------------------------------------------------------------------
