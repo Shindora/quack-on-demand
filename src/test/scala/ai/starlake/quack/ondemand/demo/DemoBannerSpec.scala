@@ -5,19 +5,19 @@ import org.scalatest.matchers.should.Matchers
 
 class DemoBannerSpec extends AnyFlatSpec with Matchers:
 
-  "DemoBanner.render" should "name the insecure caveats, the demo users' RLS/CLS beat, and link the client docs" in {
+  "DemoBanner.render" should "name the insecure caveats, the routing headers, the RLS/CLS beat, and link the client docs" in {
     val b =
       DemoBanner.render(restPort = 20900, flightPort = 31338, dataPath = "/demo", rows = "~150K")
     b should include("self-signed TLS") // caveat: encrypted, but clients must skip verification
     b should include("ephemeral")       // caveat
-    b should include("ODBC/ADBC/JDBC: grpc+tls://localhost:31338")
-    b should include("Client connection strings: https://docs.starlake.ai/qod/connecting/clients")
-    b should include("c_phone")  // CLS beat
-    b should include("masked")   // CLS beat
-    b should include("BUILDING") // RLS beat
-    b should include("denied")   // denial beat
-    b should include("as alice")
-    b should include("as acme-admin")
+    b should include(
+      "Flight SQL/ODBC/ADBC/JDBC/Quack Client connection strings: " +
+        "https://docs.starlake.ai/qod/connecting/clients"
+    )
+    b should include("-> tenant=acme")
+    b should include("-> pool=bi")
+    b should include("c_phone masked") // CLS beat, in the Flight SQL user table
+    b should include("BUILDING")       // RLS beat
   }
 
   it should "print the admin UI url and every seeded credential as table rows" in {
