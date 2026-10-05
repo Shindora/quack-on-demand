@@ -53,6 +53,7 @@ concurrency:
 env:
   REGISTRY_IMAGE: starlakeai/quack-on-demand
   NODE_REGISTRY_IMAGE: starlakeai/quack-on-demand-node
+  WORKER_REGISTRY_IMAGE: starlakeai/quack-on-demand-worker
 
 jobs:
 
@@ -532,6 +533,128 @@ jobs:
 
       - name: Inspect manifest
         run: docker buildx imagetools inspect "${{ env.NODE_REGISTRY_IMAGE }}:${{ needs.prepare.outputs.version }}"
+
+  # -----------------------------------------------------------------------
+  # 4e. Fleet worker image (qod fleet join + DuckDB, one quack node per
+  #     container): same digest-matrix + merge shape as the node image, built
+  #     from the tag checkout. Artifact prefix is worker-digests-* so neither
+  #     the manager's digests-* nor the node's node-digests-* glob can swallow
+  #     these digests.
+  # -----------------------------------------------------------------------
+  worker-docker-build:
+    # build-jar in needs: for the same no-half-release gate as the node image.
+    needs: [prepare, build-jar]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set platform pair env
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Docker metadata (labels only - tags applied in merge step)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.WORKER_REGISTRY_IMAGE }}
+          labels: |
+            org.opencontainers.image.vendor=starlakeai
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=quack-on-demand-worker
+            org.opencontainers.image.description=Fleet server image for quack-on-demand: qod fleet join plus DuckDB, one quack node per container.
+            org.opencontainers.image.url=https://github.com/starlake-ai/quack-on-demand
+            org.opencontainers.image.source=https://github.com/starlake-ai/quack-on-demand
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build + push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./docker/fleet-worker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.WORKER_REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Shares the snapshot workflow's cache scope: same Dockerfile inputs.
+          cache-from: type=gha,scope=fleet-worker-${{ env.PLATFORM_PAIR }}
+          cache-to:   type=gha,scope=fleet-worker-${{ env.PLATFORM_PAIR }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # -----------------------------------------------------------------------
+  # 4f. Merge the worker image's per-arch digests under the release tags.
+  # -----------------------------------------------------------------------
+  worker-docker-merge:
+    needs: [prepare, worker-docker-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: worker-digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          minor="$(echo "$version" | cut -d. -f1-2)"
+          major="$(echo "$version" | cut -d. -f1)"
+          docker buildx imagetools create \
+            -t "${{ env.WORKER_REGISTRY_IMAGE }}:${version}" \
+            -t "${{ env.WORKER_REGISTRY_IMAGE }}:${minor}" \
+            -t "${{ env.WORKER_REGISTRY_IMAGE }}:${major}" \
+            -t "${{ env.WORKER_REGISTRY_IMAGE }}:latest" \
+            $(printf '${{ env.WORKER_REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect "${{ env.WORKER_REGISTRY_IMAGE }}:${{ needs.prepare.outputs.version }}"
 
   # -----------------------------------------------------------------------
   # 5. Discord #news announcement (best effort, after the jar is public).

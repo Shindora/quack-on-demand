@@ -17,7 +17,11 @@ object GenOpenApi:
     openapi.toYaml
 
   def main(args: Array[String]): Unit =
-    val out     = args.headOption.getOrElse("website/static/openapi.yaml")
+    val out = args.headOption.getOrElse(
+      sys.error(
+        "usage: GenOpenApi <output path> [version] (sbt genOpenApi writes into starlake-docs)"
+      )
+    )
     val version = if args.length > 1 then args(1) else "0.0.0"
     val yaml    = render(version)
     val path    = Paths.get(out)

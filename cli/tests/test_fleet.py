@@ -1,3 +1,6 @@
+import sys
+
+import pytest
 from typer.testing import CliRunner
 from qod_cli.main import app
 import qod_cli.rest as rest
@@ -77,3 +80,30 @@ def test_fleet_join_is_a_fleet_subcommand_and_agent_is_gone():
     # No alias: the pre-rename top-level command must not exist.
     old = runner.invoke(app, ["agent", "--help"])
     assert old.exit_code != 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="qod fleet join is POSIX-only")
+def test_fleet_join_reads_its_options_from_the_environment(monkeypatch, tmp_path):
+    import qod_cli.commands.fleet as fleet_cmd
+    captured = {}
+
+    class FakeMember:
+        def __init__(self, manager, token, **kw):
+            captured.update(kw, manager=manager, token=token)
+        def run_forever(self):
+            pass
+
+    monkeypatch.setattr(fleet_cmd, "FleetMember", FakeMember)
+    monkeypatch.setattr(fleet_cmd.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(fleet_cmd.launcher, "default_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(fleet_cmd.launcher, "materialize_spawn_scripts",
+                        lambda d: (tmp_path / "spawn.sh", tmp_path / "spawn.ps1"))
+    monkeypatch.setattr(fleet_cmd, "probe_duckdb_version", lambda b: "1.5.6")
+    env = {"QOD_MANAGER_URL": "http://mgr:20900", "QOD_FLEET_JOIN_TOKEN": "tok",
+           "QOD_FLEET_NAME": "worker-1", "QOD_FLEET_ADVERTISE_HOST": "host.docker.internal",
+           "QOD_FLEET_BIND_HOST": "0.0.0.0", "QOD_FLEET_NODE_PORT": "21901"}
+    out = runner.invoke(app, ["fleet", "join", "--insecure", "--duckdb-bin", str(tmp_path / "duckdb")], env=env)
+    assert out.exit_code == 0, out.output
+    assert (captured["name"], captured["advertise_host"], captured["bind_host"], captured["node_port"]) == \
+        ("worker-1", "host.docker.internal", "0.0.0.0", 21901)
+    assert captured["duckdb_version"] == "1.5.6"

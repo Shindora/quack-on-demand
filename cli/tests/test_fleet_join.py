@@ -6,7 +6,15 @@ import sys
 import httpx
 import pytest
 
-from qod_cli.fleet_join import FleetMember, network_hint, status_hint
+from qod_cli.fleet_join import (
+    FleetMember,
+    cgroup_cpu_limit,
+    cgroup_memory_limit,
+    host_capacity,
+    network_hint,
+    probe_duckdb_version,
+    status_hint,
+)
 
 # qod fleet join is POSIX-only (Linux, macOS): it relies on process groups (os.killpg) and
 # start_new_session. The typer wrapper refuses to run on Windows, and so do these tests.
@@ -499,3 +507,91 @@ def test_an_approved_or_legacy_reply_prints_no_approval_line(tmp_path, capsys):
     member = make_member(FakeHttp([approved, legacy]), lambda *a, **k: FakeProc(), tmp_path)
     member.run_once(); member.run_once()
     assert "approv" not in capsys.readouterr().err
+
+
+def _host(monkeypatch, cpus=16, mem=64 << 30):
+    monkeypatch.setattr("qod_cli.fleet_join.os.cpu_count", lambda: cpus)
+    pages = {"SC_PHYS_PAGES": mem // 4096, "SC_PAGE_SIZE": 4096}
+    monkeypatch.setattr("qod_cli.fleet_join.os.sysconf", lambda name: pages[name])
+
+
+def test_cgroup_v2_limits_cap_the_host_values(tmp_path, monkeypatch):
+    _host(monkeypatch)
+    (tmp_path / "memory.max").write_text("4294967296\n")
+    (tmp_path / "cpu.max").write_text("150000 100000\n")
+    assert host_capacity(tmp_path) == (2, 4 << 30)
+
+
+def test_cgroup_v2_max_means_unlimited(tmp_path, monkeypatch):
+    _host(monkeypatch)
+    (tmp_path / "memory.max").write_text("max\n")
+    (tmp_path / "cpu.max").write_text("max 100000\n")
+    assert host_capacity(tmp_path) == (16, 64 << 30)
+
+
+def test_cgroup_v1_limits_and_unlimited_sentinels(tmp_path, monkeypatch):
+    _host(monkeypatch)
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "cpu").mkdir()
+    (tmp_path / "memory" / "memory.limit_in_bytes").write_text(str(2 << 30))
+    (tmp_path / "cpu" / "cpu.cfs_quota_us").write_text("400000")
+    (tmp_path / "cpu" / "cpu.cfs_period_us").write_text("100000")
+    assert host_capacity(tmp_path) == (4, 2 << 30)
+    (tmp_path / "memory" / "memory.limit_in_bytes").write_text("9223372036854771712")
+    (tmp_path / "cpu" / "cpu.cfs_quota_us").write_text("-1")
+    assert host_capacity(tmp_path) == (16, 64 << 30)
+
+
+def test_cgroup_garbage_or_missing_files_fall_back_to_host(tmp_path, monkeypatch):
+    _host(monkeypatch)
+    assert host_capacity(tmp_path) == (16, 64 << 30)
+    (tmp_path / "memory.max").write_text("lots")
+    (tmp_path / "cpu.max").write_text("")
+    assert cgroup_memory_limit(tmp_path) is None
+    assert cgroup_cpu_limit(tmp_path) is None
+    assert host_capacity(tmp_path) == (16, 64 << 30)
+
+
+def test_cgroup_fractional_cpu_rounds_up_to_at_least_one(tmp_path):
+    (tmp_path / "cpu.max").write_text("25000 100000\n")
+    assert cgroup_cpu_limit(tmp_path) == 1
+
+
+class _Done:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def test_probe_duckdb_version_parses_the_cli_banner(tmp_path):
+    run = lambda *a, **kw: _Done("v1.5.6 (Variegata) 0b83e5d2f6\n")
+    assert probe_duckdb_version(tmp_path / "duckdb", run=run) == "1.5.6"
+
+
+def test_probe_duckdb_version_fails_soft(tmp_path):
+    def boom(*a, **kw):
+        raise subprocess.TimeoutExpired("duckdb", 5)
+    assert probe_duckdb_version(tmp_path / "duckdb", run=boom) is None
+    assert probe_duckdb_version(tmp_path / "duckdb", run=lambda *a, **kw: _Done("garbage")) is None
+    def missing(*a, **kw):
+        raise FileNotFoundError("duckdb")
+    assert probe_duckdb_version(tmp_path / "duckdb", run=missing) is None
+
+
+def test_probe_duckdb_version_tolerates_non_utf8_output(tmp_path):
+    binary = tmp_path / "duckdb"
+    binary.write_text("#!/bin/sh\nprintf 'v1.5.6 \\377\\376 junk\\n'\n")
+    binary.chmod(0o755)
+    assert probe_duckdb_version(binary) == "1.5.6"
+
+
+def test_probe_duckdb_version_none_stdout_is_none(tmp_path):
+    class NoOut:
+        stdout = None
+
+    assert probe_duckdb_version(tmp_path / "duckdb", run=lambda *a, **kw: NoOut()) is None
+
+
+def test_probe_duckdb_version_non_executable_is_none(tmp_path):
+    binary = tmp_path / "duckdb"
+    binary.write_text("#!/bin/sh\necho v1.5.6\n")
+    assert probe_duckdb_version(binary) is None

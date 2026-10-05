@@ -85,7 +85,9 @@ object GenConfigDocs:
     sb.toString
 
   def main(args: Array[String]): Unit =
-    val out  = args.headOption.getOrElse("website/docs/reference/configuration.md")
+    val out = args.headOption.getOrElse(
+      sys.error("usage: GenConfigDocs <output path> (sbt genConfigDocs writes into starlake-docs)")
+    )
     val md   = render
     val path = Paths.get(out)
     Option(path.getParent).foreach(Files.createDirectories(_))

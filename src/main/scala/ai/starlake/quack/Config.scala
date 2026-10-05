@@ -793,7 +793,22 @@ final case class FleetConfig(
         "Comma-separated CIDRs of proxies / load balancers whose X-Forwarded-For is believed " +
           "when resolving a heartbeat's client address. Empty = believe none."
     )
-    trustedProxies: String = ""
+    trustedProxies: String = "",
+    @field @ConfigField(
+      envVar = "QOD_FLEET_NODE_PG_HOST",
+      description =
+        "Address fleet servers dial for the managed Postgres, when it differs from the manager's " +
+          "own (e.g. the manager reaches it by a container-only name). Replaces pgHost in fleet " +
+          "assignments of databases on the default metastore only. Empty = unchanged."
+    )
+    nodePgHost: String = "",
+    @field @ConfigField(
+      envVar = "QOD_FLEET_NODE_PG_PORT",
+      description =
+        "Port fleet servers dial for the managed Postgres; replaces pgPort only where it equals " +
+          "the default metastore's. Empty = unchanged."
+    )
+    nodePgPort: String = ""
 ):
   require(heartbeatSec >= 1, "fleet: heartbeatSec must be >= 1")
   require(Set("fleet", "local").contains(ephemeral), "fleet: ephemeral must be 'fleet' or 'local'")

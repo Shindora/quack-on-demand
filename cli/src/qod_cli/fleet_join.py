@@ -9,8 +9,10 @@ docs/superpowers/specs/2026-09-25-fleet-backend-design.md.
 from __future__ import annotations
 
 import collections
+import math
 import os
 import platform
+import re
 import signal
 import socket
 import subprocess
@@ -74,14 +76,88 @@ def default_advertise_host() -> str:
     return host
 
 
-def host_capacity() -> tuple[int | None, int | None]:
-    """(logical cores, physical RAM bytes); either None when the platform will not say."""
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def cgroup_memory_limit(root: Path = CGROUP_ROOT) -> int | None:
+    """Container memory limit in bytes (cgroup v2, else v1); None when unlimited or unknown."""
+    for f in (root / "memory.max", root / "memory" / "memory.limit_in_bytes"):
+        raw = _read_text(f)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:  # "max" or garbage: no limit we can use
+            return None
+        return value if value > 0 else None
+    return None
+
+
+def cgroup_cpu_limit(root: Path = CGROUP_ROOT) -> int | None:
+    """Container CPU quota in whole cores, rounded up, at least 1 (cgroup v2, else v1); None when
+    unlimited or unknown."""
+    raw = _read_text(root / "cpu.max")
+    if raw is not None:
+        parts = raw.split()
+        if len(parts) != 2:
+            return None
+        quota, period = parts
+    else:
+        quota = _read_text(root / "cpu" / "cpu.cfs_quota_us")
+        period = _read_text(root / "cpu" / "cpu.cfs_period_us")
+        if quota is None or period is None:
+            return None
+    try:
+        q, p = int(quota), int(period)
+    except ValueError:  # quota "max"
+        return None
+    if q <= 0 or p <= 0:  # v1 quota -1 = unlimited
+        return None
+    return max(1, math.ceil(q / p))
+
+
+def host_capacity(root: Path = CGROUP_ROOT) -> tuple[int | None, int | None]:
+    """(logical cores, RAM bytes) this process may use: the host's, capped by a container's cgroup
+    limits so the manager's memory-fit claim sees `docker run --memory / --cpus`. Either is None
+    when the platform will not say."""
     cpus = os.cpu_count()
     try:
         mem = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     except (ValueError, OSError, AttributeError):
         mem = None
+    cpu_limit, mem_limit = cgroup_cpu_limit(root), cgroup_memory_limit(root)
+    if cpu_limit is not None:
+        cpus = cpu_limit if cpus is None else min(cpus, cpu_limit)
+    if mem_limit is not None:
+        mem = mem_limit if mem is None else min(mem, mem_limit)
     return cpus, mem
+
+
+def probe_duckdb_version(binary: Path, run=subprocess.run) -> str | None:
+    """The version a caller-supplied duckdb reports (`v1.5.6 (Variegata) <sha>` -> "1.5.6"), or
+    None when it cannot be run or says nothing parsable."""
+    try:
+        out = run(
+            [str(binary), "--version"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for token in (out or "").split():
+        m = re.fullmatch(r"v?(\d+\.\d+\.\d+)", token)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _port_open(host: str, port: int) -> bool:

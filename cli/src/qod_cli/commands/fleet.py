@@ -6,7 +6,7 @@ from pathlib import Path
 import typer
 
 from .. import launcher
-from ..fleet_join import FleetMember, default_advertise_host
+from ..fleet_join import FleetMember, default_advertise_host, probe_duckdb_version
 from ..registry import covers
 from ._run import call
 
@@ -18,10 +18,10 @@ app = typer.Typer(help="Fleet servers (runtimeType=fleet): join, list, approve, 
 def join(
     manager: str = typer.Option(..., "--manager", envvar="QOD_MANAGER_URL", help="Manager REST base URL: https:// through a TLS proxy, or http://host:20900 with --insecure (the REST port itself has no TLS)."),
     join_token: str = typer.Option(..., "--join-token", envvar="QOD_FLEET_JOIN_TOKEN", help="Fleet join token; prefer QOD_FLEET_JOIN_TOKEN, a flag value is visible in ps."),
-    name: str = typer.Option(socket.gethostname(), "--name", help="Server identity; must be unique in the fleet."),
-    advertise_host: str = typer.Option(None, "--advertise-host", help="Address the manager dials; default: first non-loopback IPv4. Set it explicitly on multi-NIC hosts."),
-    bind_host: str = typer.Option(None, "--bind-host", help="Interface the node listens on; default: the advertise host. 0.0.0.0 to listen everywhere."),
-    node_port: int = typer.Option(21900, "--node-port"),
+    name: str = typer.Option(socket.gethostname(), "--name", envvar="QOD_FLEET_NAME", help="Server identity; must be unique in the fleet. In a container set it explicitly: the hostname is the container id."),
+    advertise_host: str = typer.Option(None, "--advertise-host", envvar="QOD_FLEET_ADVERTISE_HOST", help="Address the manager dials; default: first non-loopback IPv4. Set it explicitly on multi-NIC hosts and in containers."),
+    bind_host: str = typer.Option(None, "--bind-host", envvar="QOD_FLEET_BIND_HOST", help="Interface the node listens on; default: the advertise host. 0.0.0.0 to listen everywhere."),
+    node_port: int = typer.Option(21900, "--node-port", envvar="QOD_FLEET_NODE_PORT"),
     duckdb_bin: Path = typer.Option(None, "--duckdb-bin", help="duckdb executable; default: provisioned into the qod cache."),
     state_dir: Path = typer.Option(None, "--state-dir", help="Where the node pidfile lives; default: the qod cache."),
     insecure: bool = typer.Option(False, "--insecure", help="Allow a plain http:// manager URL (it does not relax TLS checks on https://)."),
@@ -36,8 +36,8 @@ def join(
     cache = launcher.default_cache_dir()
     spawn_sh, _ = launcher.materialize_spawn_scripts(cache / "scripts")
     exe = duckdb_bin or (launcher.ensure_duckdb_cli(cache) / "duckdb")
-    # The version is only known for the binary qod provisioned; a caller-supplied one reports None.
-    version = None if duckdb_bin else launcher.duckdb_version()
+    # A caller-supplied binary (the worker image's) is asked for its version.
+    version = probe_duckdb_version(exe) if duckdb_bin else launcher.duckdb_version()
     adv = advertise_host or default_advertise_host()
     # The default state dir keeps its pre-rename name ("agent") so an upgraded server still
     # finds, and reaps, a node orphaned by the previous version's pidfile.
