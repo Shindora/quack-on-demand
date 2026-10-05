@@ -41,3 +41,9 @@ docs/TPCH_SF1*
 
 # Existing assembly jar (the build stage produces a fresh one)
 distrib/quack-on-demand-assembly-*.jar
+
+# Nested Python tooling caches (cli/.venv alone is ~170MB of build context)
+**/.venv
+**/.pytest_cache
+**/.ruff_cache
+**/__pycache__
