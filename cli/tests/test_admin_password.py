@@ -41,6 +41,17 @@ def test_state_absent_without_the_table_or_the_row():
     )
 
 
+def test_state_survives_a_close_that_raises():
+    class ClosingBoom(FakeConn):
+        def close(self):
+            raise OSError("socket already gone")
+
+    conn = ClosingBoom(rows=[[1]])
+    assert ap.control_plane_admin_state(PG, ["a"], connect=lambda **kw: conn) == ap.PRESENT
+    conn = ClosingBoom(table=False)
+    assert ap.control_plane_admin_state(PG, ["a"], connect=lambda **kw: conn) == ap.ABSENT
+
+
 def test_state_absent_when_the_database_is_missing():
     def connect(**kw):
         raise Exception({"C": "3D000", "M": "database does not exist"})

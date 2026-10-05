@@ -9,6 +9,7 @@ password through `qod admin reset-password`.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 
 import typer
@@ -93,7 +94,9 @@ def control_plane_admin_state(pg: dict, usernames: list[str], connect=None) -> s
     except Exception:  # noqa: BLE001
         return UNREACHABLE
     finally:
-        conn.close()
+        # A failing close must not replace the verdict (or escape as an error).
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 def migrate_stored_password(echo) -> None:
