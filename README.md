@@ -126,7 +126,8 @@ everything is still there. Re-running adds a second database beside the first,
 so `qod serve ./other.duckdb` extends the same gateway rather than replacing it.
 
 Unlike `--demo`, this keeps the normal secure posture: TLS on, database auth on,
-ACL on, and a random admin password generated on the first run and printed once.
+ACL on, and an admin password you choose on the first run (prompted, or taken
+from `QOD_ADMIN_PASSWORD`) and never stored; `qod admin reset-password` recovers it.
 If a gateway is already running locally, `qod serve` provisions straight into it
 instead of booting a second one; `qod stop` still stops it.
 

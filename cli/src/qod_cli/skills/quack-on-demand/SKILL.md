@@ -97,8 +97,9 @@ use (Java 21+ required; the `duckdb` CLI and node spawn scripts are
 provisioned automatically):
 
 ```bash
-# One-time: persist Postgres coordinates, admin password, API key, TLS prefs
-# so a bare `qod start` works afterwards (a real env var still wins)
+# One-time: persist Postgres coordinates, API key, TLS prefs so a bare
+# `qod start` works afterwards (a real env var still wins). The admin password
+# is not stored: the first `qod start` asks for it
 qod setup
 
 # Default: TLS edge, DB auth on, Postgres state, admin user seeded
@@ -171,7 +172,7 @@ deprecated alias): TLS on, DB auth on, ACL on, and an admin password you
 choose on the first run (prompted twice, or taken from `QOD_ADMIN_PASSWORD` in
 your shell). It is never stored by the CLI, and later runs do not ask again.
 Rotate with `qod auth change-password`; if it is lost or the account is locked,
-run `qod admin reset-password` (works with the manager down).
+run `qod admin reset-password` (works with the manager down). With the default `QOD_ADMIN_USERNAME` (`admin@localhost.local,admin`) both superusers share that first-boot password: rotate each one (`qod auth change-password --username <name>` per name); `qod admin reset-password` resets every configured admin name by default (`--username` targets one).
 
 The embedded control plane lives at `<user-data-dir>/pg` on a fixed port
 (25432 by default, `--pg-port`), persists across restarts, and is never deleted.
@@ -179,8 +180,9 @@ The embedded control plane lives at `<user-data-dir>/pg` on a fixed port
 small-team mode: point the manager at your own Postgres (`qod setup`,
 `qod start`) for production, and HA refuses to boot with it.
 
-`qod serve` stores the generated admin password in the same `[start]` table
-`qod start` reads, so a later `qod start` seeds the same admin password. A
+Neither `qod serve` nor `qod start` stores the admin password: it is seeded
+once, when the control plane has no admin row, and a later `qod start` against
+the same control plane keeps it (no prompt). A
 `memory` database whose views point at a remote prefix carries that prefix as
 its object-store scope; under node lockdown such a database loses local file
 reads (`disabled_filesystems`), which is the intended posture for
@@ -1980,7 +1982,7 @@ opt-in except pod security:
 
 ## When operating
 
-- There is no built-in admin password: it is chosen at the first `qod start` / `qod serve` and the admin row is never rewritten on restart. Rotate with `qod auth change-password`; recover a lost or locked password with `qod admin reset-password`.
+- There is no built-in admin password: it is chosen at the first `qod start` / `qod serve` and the admin row is never rewritten on restart. Rotate with `qod auth change-password`; recover a lost or locked password with `qod admin reset-password`. With the default `QOD_ADMIN_USERNAME` (`admin@localhost.local,admin`) both superusers share that first-boot password: rotate each one (`qod auth change-password --username <name>` per name); `qod admin reset-password` resets every configured admin name by default (`--username` targets one).
 - With no `QOD_API_KEY` pinned, boot generates a random one and prints it in a startup banner; it changes on every restart, so pin `QOD_API_KEY` (and `QOD_SESSION_JWT_SECRET`) before any non-localhost deploy.
 - All config scalars have matching `QOD_*` env-var overrides. Prefer env vars over editing `application.conf` (it is bundled into the jar at build time).
 
