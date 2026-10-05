@@ -12,6 +12,7 @@ from qod_cli.fleet_join import (
     cgroup_memory_limit,
     host_capacity,
     network_hint,
+    probe_duckdb_version,
     status_hint,
 )
 
@@ -554,3 +555,23 @@ def test_cgroup_garbage_or_missing_files_fall_back_to_host(tmp_path, monkeypatch
 def test_cgroup_fractional_cpu_rounds_up_to_at_least_one(tmp_path):
     (tmp_path / "cpu.max").write_text("25000 100000\n")
     assert cgroup_cpu_limit(tmp_path) == 1
+
+
+class _Done:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def test_probe_duckdb_version_parses_the_cli_banner(tmp_path):
+    run = lambda *a, **kw: _Done("v1.5.6 (Variegata) 0b83e5d2f6\n")
+    assert probe_duckdb_version(tmp_path / "duckdb", run=run) == "1.5.6"
+
+
+def test_probe_duckdb_version_fails_soft(tmp_path):
+    def boom(*a, **kw):
+        raise subprocess.TimeoutExpired("duckdb", 5)
+    assert probe_duckdb_version(tmp_path / "duckdb", run=boom) is None
+    assert probe_duckdb_version(tmp_path / "duckdb", run=lambda *a, **kw: _Done("garbage")) is None
+    def missing(*a, **kw):
+        raise FileNotFoundError("duckdb")
+    assert probe_duckdb_version(tmp_path / "duckdb", run=missing) is None

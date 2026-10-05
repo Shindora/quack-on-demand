@@ -12,6 +12,7 @@ import collections
 import math
 import os
 import platform
+import re
 import signal
 import socket
 import subprocess
@@ -137,6 +138,20 @@ def host_capacity(root: Path = CGROUP_ROOT) -> tuple[int | None, int | None]:
     if mem_limit is not None:
         mem = mem_limit if mem is None else min(mem, mem_limit)
     return cpus, mem
+
+
+def probe_duckdb_version(binary: Path, run=subprocess.run) -> str | None:
+    """The version a caller-supplied duckdb reports (`v1.5.6 (Variegata) <sha>` -> "1.5.6"), or
+    None when it cannot be run or says nothing parsable."""
+    try:
+        out = run([str(binary), "--version"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for token in (out or "").split():
+        m = re.fullmatch(r"v?(\d+\.\d+\.\d+)", token)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _port_open(host: str, port: int) -> bool:
