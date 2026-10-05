@@ -80,6 +80,18 @@ def test_setup_show_redacts_secrets(runner, monkeypatch):
     assert "topsecret" not in result.output
 
 
+def test_setup_show_redacts_the_session_secret(runner):
+    # --with-starflow persists QOD_SESSION_JWT_SECRET in the [start] table.
+    from qod_cli.config import save_start_env
+    from qod_cli.main import app
+
+    save_start_env({"QOD_SESSION_JWT_SECRET": "jwt-secret-value-123"})
+    result = runner.invoke(app, ["setup", "--show"])
+    assert result.exit_code == 0, result.output
+    assert "QOD_SESSION_JWT_SECRET" in result.output
+    assert "jwt-secret-value-123" not in result.output
+
+
 def test_setup_show_json(runner, monkeypatch):
     from qod_cli.main import app
 

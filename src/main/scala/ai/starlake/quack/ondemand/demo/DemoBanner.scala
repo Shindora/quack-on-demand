@@ -1,8 +1,8 @@
 package ai.starlake.quack.ondemand.demo
 
 /** The `qod demo` startup banner. Scaled to the minimal demo's story: row + column security on a
-  * governed catalog, with copy-pastable admin UI and JDBC / ADBC / ODBC configurations for every
-  * seeded credential (bootstrap-demo-minimal.yaml).
+  * governed catalog, with the admin UI and Flight SQL credentials of every seeded identity
+  * (bootstrap-demo-minimal.yaml) and a link to the client connection-string documentation.
   */
 object DemoBanner:
 
@@ -50,30 +50,13 @@ object DemoBanner:
         |
         |$adminUiTable
         |
-        |  Flight SQL: grpc+tls://localhost:$flightPort  (tenant=acme, pool=bi)
         |
+        |  Flight SQL/ODBC/ADBC/JDBC/Quack Client connection strings: ${ai.starlake.quack.Banner.ClientsDocUrl}
+        |
+        |  -> tenant=acme
+        |  -> pool=bi
         |$flightSqlTable
         |
-        |  JDBC:
-        |    jdbc:arrow-flight-sql://localhost:$flightPort?useEncryption=true&disableCertificateVerification=true&user=alice&password=demo-alice&tenant=acme&pool=bi
-        |
-        |  ADBC (Python):
-        |    from adbc_driver_flightsql import dbapi
-        |    conn = dbapi.connect("grpc+tls://localhost:$flightPort",
-        |                         db_kwargs={"username": "alice", "password": "demo-alice",
-        |                                    "adbc.flight.sql.client_option.tls_skip_verify": "true",
-        |                                    "adbc.flight.sql.rpc.call_header.tenant": "acme",
-        |                                    "adbc.flight.sql.rpc.call_header.pool": "bi",
-        |                                    "adbc.flight.sql.rpc.call_header.db": "acme_tpch"})
-        |
-        |  ODBC (any Arrow Flight SQL ODBC driver):
-        |    Driver={Arrow Flight SQL ODBC Driver};HOST=localhost;PORT=$flightPort;useEncryption=true;disableCertificateVerification=true;UID=alice;PWD=demo-alice;RPCCallHeaders=tenant=acme;pool=bi
-        |
-        |  Try: SELECT c_name, c_phone, c_mktsegment FROM acme_tpch.tpch1.customer LIMIT 5
-        |       -- as alice: c_phone comes back masked ('***'); only BUILDING-segment rows appear
-        |       -- as acme-admin: full data; a table alice has no grant on: denied
-        |
-        |  Ctrl-C stops the demo and deletes $dataPath's parent (ephemeral).
         |""".stripMargin
 
   /** Poll `host:port` with short connect attempts until it accepts a TCP connection or `timeoutMs`

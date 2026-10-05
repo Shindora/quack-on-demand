@@ -45,30 +45,26 @@ class BannerSpec extends AnyFlatSpec with Matchers:
     finally scala.util.Try(TestPostgres.dropDatabase(name))
   }
 
-  "startup" should "render copy-pasteable strings with TLS on and 0.0.0.0 mapped" in {
+  "startup" should "render the endpoints with TLS on, 0.0.0.0 mapped, and link the client docs" in {
     val b =
       Banner.startup(meta, "0.0.0.0", 20900, "0.0.0.0", 31338, tlsEnabled = true, aclEnabled = true)
     b should include("http://localhost:20900/ui")
     b should include("SQL ACL       : ENABLED")
     b should include("grpc+tls://localhost:31338")
-    b should include(
-      "jdbc:arrow-flight-sql://localhost:31338/?tenant=<tenant>&pool=<pool>&user=<user>" +
-        "&useEncryption=true&disableCertificateVerification=true"
-    )
-    b should include("Arrow Flight SQL ODBC Driver")
-    b should include("adbc_driver_flightsql")
+    b should include("Client connection strings: https://docs.starlake.ai/qod/connecting/clients")
+    (b should not).include("jdbc:arrow-flight-sql")
+    (b should not).include("Arrow Flight SQL ODBC Driver")
+    (b should not).include("adbc_driver_flightsql")
   }
 
-  it should "render plain grpc and useEncryption=false when TLS is off" in {
+  it should "render plain grpc when TLS is off" in {
     val b =
       Banner.startup(meta, "myhost", 20900, "myhost", 31338, tlsEnabled = false, aclEnabled = false)
     b should include("grpc://myhost:31338")
     b should include("SQL ACL       : DISABLED (every statement admitted; set QOD_ACL_ENABLED=true")
-    b should include("&useEncryption=false")
     b should include(
       "ACL MODE      : qod (default for tenants that set none; 0 tenant(s) in opa mode)"
     )
-    (b should not).include("DisableCertificateVerification")
   }
 
   it should "not imply nothing is enforced when the ACL is off but a tenant is in opa mode" in {
@@ -123,4 +119,23 @@ class BannerSpec extends AnyFlatSpec with Matchers:
     )
     b should include("SQL ACL       : ENABLED (grants, column and row policies enforced)")
     b should include("1 tenant(s) in opa mode")
+  }
+
+  it should "name the qod CLI config file only when launched through the CLI" in {
+    val withCli = Banner.startup(
+      meta,
+      "myhost",
+      20900,
+      "myhost",
+      31338,
+      tlsEnabled = false,
+      aclEnabled = true,
+      cliConfigFile = Some("/home/u/.config/qod/config.toml")
+    )
+    withCli should include(
+      "qod config    : /home/u/.config/qod/config.toml\n   control plane : "
+    )
+    val bare =
+      Banner.startup(meta, "myhost", 20900, "myhost", 31338, tlsEnabled = false, aclEnabled = true)
+    (bare should not).include("qod config")
   }

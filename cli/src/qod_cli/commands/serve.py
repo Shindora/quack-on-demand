@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 import httpx
 import typer
 
-from .. import launcher
+from .. import launcher, starflow
 from ..config import Settings, load_start_env, save_profile, save_start_env
 from ..rest import ApiError, RestClient
 from ..serve_provision import (
@@ -43,6 +43,7 @@ from ..serve_provision import (
 from ..serve_target import TargetError, composed_db_name
 from ..serve_target import resolve as resolve_target
 from ._launch import _exec, resolve_jar, resolve_java
+from . import _starflow
 from .demo import run_demo
 
 # The seeded superuser. QOD_ADMIN_USERNAME defaults to "admin@localhost.local,admin",
@@ -517,6 +518,12 @@ def serve(
         "serve flags (--tenant, --size, object-store credentials, ...) are ignored in "
         "demo mode.",
     ),
+    with_starflow: bool = _starflow.WITH_STARFLOW,
+    starflow_home: str = _starflow.STARFLOW_HOME,
+    starflow_version: str = _starflow.STARFLOW_VERSION,
+    starflow_port: int = _starflow.STARFLOW_PORT,
+    starflow_url: str = _starflow.STARFLOW_URL,
+    starflow_env_file: Path = _starflow.STARFLOW_ENV_FILE,
 ):
     """Serve your own data through a fresh, persistent gateway in one command.
 
@@ -528,6 +535,11 @@ def serve(
     instead. If a manager is already running at the configured URL (loopback
     only), serve provisions straight into it instead of booting a second JVM;
     `qod stop` still stops it.
+
+    With --with-starflow, Starflow (the Starlake API + UI) runs next to the
+    manager in a `starlake` database on the embedded Postgres, paired for SSO,
+    REST and FlightSQL; it is installed on first use and stopped by Ctrl-C and
+    qod stop. Refused with --demo and when a manager is already running.
 
     Running against your own Postgres instead? Use qod start.
     """
@@ -543,7 +555,19 @@ def serve(
 
     manager_url = ctx.obj.settings.manager_url
 
+    sf_request = _starflow.request(
+        with_starflow, starflow_home, starflow_version, starflow_port, starflow_url,
+        starflow_env_file,
+    )
+
     if demo:
+        if sf_request is not None:
+            typer.echo(
+                "error: --with-starflow cannot run with the demo (ephemeral, insecure by "
+                "design); drop --demo",
+                err=True,
+            )
+            raise typer.Exit(1)
         if target is not None:
             typer.echo(
                 "error: qod serve --demo takes no TARGET (the demo seeds its own sample "
@@ -614,6 +638,15 @@ def serve(
         raise typer.Exit(1)
 
     if _manager_running(manager_url):
+        if sf_request is not None:
+            # qod cannot know, or inject, the running manager's API key and
+            # session secret, so the pair could never authenticate.
+            typer.echo(
+                f"error: a manager is already running at {manager_url}; --with-starflow "
+                "needs to launch it itself: stop it first (qod stop)",
+                err=True,
+            )
+            raise typer.Exit(1)
         if not _is_loopback(manager_url):
             # M7: serve only ever provisions into a LOCAL gateway - a manager
             # running at a remote (non-loopback) URL is almost certainly a
@@ -689,6 +722,7 @@ def serve(
     # The flags default to None so a value already present in base_env is not
     # silently clobbered by an indistinguishable flag default.
     base_env = {**load_start_env(), **os.environ}
+    sf_plan = _starflow.prepare(sf_request, base_env, java) if sf_request else None
     if pg_port is not None:
         effective_pg_port = pg_port
     else:
@@ -720,6 +754,8 @@ def serve(
     env["QOD_PG_EMBEDDED_PORT"] = str(effective_pg_port)
     env["QOD_PG_EMBEDDED_DATA_DIR"] = effective_pg_dir
     env["QOD_ADMIN_PASSWORD"] = password
+    if sf_plan is not None:
+        env.update(starflow.manager_env(sf_plan.url, sf_plan.api_key, sf_plan.secret))
     # quack-on-demand.acl.enabled defaults to FALSE, so a persistent install has to
     # ask for it. TLS and DB auth are already on by default. A real env var or a
     # persisted `qod setup` value wins over this default.
@@ -749,6 +785,17 @@ def serve(
         pg_data_dir=effective_pg_dir,
         echo=lambda line: typer.echo(line, err=True),
     )
+
+    if sf_plan is not None:
+        _starflow.start_after_ready(
+            sf_plan,
+            mgr_env=env,
+            # zonky trust auth: the password is a placeholder (EmbeddedControlPlane).
+            pg=starflow.PgCoords(
+                host="localhost", port=effective_pg_port, user="postgres", password="postgres"
+            ),
+            ready_timeout=ready_timeout,
+        )
 
     _exec(
         launcher.build_jar_command(

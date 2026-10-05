@@ -118,6 +118,27 @@ qod status
 qod stop
 ```
 
+**Starflow next to the manager.** `--with-starflow` on `qod start` or `qod serve`
+also runs Starflow (the Starlake API + UI), installing it on first use (into
+`STARLAKE_HOME`, else an existing `~/starlake`, else the qod cache). Starflow
+stores its metadata in a `starlake` database on the manager's own Postgres
+server, and qod pairs the two for SSO, REST and FlightSQL (shared API key and
+session secret, generated once and kept in the CLI config).
+
+```bash
+qod start --with-starflow
+qod serve ./sales.duckdb --with-starflow --starflow-port 9000
+# clients on other machines: give the browser-facing URLs
+QOD_PUBLIC_BASE_URL=https://qod.example.com \
+  qod start --with-starflow --starflow-url https://starflow.example.com
+# extra Starflow-only settings (OAuth client ids, mail, ...)
+qod start --with-starflow --starflow-env-file ./starflow.env
+```
+
+Starflow logs to `logs/starflow.log` under the qod data dir; Ctrl-C and
+`qod stop` stop it before the manager. Not supported on Windows yet, and not
+with `--demo` or when `qod serve` would attach to a manager already running.
+
 **Serve your own data in one command.** `qod serve <target>` provisions a
 tenant, database, and pool around data the user already has, on a persistent
 embedded Postgres, so there is no external prerequisite:
