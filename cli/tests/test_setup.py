@@ -284,3 +284,15 @@ def test_setup_migrates_a_stored_admin_password(runner):
     assert result.exit_code == 0, result.output
     assert "Your current admin password is: legacy" in result.output
     assert "QOD_ADMIN_PASSWORD" not in load_start_env()
+
+
+def test_setup_show_masks_a_legacy_admin_password_without_migrating(runner):
+    from qod_cli.config import load_start_env, save_start_env
+    from qod_cli.main import app
+
+    save_start_env({"QOD_ADMIN_PASSWORD": "legacy-secret"})
+    result = runner.invoke(app, ["setup", "--show"])
+    assert result.exit_code == 0, result.output
+    assert "QOD_ADMIN_PASSWORD" in result.output
+    assert "legacy-secret" not in result.output
+    assert "QOD_ADMIN_PASSWORD" in load_start_env()

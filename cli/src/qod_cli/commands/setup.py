@@ -24,7 +24,7 @@ from ..output import render
 
 # (env var, CLI flag label, prompt text, default) - the knobs `qod start`
 # actually reads today (_pg_coords in commands/start.py, plus the
-# QOD_ADMIN_*/QOD_API_KEY/QOD_AUTH_DB_ENABLED/PROXY_TLS_ENABLED vars that
+# QOD_ADMIN_USERNAME/QOD_API_KEY/QOD_AUTH_DB_ENABLED/PROXY_TLS_ENABLED vars that
 # application.conf honors - see CLAUDE.md "Every scalar ... accepts a QOD_*
 # env-var override"). --set covers anything not on this short list.
 _PROMPTS: tuple[tuple[str, str, str], ...] = (
@@ -38,7 +38,7 @@ _PROMPTS: tuple[tuple[str, str, str], ...] = (
     ("QOD_AUTH_DB_ENABLED", "Enable DB-backed auth (true/false)", "true"),
     ("PROXY_TLS_ENABLED", "Enable FlightSQL edge TLS (true/false)", "true"),
 )
-_SECRET_KEYS = {"QOD_PG_PASSWORD", "QOD_API_KEY", "QOD_SESSION_JWT_SECRET"}
+_SECRET_KEYS = {"QOD_PG_PASSWORD", admin_pw.KEY, "QOD_API_KEY", "QOD_SESSION_JWT_SECRET"}
 
 
 def _redact(key: str, value: str) -> str:
@@ -169,6 +169,7 @@ def setup(
         return
 
     admin_pw.migrate_stored_password(lambda line: typer.echo(line, err=True))
+    current = load_start_env()
 
     named = {
         "QOD_PG_HOST": pg_host,
