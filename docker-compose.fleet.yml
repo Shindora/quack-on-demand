@@ -10,6 +10,11 @@
 # Requires FLEET_JOIN_TOKEN in .env (openssl rand -hex 24). Compose v2.24+ (ports: !override).
 
 services:
+  # Every fleet node holds its own metastore connections on top of the manager's pool; initdb can
+  # pick max_connections=20 on a small Docker VM, which runs out at the first maintenance node.
+  postgres:
+    command: ["postgres", "-c", "max_connections=200"]
+
   quack:
     environment:
       QOD_RUNTIME_TYPE: fleet
