@@ -206,11 +206,51 @@ def perform_stop():
     """The teardown itself, POSIX only. Shared between the `qod stop` command
     and the Ctrl-C path of `qod start` / `qod start --demo` (see
     `_launch._run_supervised`), so interrupting a foreground manager and
-    stopping a detached one behave identically."""
+    stopping a detached one behave identically. Starflow, a client of the
+    manager, is sent SIGTERM first, but its bounded wait comes last: the
+    manager and node stop must neither be delayed by it nor skipped when a
+    second Ctrl-C interrupts it (that would orphan duckdb nodes on 21900+).
+    The same holds for a Ctrl-C landing while the SIGTERM step runs its `ps`."""
+    pgid = None
     try:
-        _stop_manager_and_nodes()
+        pgid = _begin_starflow_stop()
     finally:
-        sweep_orphaned_embedded_postgres()
+        try:
+            try:
+                _stop_manager_and_nodes()
+            finally:
+                sweep_orphaned_embedded_postgres()
+        finally:
+            if pgid is not None:
+                _finish_starflow_stop(pgid)
+
+
+def _starflow_state_dir() -> Path:
+    """Seam: tests point this away from the real qod data dir."""
+    from .. import launcher
+
+    return launcher.default_data_dir()
+
+
+def _begin_starflow_stop() -> int | None:
+    """SIGTERM a Starflow started by --with-starflow, if any. A failure here must
+    never keep the manager running."""
+    from .. import starflow
+
+    try:
+        return starflow.begin_stop(_starflow_state_dir(), echo=typer.echo)
+    except Exception as exc:
+        typer.echo(f"WARN: could not stop Starflow: {exc}", err=True)
+        return None
+
+
+def _finish_starflow_stop(pgid: int) -> None:
+    from .. import starflow
+
+    try:
+        starflow.finish_stop(_starflow_state_dir(), pgid, echo=typer.echo)
+    except Exception as exc:
+        typer.echo(f"WARN: could not stop Starflow: {exc}", err=True)
 
 
 def _stop_manager_and_nodes():

@@ -14,6 +14,10 @@ dependencies = [
     "platformdirs>=4.0",
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
+    # --with-starflow creates Starflow's database on QoD's Postgres server.
+    # Pure Python; its native interface runs statements outside a transaction,
+    # which CREATE DATABASE requires (duckdb's postgres_execute cannot).
+    "pg8000>=1.31",
     # adbc-driver-flightsql and its pyarrow dependency ship no wheels for Windows
     # on ARM64 and can't build from source there, which would break `uvx qod`
     # (and `qod serve --demo`) entirely. They are only needed by `qod sql`, so

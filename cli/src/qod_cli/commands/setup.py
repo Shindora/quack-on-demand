@@ -38,7 +38,7 @@ _PROMPTS: tuple[tuple[str, str, str], ...] = (
     ("QOD_AUTH_DB_ENABLED", "Enable DB-backed auth (true/false)", "true"),
     ("PROXY_TLS_ENABLED", "Enable FlightSQL edge TLS (true/false)", "true"),
 )
-_SECRET_KEYS = {"QOD_PG_PASSWORD", "QOD_ADMIN_PASSWORD", "QOD_API_KEY"}
+_SECRET_KEYS = {"QOD_PG_PASSWORD", "QOD_ADMIN_PASSWORD", "QOD_API_KEY", "QOD_SESSION_JWT_SECRET"}
 
 
 def _redact(key: str, value: str) -> str:

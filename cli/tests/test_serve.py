@@ -789,6 +789,66 @@ def test_banner_attached_render(respx_mock, tmp_path):
     assert "Ctrl-C" not in banner
 
 
+@pytest.fixture
+def starflow_wired(wired, monkeypatch):
+    from qod_cli import starflow
+    from qod_cli.commands import _starflow
+
+    tmp = wired["tmp"]
+    monkeypatch.setattr(starflow, "java_home_of", lambda java, run=None: "/jdk")
+    monkeypatch.setattr(starflow, "ensure_installed", lambda *a, **kw: None)
+    monkeypatch.setattr(_starflow, "_user_home", lambda: tmp / "home")
+    monkeypatch.setattr(_starflow, "_spawn", lambda **kw: wired.setdefault("starflow", kw))
+    monkeypatch.delenv("SL_URL", raising=False)
+    monkeypatch.delenv("SL_API_HTTP_PORT", raising=False)
+    monkeypatch.delenv("STARLAKE_HOME", raising=False)
+    monkeypatch.delenv("STARFLOW_ENV_FILE", raising=False)
+    monkeypatch.delenv("STARFLOW_VERSION", raising=False)
+    # Pin the platform so these tests exercise the wiring on every OS.
+    monkeypatch.setattr(_starflow, "_is_windows", lambda: False)
+    return wired
+
+
+def test_serve_with_starflow_uses_the_embedded_postgres(runner, starflow_wired):
+    result = _invoke(runner, starflow_wired, "--with-starflow", "--pg-port", "25999")
+    assert result.exit_code == 0, result.output
+    mgr = starflow_wired["env"]
+    assert mgr["SL_ENABLED"] == "true"
+    assert mgr["SL_URL"] == "http://localhost:9900"
+    assert mgr["QOD_API_KEY"] and mgr["QOD_SESSION_JWT_SECRET"] == mgr["JWT_SECRET_KEY"]
+    sf = starflow_wired["starflow"]
+    assert sf["pg"].port == 25999
+    assert (sf["pg"].user, sf["pg"].password) == ("postgres", "postgres")
+    assert sf["env"]["SL_API_JDBC_URL"] == "jdbc:postgresql://localhost:25999/starlake"
+    assert sf["env"]["QOD_API_KEY"] == mgr["QOD_API_KEY"]
+    assert "provision" in starflow_wired  # serve's own provisioning still runs
+
+
+def test_serve_demo_refuses_with_starflow(runner, starflow_wired):
+    from qod_cli.main import app
+
+    result = runner.invoke(app, ["serve", "--demo", "--with-starflow"])
+    assert result.exit_code == 1
+    assert "cannot run with the demo" in result.output
+    assert "drop --demo" in result.output
+
+
+def test_serve_attach_mode_refuses_with_starflow(runner, starflow_wired, monkeypatch):
+    from qod_cli.commands import serve as serve_cmd
+
+    monkeypatch.setattr(serve_cmd, "_manager_running", lambda url: True)
+    result = _invoke(runner, starflow_wired, "--with-starflow")
+    assert result.exit_code == 1
+    assert "stop it first" in result.output
+    assert "starflow" not in starflow_wired
+
+
+def test_serve_starflow_flag_without_with_starflow_is_a_usage_error(runner, wired):
+    result = _invoke(runner, wired, "--starflow-url", "http://x:1")
+    assert result.exit_code == 2
+    assert "--with-starflow" in result.output
+
+
 def test_provisioning_substitutes_a_null_flight_sql_host(respx_mock, tmp_path):
     # I-2: a JSON-null flightSqlHost must take the same substitution branch as
     # "" and "0.0.0.0", not land None in the JDBC connection string.

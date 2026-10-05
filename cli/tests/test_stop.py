@@ -39,6 +39,8 @@ def stop_world(monkeypatch, tmp_path):
     # perform_stop would resolve to this developer machine's REAL qod data dir
     # and read whatever postmaster.pid happens to live there.
     monkeypatch.setattr(stop_cmd, "_embedded_pgdata_dir", lambda: tmp_path / "pg" / "pgdata")
+    # Same reason as above: never read the REAL qod data dir's starflow.pid.
+    monkeypatch.setattr(stop_cmd, "_starflow_state_dir", lambda: tmp_path / "state")
     return world
 
 
@@ -379,3 +381,128 @@ def test_is_postmaster_name_win32_requires_the_exe_image_name(monkeypatch):
     assert stop_cmd._is_postmaster_name("postgres.exe") is True
     assert stop_cmd._is_postmaster_name("notepad.exe") is False
     assert stop_cmd._is_postmaster_name(None) is False
+
+
+def _order_world(monkeypatch, order):
+    from qod_cli.commands import stop as stop_cmd
+
+    monkeypatch.setattr(stop_cmd, "_stop_manager_and_nodes", lambda: order.append("manager"))
+    monkeypatch.setattr(stop_cmd, "sweep_orphaned_embedded_postgres", lambda: order.append("pg"))
+    return stop_cmd
+
+
+def test_perform_stop_order_begin_starflow_manager_pg_finish_starflow(monkeypatch, tmp_path):
+    stop_cmd = _order_world(monkeypatch, order := [])
+    monkeypatch.setattr(stop_cmd, "_begin_starflow_stop", lambda: order.append("begin") or 4242)
+    monkeypatch.setattr(
+        stop_cmd, "_finish_starflow_stop", lambda pgid: order.append(("finish", pgid))
+    )
+    stop_cmd.perform_stop()
+    assert order == ["begin", "manager", "pg", ("finish", 4242)]
+
+
+def test_perform_stop_drives_starflow_begin_and_finish(monkeypatch, tmp_path):
+    from qod_cli import starflow
+
+    stop_cmd = _order_world(monkeypatch, order := [])
+    monkeypatch.setattr(stop_cmd, "_starflow_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        starflow, "begin_stop", lambda state_dir, echo: order.append(("begin", state_dir)) or 7
+    )
+    monkeypatch.setattr(
+        starflow, "finish_stop", lambda state_dir, pgid, echo: order.append(("finish", pgid))
+    )
+    stop_cmd.perform_stop()
+    assert order == [("begin", tmp_path), "manager", "pg", ("finish", 7)]
+
+
+def test_perform_stop_skips_finish_wait_when_nothing_to_stop(monkeypatch, tmp_path):
+    from qod_cli import starflow
+
+    stop_cmd = _order_world(monkeypatch, order := [])
+    monkeypatch.setattr(stop_cmd, "_starflow_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(starflow, "begin_stop", lambda state_dir, echo: None)
+    monkeypatch.setattr(
+        starflow, "finish_stop", lambda *a, **kw: pytest.fail("nothing to wait for")
+    )
+    stop_cmd.perform_stop()
+    assert order == ["manager", "pg"]
+
+
+def test_interrupt_during_starflow_wait_leaves_manager_stopped_and_pid_file_gone(
+    monkeypatch, tmp_path
+):
+    from qod_cli import starflow
+
+    stop_cmd = _order_world(monkeypatch, order := [])
+    monkeypatch.setattr(stop_cmd, "_starflow_state_dir", lambda: tmp_path)
+    (tmp_path / starflow.PID_FILE).write_text("4242\n/opt/sf\n")
+    alive = lambda pgid, sig: None  # the group never dies on its own
+    real_begin, real_finish = starflow.begin_stop, starflow.finish_stop
+
+    def begin(state_dir, echo):
+        return real_begin(
+            state_dir, echo, killpg=lambda p, s: order.append(("sig", s)),
+            commands=lambda pgid: ["java -cp /opt/sf/lib ai.starlake.Main"],
+        )
+
+    def interrupted(s):
+        order.append("waiting")
+        raise KeyboardInterrupt
+
+    def finish(state_dir, pgid, echo):
+        real_finish(state_dir, pgid, echo, killpg=alive, sleep=interrupted)
+
+    monkeypatch.setattr(starflow, "begin_stop", begin)
+    monkeypatch.setattr(starflow, "finish_stop", finish)
+    with pytest.raises(KeyboardInterrupt):
+        stop_cmd.perform_stop()
+    assert order == [("sig", signal.SIGTERM), "manager", "pg", "waiting"]
+    assert not (tmp_path / starflow.PID_FILE).exists()
+
+
+def test_starflow_stop_failure_never_blocks_the_manager_stop(monkeypatch, tmp_path):
+    from qod_cli import starflow
+
+    stop_cmd = _order_world(monkeypatch, order := [])
+
+    def boom(*a, **kw):
+        raise RuntimeError("bad pid file")
+
+    monkeypatch.setattr(stop_cmd, "_starflow_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(starflow, "begin_stop", boom)
+    stop_cmd.perform_stop()
+    assert order == ["manager", "pg"]
+
+
+def test_starflow_finish_failure_is_a_warning(monkeypatch, tmp_path):
+    from qod_cli import starflow
+
+    stop_cmd = _order_world(monkeypatch, order := [])
+
+    def boom(*a, **kw):
+        raise RuntimeError("wait failed")
+
+    monkeypatch.setattr(stop_cmd, "_starflow_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(starflow, "begin_stop", lambda state_dir, echo: 7)
+    monkeypatch.setattr(starflow, "finish_stop", boom)
+    stop_cmd.perform_stop()
+    assert order == ["manager", "pg"]
+
+
+def test_interrupt_during_starflow_begin_still_stops_the_manager(monkeypatch, tmp_path):
+    # A Ctrl-C landing while begin's `ps` runs must not skip the manager and
+    # node stop (that would orphan duckdb nodes on 21900+); it still propagates.
+    stop_cmd = _order_world(monkeypatch, order := [])
+
+    def interrupted():
+        order.append("begin")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(stop_cmd, "_begin_starflow_stop", interrupted)
+    monkeypatch.setattr(
+        stop_cmd, "_finish_starflow_stop", lambda pgid: pytest.fail("nothing was signalled")
+    )
+    with pytest.raises(KeyboardInterrupt):
+        stop_cmd.perform_stop()
+    assert order == ["begin", "manager", "pg"]

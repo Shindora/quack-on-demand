@@ -6,8 +6,9 @@ from pathlib import Path
 
 import typer
 
-from .. import launcher
+from .. import launcher, starflow
 from ..config import load_start_env
+from . import _starflow
 from ._launch import _exec, resolve_jar, resolve_java
 
 # Tenant-db Postgres databases created by the bundled demo manifests; NUKE=1
@@ -144,6 +145,13 @@ def _spawn_loaders(env: dict, scripts: dict, state_dir: Path, pg: dict) -> None:
         subprocess.Popen(["bash", str(scripts[script])], env=loader_env, cwd=state_dir)
 
 
+def _manager_running(manager_url: str) -> bool:
+    """Seam over serve's GET /ready probe (tests pin it; never a real :20900)."""
+    from .serve import _manager_running as probe
+
+    return probe(manager_url)
+
+
 def start(
     ctx: typer.Context,
     version: str = typer.Option(
@@ -160,6 +168,12 @@ def start(
         "TPC-H, RLS/CLS showcase. Needs no external Postgres; all state is deleted on exit. "
         "(deprecated alias: use qod serve --demo)",
     ),
+    with_starflow: bool = _starflow.WITH_STARFLOW,
+    starflow_home: str = _starflow.STARFLOW_HOME,
+    starflow_version: str = _starflow.STARFLOW_VERSION,
+    starflow_port: int = _starflow.STARFLOW_PORT,
+    starflow_url: str = _starflow.STARFLOW_URL,
+    starflow_env_file: Path = _starflow.STARFLOW_ENV_FILE,
 ):
     """Run a quack-on-demand manager against your Postgres (scripts/run-jar.sh
     without the checkout). Postgres is assumed reachable (QOD_PG_* env vars);
@@ -171,6 +185,11 @@ def start(
     and qod setup's stored config is not applied - see qod setup --help).
     Ctrl-C tears the manager and its nodes down gracefully (same as qod stop).
 
+    With --with-starflow, Starflow (the Starlake API + UI) runs next to the
+    manager in a `starlake` database on the same Postgres server, paired for
+    SSO, REST and FlightSQL; it is installed on first use and stopped by
+    Ctrl-C and qod stop.
+
     No Postgres and just want to serve local data? Use qod serve."""
     try:
         from .. import __version__
@@ -181,6 +200,30 @@ def start(
             typer.echo(hint, err=True)
     except Exception:
         pass  # purely decorative; must never block a start
+
+    sf_request = _starflow.request(
+        with_starflow, starflow_home, starflow_version, starflow_port, starflow_url,
+        starflow_env_file,
+    )
+    if demo and sf_request is not None:
+        typer.echo(
+            "error: --with-starflow cannot run with the demo (ephemeral, insecure by design); "
+            "use qod serve or qod start without --demo",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if sf_request is not None:
+        # qod cannot know, or inject, the running manager's API key and session
+        # secret, so the pair could never authenticate (same refusal as serve).
+        port = {**load_start_env(), **os.environ}.get("QOD_ON_DEMAND_PORT") or "20900"
+        manager_url = f"http://localhost:{port}"
+        if _manager_running(manager_url):
+            typer.echo(
+                f"error: a manager is already running at {manager_url}; --with-starflow "
+                "needs to launch it itself: stop it first (qod stop)",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     if demo:
         from .demo import run_demo
@@ -208,9 +251,12 @@ def start(
     # process env var still wins (same precedence as everywhere else in the
     # CLI: explicit > env var > file > built-in default).
     base_env = {**load_start_env(), **os.environ}
+    sf_plan = _starflow.prepare(sf_request, base_env, java) if sf_request else None
     env = launcher.runtime_env(
         base_env, app_home, duckdb_bin, spawn_sh, spawn_ps1, libduckdb_lib=libduckdb
     )
+    if sf_plan is not None:
+        env.update(starflow.manager_env(sf_plan.url, sf_plan.api_key, sf_plan.secret))
 
     # Durable state anchor: certs/ and any relative paths land here, and the
     # DuckLake data path defaults under it (run-jar anchors these at the repo).
@@ -224,6 +270,19 @@ def start(
     _ensure_catalog_db(pg)
     loader_scripts = launcher.materialize_loader_scripts(app_home / "scripts")
     _spawn_loaders(env, loader_scripts, state_dir, pg)
+
+    if sf_plan is not None:
+        _starflow.start_after_ready(
+            sf_plan,
+            mgr_env=env,
+            pg=starflow.PgCoords(
+                host=pg["host"],
+                port=int(pg["port"]),
+                user=pg["user"],
+                password=pg["password"],
+                admin_db=pg["admin_db"],
+            ),
+        )
 
     os.chdir(state_dir)
     _exec(
