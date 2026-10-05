@@ -56,8 +56,37 @@ ThisBuild / developers := List(
   )
 )
 
-lazy val genOpenApi    = taskKey[Unit]("Generate website/static/openapi.yaml from the Tapir endpoints")
-lazy val genConfigDocs = taskKey[Unit]("Generate website/docs/reference/configuration.md from ConfigRegistry")
+lazy val genOpenApi    = taskKey[Unit]("Generate static/openapi.yaml in starlake-docs from the Tapir endpoints")
+lazy val genConfigDocs = taskKey[Unit]("Generate qod/reference/configuration.md in starlake-docs from ConfigRegistry")
+lazy val starlakeDocsDir = settingKey[File](
+  "starlake-docs checkout the gen* tasks write into: STARLAKE_DOCS_DIR, else a sibling of the main checkout"
+)
+
+// The main checkout's directory, also from a git worktree (whose own directory lives elsewhere).
+def mainCheckoutDir(base: File): File =
+  scala.util
+    .Try(
+      scala.sys.process
+        .Process(Seq("git", "rev-parse", "--path-format=absolute", "--git-common-dir"), base)
+        .!!(scala.sys.process.ProcessLogger(_ => ()))
+    )
+    .toOption
+    // git < 2.31 echoes the unknown --path-format flag before the (relative) answer.
+    .flatMap(_.linesIterator.map(_.trim).filter(_.nonEmpty).toList.lastOption)
+    .map(file)
+    .filter(_.isAbsolute)
+    .flatMap(d => Option(d.getParentFile))
+    .filter(_.isDirectory)
+    .getOrElse(base)
+
+// A file inside the starlake-docs checkout, refusing to write anywhere when the checkout is missing.
+def docsTarget(docs: File, relative: String): String = {
+  if (!(docs / "docusaurus.config.ts").isFile && !(docs / "docusaurus.config.js").isFile)
+    sys.error(
+      s"starlake-docs checkout not found at $docs; clone starlake-ai/starlake-docs there or set STARLAKE_DOCS_DIR"
+    )
+  "\"" + (docs / relative).getAbsolutePath + "\""
+}
 
 // ----- libquackwire (vendored native binaries) -------------------------------
 // JNI shim native binaries.
@@ -254,21 +283,7 @@ lazy val root = (project in file("."))
     Test / envVars ++= {
       if (sys.env.get("DUCKDB_CACHE_DIR").exists(_.trim.nonEmpty)) Map.empty[String, String]
       else {
-        val base   = baseDirectory.value
-        val common = scala.util
-          .Try(
-            scala.sys.process
-              .Process(Seq("git", "rev-parse", "--path-format=absolute", "--git-common-dir"), base)
-              .!!(scala.sys.process.ProcessLogger(_ => ()))
-          )
-          .toOption
-          // git < 2.31 echoes the unknown --path-format flag before the (relative) answer.
-          .flatMap(_.linesIterator.map(_.trim).filter(_.nonEmpty).toList.lastOption)
-          .map(file)
-          .filter(_.isAbsolute)
-          .flatMap(d => Option(d.getParentFile))
-          .filter(_.isDirectory)
-        Map("DUCKDB_CACHE_DIR" -> (common.getOrElse(base) / ".duckdb").getAbsolutePath)
+        Map("DUCKDB_CACHE_DIR" -> (mainCheckoutDir(baseDirectory.value) / ".duckdb").getAbsolutePath)
       }
     },
 
@@ -285,14 +300,17 @@ lazy val root = (project in file("."))
     // their own `def main`), and `java -jar` then fails with
     // "no main manifest attribute".
     assembly / mainClass := Some("ai.starlake.quack.Main"),
+    starlakeDocsDir := sys.env
+      .get("STARLAKE_DOCS_DIR")
+      .filter(_.trim.nonEmpty)
+      .map(file)
+      .getOrElse(mainCheckoutDir(baseDirectory.value).getParentFile / "starlake-docs"),
     genOpenApi := Def.taskDyn {
-      val v = version.value
-      (Compile / runMain).toTask(
-        s" ai.starlake.quack.docs.GenOpenApi website/static/openapi.yaml $v"
-      )
+      val out = docsTarget(starlakeDocsDir.value, "static/openapi.yaml")
+      (Compile / runMain).toTask(s" ai.starlake.quack.docs.GenOpenApi $out ${version.value}")
     }.value,
     genConfigDocs := Def.taskDyn {
-      (Compile / runMain)
-        .toTask(" ai.starlake.quack.docs.GenConfigDocs website/docs/reference/configuration.md")
+      val out = docsTarget(starlakeDocsDir.value, "qod/reference/configuration.md")
+      (Compile / runMain).toTask(s" ai.starlake.quack.docs.GenConfigDocs $out")
     }.value
   )
