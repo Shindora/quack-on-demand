@@ -4,11 +4,14 @@ import java.sql.DriverManager
 
 /** Operator-facing boot output. Everything here prints to stdout unconditionally: the default log
   * level is ERROR (quiet boot), but the operator must always see which Postgres the manager is
-  * about to use and how clients connect. Keep these the only println call sites in the manager.
+  * about to use and where clients connect. Keep these the only println call sites in the manager.
   */
 object Banner:
 
   private val Line = "=" * 78
+
+  /** Where client connection strings (DuckDB, JDBC, ADBC, ODBC) are documented. */
+  val ClientsDocUrl = "https://docs.starlake.ai/qod/connecting/clients"
 
   def jdbcControlPlaneUrl(meta: Map[String, String]): String =
     s"jdbc:postgresql://${meta.getOrElse("pgHost", "localhost")}:${meta
@@ -46,7 +49,8 @@ object Banner:
         )
 
   /** The post-startup banner: printed once REST and FlightSQL are both listening. `restHost` /
-    * `flightHost` of 0.0.0.0 render as localhost so the strings are copy-pasteable.
+    * `flightHost` of 0.0.0.0 render as localhost so the endpoints are copy-pasteable. Client
+    * connection strings are not printed; the banner links to their documentation instead.
     */
   def startup(
       meta: Map[String, String],
@@ -69,7 +73,11 @@ object Banner:
       /** Tenants currently in `opa` mode. Their statements are enforced by their OPA even with the
         * SQL ACL disabled, so the banner must never imply "nothing enforced" while one exists.
         */
-      opaTenants: Int = 0
+      opaTenants: Int = 0,
+      /** The `qod` CLI config file (`QOD_CONFIG_FILE`, set by `qod start`) the
+        * manager was launched with; None when launched outside the CLI.
+        */
+      cliConfigFile: Option[String] = None
   ): String =
     def display(h: String) = if h == "0.0.0.0" || h == "::" then "localhost" else h
     val opaInPlay          = aclMode != "qod" || opaTenants > 0
@@ -86,35 +94,17 @@ object Banner:
     val quackLine = quack.fold("") { case (h, p, tls) =>
       s"\n   Quack (DuckDB): quack:${display(h)}:$p  (${if tls then "TLS" else "plain HTTP"})"
     }
-    val quackStrings = quack.fold("") { case (h, p, tls) =>
-      // The DuckDB client speaks plain HTTP to loopback hosts and TLS to any other host; the
-      // hint tells a remote client how to reach a plain-HTTP listener.
-      val ssl = if tls || display(h) == "localhost" then "" else ", DISABLE_SSL true"
-      s"\n   DuckDB: ATTACH 'quack:${display(h)}:$p' AS qod (TYPE quack, TOKEN 'tenant=<tenant>&pool=<pool>&user=<user>&password=<password>'$ssl);" +
-        s"\n           SELECT * FROM quack_query('quack:${display(h)}:$p', 'SELECT 1', token := 'tenant=<tenant>&pool=<pool>&user=<user>&password=<password>'${
-            if ssl.isEmpty then "" else ", disable_ssl := true"
-          });"
-    }
-    val scheme  = if tlsEnabled then "grpc+tls" else "grpc"
-    val jdbcTls =
-      if tlsEnabled then "&useEncryption=true&disableCertificateVerification=true"
-      else "&useEncryption=false"
-    val version =
+    val scheme     = if tlsEnabled then "grpc+tls" else "grpc"
+    val configLine = cliConfigFile.fold("")(f => s"\n   qod config    : $f")
+    val version    =
       Option(getClass.getPackage.getImplementationVersion).getOrElse("dev")
     s"""$Line
-       | Quack on Demand $version is up
+       | Quack on Demand $version is up$configLine
        |   control plane : ${jdbcControlPlaneUrl(meta)}
        |   REST API + UI : http://$rh:$restPort  (UI: http://$rh:$restPort/ui)
        |   FlightSQL     : $scheme://$fh:$flightPort$quackLine
        |$aclLine
        |$modeLine
        |
-       | Client connection strings (replace <tenant>, <pool>, <user>):$quackStrings
-       |   JDBC : jdbc:arrow-flight-sql://$fh:$flightPort/?tenant=<tenant>&pool=<pool>&user=<user>$jdbcTls
-       |   ADBC : uri=$scheme://$fh:$flightPort  (adbc_driver_flightsql; db_kwargs: username, password, plus grpc headers tenant=<tenant>, pool=<pool>)
-       |   ODBC : Driver={Arrow Flight SQL ODBC Driver};Host=$fh;Port=$flightPort;UseEncryption=${
-        if tlsEnabled then "true" else "false"
-      }${
-        if tlsEnabled then ";DisableCertificateVerification=true" else ""
-      };UID=<user>;PWD=<password>;TENANT=<tenant>;POOL=<pool>
+       | Client connection strings: $ClientsDocUrl
        |$Line""".stripMargin

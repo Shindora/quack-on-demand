@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 
 from .. import launcher, starflow
-from ..config import load_start_env
+from ..config import config_path, load_start_env
 from . import _starflow
 from ._launch import _exec, resolve_jar, resolve_java
 
@@ -257,6 +257,8 @@ def start(
     )
     if sf_plan is not None:
         env.update(starflow.manager_env(sf_plan.url, sf_plan.api_key, sf_plan.secret))
+    # The manager's startup banner names the CLI config file it was launched with.
+    env["QOD_CONFIG_FILE"] = str(config_path())
 
     # Durable state anchor: certs/ and any relative paths land here, and the
     # DuckLake data path defaults under it (run-jar anchors these at the repo).
