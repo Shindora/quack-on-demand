@@ -352,8 +352,14 @@ live pending server. Existing rows were backfilled `approved_by = 'upgrade'`. De
 docs/superpowers/specs/2026-09-26-fleet-join-approval-design.md.
 A known name reporting a new address is refused unless drained and unassigned (shared-token takeover guard).
 `QOD_FLEET_EPHEMERAL=local` runs maintenance and merge nodes on the manager host instead of a
-fleet server. Manager-to-node is plain HTTP: fleet mode needs a private network. Design:
-docs/superpowers/specs/2026-09-25-fleet-backend-design.md.
+fleet server. Manager-to-node is plain HTTP: fleet mode needs a private network.
+Containers: `docker/fleet-worker` is the server image (`qod fleet join` + DuckDB; requires
+`QOD_FLEET_NAME` and `QOD_FLEET_ADVERTISE_HOST`, publishes the node port under the same number),
+`host_capacity` reports cgroup limits, and `QOD_FLEET_NODE_PG_HOST` / `_PORT` rewrite the managed
+Postgres address in assignments only (`NodePgAddress`). `docker-compose.fleet.yml` layers fleet mode
+with two workers on a separate network onto the bundled stack. Design:
+docs/superpowers/specs/2026-10-05-fleet-docker-design.md.
+Fleet backend design: docs/superpowers/specs/2026-09-25-fleet-backend-design.md.
 
 ### Manager module SPI (hosted-service plug-in)
 

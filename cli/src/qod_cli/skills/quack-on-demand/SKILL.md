@@ -1849,6 +1849,37 @@ The node does NOT inherit the join process's whole environment (it holds the joi
 - `qod pool create --cpu 2 --memory 4Gi` (or `pool set-resources`) caps each node's DuckDB threads and
   memory_limit. This is DuckDB enforcing it, not the kernel; an explicit SET in the database init SQL wins.
 
+### Fleet servers as Docker containers
+
+Manager and servers can all be containers. One container per server (normally one per host), from
+`starlakeai/quack-on-demand-worker` (it runs `qod fleet join` and bundles DuckDB):
+
+    docker run -d --name qod-worker --restart unless-stopped --stop-timeout 70 \
+      -p 21900:21900 \
+      -e QOD_MANAGER_URL=http://mgr.internal:20900 -e QOD_FLEET_INSECURE=true \
+      -e QOD_FLEET_JOIN_TOKEN=<token> \
+      -e QOD_FLEET_NAME=<stable name, e.g. the host name> \
+      -e QOD_FLEET_ADVERTISE_HOST=<this host's address the manager can dial> \
+      -e QOD_FLEET_NODE_PORT=21900 \
+      -e QOD_S3_ENDPOINT=... -e QOD_S3_ACCESS_KEY_ID=... -e QOD_S3_SECRET_ACCESS_KEY=... \
+      starlakeai/quack-on-demand-worker:latest
+
+- `QOD_FLEET_NAME` and `QOD_FLEET_ADVERTISE_HOST` are required: a container's hostname changes on every
+  recreate (each would join as a new server) and its own IP is a bridge address the manager cannot reach.
+- Publish the node port with the SAME number on both sides (`-p 21901:21901` with
+  `QOD_FLEET_NODE_PORT=21901`); a remapped port is not supported. Several workers on one host each take
+  their own port, which is also how to try fleet mode on a single machine.
+- `docker run --memory / --cpus` limits are what the server reports as capacity, so `pool create
+  --memory` only lands on containers big enough.
+- The manager container needs `QOD_RUNTIME_TYPE=fleet`, the same `QOD_FLEET_JOIN_TOKEN`, an object
+  storage data path, and, when it reaches Postgres by a name the servers cannot resolve (a compose
+  service name), `QOD_FLEET_NODE_PG_HOST` / `QOD_FLEET_NODE_PG_PORT`: the managed Postgres address
+  handed to servers. A database on its own Postgres or with its own object store endpoint must be
+  reachable from the manager and every server under the same address.
+- Behind Docker NAT the manager may see a gateway address as the server's source. The default
+  `QOD_FLEET_AUTO_APPROVE` admits it; a narrowed list must include that address (`qod fleet servers`
+  shows `sourceAddr`).
+
 ## Hardening (lockdown, pod security, network policy, reader eviction)
 
 Self-serve / hosted deployments need a tighter isolation posture than the OSS
