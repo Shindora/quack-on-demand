@@ -24,6 +24,9 @@ services:
       # The manager dials `postgres`; workers dial the host-published port.
       QOD_FLEET_NODE_PG_HOST: host.docker.internal
       QOD_FLEET_NODE_PG_PORT: "${PG_PORT:-5432}"
+      # Workers are dialed through host.docker.internal: keep that off a configured proxy too.
+      NO_PROXY: "localhost,127.0.0.1,postgres,seaweedfs,host.docker.internal${NO_PROXY:+,${NO_PROXY}}"
+      no_proxy: "localhost,127.0.0.1,postgres,seaweedfs,host.docker.internal${no_proxy:+,${no_proxy}}"
     # No node port range: nodes run on the workers (ephemeral ones on this container's loopback).
     ports: !override
       - "${MANAGER_PORT:-20900}:20900"
