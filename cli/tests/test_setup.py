@@ -128,7 +128,6 @@ def test_setup_interactive_prompts_and_saves(runner, monkeypatch):
             "s3cret",  # password
             "",  # dbname -> default qod
             "",  # admin username -> default
-            "",  # admin password -> default
             "",  # api key -> default blank
             "",  # auth -> default true
             "",  # tls -> default true
@@ -256,3 +255,32 @@ def test_check_connection_psql_login_failure(monkeypatch):
     assert not ok
     assert "login failed" in detail
     assert captured_env["PGPASSWORD"] == "s3cret"
+
+
+def test_setup_has_no_admin_password_flag(runner):
+    from qod_cli.main import app
+
+    result = runner.invoke(app, ["setup", "--admin-password", "x", "-y", "--skip-checks"])
+    assert result.exit_code != 0
+    assert "No such option" in result.output
+
+
+def test_setup_refuses_to_store_the_admin_password_via_set(runner):
+    from qod_cli.config import load_start_env
+    from qod_cli.main import app
+
+    result = runner.invoke(app, ["setup", "--set", "QOD_ADMIN_PASSWORD=x", "-y", "--skip-checks"])
+    assert result.exit_code == 1
+    assert "qod admin reset-password" in result.output
+    assert "QOD_ADMIN_PASSWORD" not in load_start_env()
+
+
+def test_setup_migrates_a_stored_admin_password(runner):
+    from qod_cli.config import load_start_env, save_start_env
+    from qod_cli.main import app
+
+    save_start_env({"QOD_ADMIN_PASSWORD": "legacy"})
+    result = runner.invoke(app, ["setup", "--set", "QOD_MIN_PORT=1", "-y", "--skip-checks"])
+    assert result.exit_code == 0, result.output
+    assert "Your current admin password is: legacy" in result.output
+    assert "QOD_ADMIN_PASSWORD" not in load_start_env()

@@ -18,6 +18,7 @@ import sys
 
 import typer
 
+from .. import admin_password as admin_pw
 from ..config import config_path, load_start_env, save_start_env
 from ..output import render
 
@@ -33,12 +34,11 @@ _PROMPTS: tuple[tuple[str, str, str], ...] = (
     ("QOD_PG_PASSWORD", "Postgres password", "azizam"),
     ("QOD_PG_DBNAME", "Control-plane database", "qod"),
     ("QOD_ADMIN_USERNAME", "Admin username", "admin@localhost.local,admin"),
-    ("QOD_ADMIN_PASSWORD", "Admin password", "admin"),
     ("QOD_API_KEY", "Static REST API key (blank = none)", ""),
     ("QOD_AUTH_DB_ENABLED", "Enable DB-backed auth (true/false)", "true"),
     ("PROXY_TLS_ENABLED", "Enable FlightSQL edge TLS (true/false)", "true"),
 )
-_SECRET_KEYS = {"QOD_PG_PASSWORD", "QOD_ADMIN_PASSWORD", "QOD_API_KEY", "QOD_SESSION_JWT_SECRET"}
+_SECRET_KEYS = {"QOD_PG_PASSWORD", "QOD_API_KEY", "QOD_SESSION_JWT_SECRET"}
 
 
 def _redact(key: str, value: str) -> str:
@@ -119,9 +119,6 @@ def setup(
     admin_username: str = typer.Option(
         None, "--admin-username", help="Seeded admin username (QOD_ADMIN_USERNAME)."
     ),
-    admin_password: str = typer.Option(
-        None, "--admin-password", help="Seeded admin password (QOD_ADMIN_PASSWORD)."
-    ),
     api_key: str = typer.Option(
         None, "--api-key", help="Static REST API key; blank disables it (QOD_API_KEY)."
     ),
@@ -152,8 +149,8 @@ def setup(
 ):
     """Configure `qod start` once so you can run it bare afterwards.
 
-    With no flags on a terminal, prompts for Postgres coordinates, admin
-    credentials, the static API key, and the auth/TLS toggles (current
+    With no flags on a terminal, prompts for Postgres coordinates, the admin
+    username, the static API key, and the auth/TLS toggles (current
     stored value, else the built-in default, as the prompt default - blank
     input keeps it). Any flag, or --set/--unset, skips the prompts and
     applies just what you passed - pair with --non-interactive for scripted/
@@ -171,6 +168,8 @@ def setup(
         render(rows, ctx.obj.json_output)
         return
 
+    admin_pw.migrate_stored_password(lambda line: typer.echo(line, err=True))
+
     named = {
         "QOD_PG_HOST": pg_host,
         "QOD_PG_PORT": pg_port,
@@ -178,7 +177,6 @@ def setup(
         "QOD_PG_PASSWORD": pg_password,
         "QOD_PG_DBNAME": pg_dbname,
         "QOD_ADMIN_USERNAME": admin_username,
-        "QOD_ADMIN_PASSWORD": admin_password,
         "QOD_API_KEY": api_key,
         "QOD_AUTH_DB_ENABLED": None if auth is None else str(auth).lower(),
         "PROXY_TLS_ENABLED": None if tls is None else str(tls).lower(),
@@ -202,6 +200,15 @@ def setup(
             raise typer.BadParameter(f"--set expects KEY=VALUE (got: {pair!r})")
         key, _, val = pair.partition("=")
         set_values[key.strip()] = val.strip()
+
+    if admin_pw.KEY in set_values:
+        typer.echo(
+            f"error: {admin_pw.KEY} is no longer stored. The admin password is set at the "
+            "first qod start / qod serve; change it with qod auth change-password, or "
+            "recover it with qod admin reset-password.",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     if not interactive and not any_named and not set_values and not unset:
         typer.echo(
