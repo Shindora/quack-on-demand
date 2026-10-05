@@ -190,7 +190,8 @@ object BootPreflight extends LazyLogging:
     * existing row is never touched (password, kind, email, lockout), so `qod auth change-password`
     * survives restarts. Recovery of a lost password is `qod admin reset-password`, not a restart.
     * Superuser scope: tenant=NULL. Returns the warnings it logged (one per existing row when
-    * QOD_ADMIN_PASSWORD is explicitly set, since that value is then ignored).
+    * QOD_ADMIN_PASSWORD is explicitly set, since that value is then ignored). An empty
+    * `admin.password` never seeds a missing row; it logs an ERROR instead.
     */
   def seedAdminUsers(
       userStore: UserStore,
@@ -204,28 +205,37 @@ object BootPreflight extends LazyLogging:
     else
       val passwordFromEnv = env("QOD_ADMIN_PASSWORD").exists(_.nonEmpty)
       admins.flatMap { name =>
-        // Same rule as EmailPolicy / the 0031 backfill: an email-format admin username
-        // IS its own email, so the seeded admin is reachable for reset and (when lockout
-        // is enabled) lockable, consistently on fresh and upgraded installs.
-        val seedEmail = if EmailFormat.matches(name) then Some(name) else None
-        val out       = userStore.upsertUser(
-          tenant = None,
-          username = name,
-          plaintext = admin.password,
-          kind = admin.kind,
-          email = Some(seedEmail),
-          insertOnly = true
-        )
-        if out.inserted then
-          logger.info(s"admin user created: $name (id=${out.id}, kind=${admin.kind})")
-          None
-        else if passwordFromEnv then
-          val msg =
-            s"admin '$name' already exists; QOD_ADMIN_PASSWORD is ignored (use qod auth " +
-              "change-password or qod admin reset-password)"
-          logger.warn(msg)
-          Some(msg)
-        else None
+        if admin.password.isEmpty then
+          if userStore.userIdOf(None, name).isDefined then None
+          else
+            val msg =
+              s"admin '$name' not seeded: QOD_ADMIN_PASSWORD is not set; export it and restart " +
+                "once to create the admin"
+            logger.error(msg)
+            Some(msg)
+        else
+          // Same rule as EmailPolicy / the 0031 backfill: an email-format admin username
+          // IS its own email, so the seeded admin is reachable for reset and (when lockout
+          // is enabled) lockable, consistently on fresh and upgraded installs.
+          val seedEmail = if EmailFormat.matches(name) then Some(name) else None
+          val out       = userStore.upsertUser(
+            tenant = None,
+            username = name,
+            plaintext = admin.password,
+            kind = admin.kind,
+            email = Some(seedEmail),
+            insertOnly = true
+          )
+          if out.inserted then
+            logger.info(s"admin user created: $name (id=${out.id}, kind=${admin.kind})")
+            None
+          else if passwordFromEnv then
+            val msg =
+              s"admin '$name' already exists; QOD_ADMIN_PASSWORD is ignored (use qod auth " +
+                "change-password or qod admin reset-password)"
+            logger.warn(msg)
+            Some(msg)
+          else None
       }
 
   /** Federated sources whose alias [[Names]]'s identifier rule would REWRITE (not merely reject) --

@@ -88,6 +88,12 @@ if ([string]::IsNullOrEmpty($env:QOD_DUCKLAKE_DATA_PATH)) {
   $env:QOD_DUCKLAKE_DATA_PATH = Join-Path $RepoDir 'ducklake\data'
 }
 
+# Development default for the seeded admin (the manager itself has none and seeds nothing
+# without it). Set QOD_ADMIN_PASSWORD to choose another; it only applies on first boot.
+if ([string]::IsNullOrEmpty($env:QOD_ADMIN_PASSWORD)) {
+  $env:QOD_ADMIN_PASSWORD = 'admin'
+}
+
 function Get-EnvOr([string]$Name, [string]$Default) {
   $v = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrEmpty($v)) { return $Default }

@@ -230,6 +230,40 @@ class BootPreflightSpec extends AnyFlatSpec with Matchers:
       finally userStore.close()
   }
 
+  it should "seed nothing for a missing row when no password is configured" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    val store     = new PostgresControlPlaneStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      val warnings = BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "", kind = "admin"),
+        _ => None
+      )
+      store.findUser(None, "root") shouldBe None
+      warnings should have size 1
+      warnings.head should include("admin 'root' not seeded: QOD_ADMIN_PASSWORD is not set")
+    finally
+      userStore.close()
+      store.close()
+  }
+
+  it should "stay silent for an existing row when no password is configured" in withFreshDb { url =>
+    val userStore = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
+    try
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "pw", kind = "admin"),
+        _ => None
+      )
+      BootPreflight.seedAdminUsers(
+        userStore,
+        AdminConfig(username = "root", password = "", kind = "admin"),
+        _ => None
+      ) shouldBe Nil
+      userStore.userIdOf(None, "root") shouldBe defined
+    finally userStore.close()
+  }
+
   "AdminConfig" should "read admin.kind (QOD_ADMIN_KIND), defaulting to admin" in {
     import Main.given
     def load(overlay: String): AdminConfig =
@@ -242,6 +276,8 @@ class BootPreflightSpec extends AnyFlatSpec with Matchers:
     // Guarded on the env so a developer shell exporting QOD_ADMIN_KIND cannot flip it.
     if sys.env.get("QOD_ADMIN_KIND").isEmpty then load("").kind shouldBe "admin"
     load("quack-on-demand.admin.kind = user").kind shouldBe "user"
+    // No built-in password: an unset QOD_ADMIN_PASSWORD means "never seed a missing admin".
+    if sys.env.get("QOD_ADMIN_PASSWORD").isEmpty then load("").password shouldBe ""
     // The old key is gone with no alias: it no longer reaches the field.
     if sys.env.get("QOD_ADMIN_KIND").isEmpty then
       load("quack-on-demand.admin.role = user").kind shouldBe "admin"

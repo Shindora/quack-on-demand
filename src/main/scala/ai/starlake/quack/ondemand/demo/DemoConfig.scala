@@ -37,6 +37,10 @@ object DemoConfig:
     )
     val manager = baseManager.copy(
       runtimeType = "local",
+      // The demo advertises admin/admin in its banner; an exported QOD_ADMIN_PASSWORD still wins.
+      admin =
+        if baseManager.admin.password.isEmpty then baseManager.admin.copy(password = "admin")
+        else baseManager.admin,
       apiKey = None,
       defaultMetastore = metastore,
       // The demo must run unmodified on any host: the JNI native client

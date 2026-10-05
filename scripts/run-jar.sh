@@ -131,6 +131,10 @@ cd "$REPO_DIR"
 # Override by exporting QOD_DUCKLAKE_DATA_PATH before invoking this script.
 export QOD_DUCKLAKE_DATA_PATH="${QOD_DUCKLAKE_DATA_PATH:-$REPO_DIR/ducklake/data}"
 
+# Development default for the seeded admin (the manager itself has none and seeds nothing
+# without it). Export QOD_ADMIN_PASSWORD to choose another; it only applies on first boot.
+export QOD_ADMIN_PASSWORD="${QOD_ADMIN_PASSWORD:-admin}"
+
 # Color the log level (logback %highlight: ERROR bold red, WARN red, INFO
 # blue) when stdout is a terminal. Redirected output and containers stay
 # plain so ANSI escapes never reach log files or aggregators. Export
