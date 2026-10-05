@@ -27,7 +27,10 @@ app = typer.Typer(help="Superuser recovery (works with the manager down).", no_a
 @app.command("reset-password")
 def reset_password(
     username: str = typer.Option(
-        None, "--username", help="Superuser to reset (default: first of QOD_ADMIN_USERNAME)."
+        None,
+        "--username",
+        help="Superuser to reset (default: every name in QOD_ADMIN_USERNAME, "
+        "seeded as one credential).",
     ),
     must_change: bool = typer.Option(
         False, "--must-change", help="Force a password change at the next login."
@@ -43,7 +46,7 @@ def reset_password(
 ):
     """Set a new password for a superuser directly in the control-plane database."""
     base_env = {**load_start_env(), **os.environ}
-    user = username or admin_password.admin_usernames(base_env)[0]
+    users = [username] if username else admin_password.admin_usernames(base_env)
     embedded_dir = Path(
         base_env.get("QOD_PG_EMBEDDED_DATA_DIR") or (launcher.default_data_dir() / "pg")
     )
@@ -70,8 +73,16 @@ def reset_password(
     if use_embedded:
         env["QOD_PG_EMBEDDED"] = "true"
         env["QOD_PG_EMBEDDED_DATA_DIR"] = str(embedded_dir)
+        typer.echo(f"target: embedded control plane at {embedded_dir}")
+    else:
+        # An inherited QOD_PG_EMBEDDED=true must not redirect --external.
+        env["QOD_PG_EMBEDDED"] = "false"
+        typer.echo(
+            f"target: Postgres {env.get('QOD_PG_HOST') or 'localhost'}:"
+            f"{env.get('QOD_PG_PORT') or '5432'}/{env.get('QOD_PG_DBNAME') or 'qod'}"
+        )
     jar_path = jar.resolve() if jar is not None else resolve_jar(version)
-    args = ["admin", "reset-password", user] + (["--must-change"] if must_change else [])
+    args = ["admin", "reset-password", *users] + (["--must-change"] if must_change else [])
     cmd = launcher.build_jar_command(
         resolve_java(), str(jar_path), args, java_opts=env.get("JAVA_OPTS")
     )
