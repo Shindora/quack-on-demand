@@ -1,0 +1,72 @@
+# docker-compose.fleet.yml - the bundled stack in fleet mode (QOD_RUNTIME_TYPE=fleet), with two
+# fleet servers simulating separate hosts on this one. Layer it on the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.fleet.yml --profile seaweedfs up -d --build
+#
+# The workers sit on their own network: `postgres` and `seaweedfs` do not resolve there, so every
+# path (manager, metastore, object storage, and the manager's dial back to each node) goes through
+# ports published on the host, as it would between real hosts. Each worker publishes the SAME port
+# number it advertises (21901:21901): the advertised node port is the port the node binds.
+# Requires FLEET_JOIN_TOKEN in .env (openssl rand -hex 24). Compose v2.24+ (ports: !override).
+
+services:
+  quack:
+    environment:
+      QOD_RUNTIME_TYPE: fleet
+      QOD_FLEET_JOIN_TOKEN: ${FLEET_JOIN_TOKEN:?set FLEET_JOIN_TOKEN in .env (openssl rand -hex 24)}
+      # Maintenance and branch-merge nodes run inside this container, not on a worker.
+      QOD_FLEET_EPHEMERAL: local
+      # Fleet needs object storage every server reaches: the bundled SeaweedFS.
+      QOD_DUCKLAKE_DATA_PATH: s3://${S3_BUCKET:-ducklake}/fleet
+      QOD_S3_ENDPOINT: seaweedfs:8333
+      QOD_S3_ACCESS_KEY_ID: ${QOD_S3_ACCESS_KEY_ID:-quack}
+      QOD_S3_SECRET_ACCESS_KEY: ${QOD_S3_SECRET_ACCESS_KEY:-quackquack}
+      # The manager dials `postgres`; workers dial the host-published port.
+      QOD_FLEET_NODE_PG_HOST: host.docker.internal
+      QOD_FLEET_NODE_PG_PORT: "${PG_PORT:-5432}"
+    # No node port range: nodes run on the workers (ephemeral ones on this container's loopback).
+    ports: !override
+      - "${MANAGER_PORT:-20900}:20900"
+      - "${EDGE_PORT:-31338}:31338"
+      - "${QUACK_PORT:-9494}:9494"
+
+  fleet-worker-1: &fleet-worker
+    build:
+      context: .
+      dockerfile: docker/fleet-worker/Dockerfile
+    image: starlakeai/quack-on-demand-worker:${QOD_VERSION:-latest}
+    container_name: quack-on-demand-fleet-worker-1
+    restart: unless-stopped
+    # qod fleet join stops its node (up to 60 s) before exiting on SIGTERM.
+    stop_grace_period: 70s
+    networks: [fleet-servers]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "21901:21901"
+    environment: &fleet-worker-env
+      QOD_FLEET_NAME: fleet-worker-1
+      QOD_FLEET_NODE_PORT: "21901"
+      QOD_FLEET_ADVERTISE_HOST: host.docker.internal
+      QOD_MANAGER_URL: http://host.docker.internal:${MANAGER_PORT:-20900}
+      QOD_FLEET_INSECURE: "true"
+      QOD_FLEET_JOIN_TOKEN: ${FLEET_JOIN_TOKEN:?set FLEET_JOIN_TOKEN in .env (openssl rand -hex 24)}
+      QOD_S3_ENDPOINT: host.docker.internal:${SEAWEEDFS_S3_PORT:-8333}
+      QOD_S3_ACCESS_KEY_ID: ${QOD_S3_ACCESS_KEY_ID:-quack}
+      QOD_S3_SECRET_ACCESS_KEY: ${QOD_S3_SECRET_ACCESS_KEY:-quackquack}
+      QOD_S3_REGION: ${QOD_S3_REGION:-us-east-1}
+      QOD_S3_URL_STYLE: path
+      QOD_S3_USE_SSL: "false"
+
+  fleet-worker-2:
+    <<: *fleet-worker
+    container_name: quack-on-demand-fleet-worker-2
+    ports:
+      - "21902:21902"
+    environment:
+      <<: *fleet-worker-env
+      QOD_FLEET_NAME: fleet-worker-2
+      QOD_FLEET_NODE_PORT: "21902"
+
+networks:
+  fleet-servers: {}
