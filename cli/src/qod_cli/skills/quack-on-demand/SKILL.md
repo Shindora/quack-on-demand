@@ -167,10 +167,11 @@ key id/secret; az: storage account name/key, both required together) and no
 environment fallback.
 
 Posture, unlike `qod serve --demo` (`qod start --demo` still works too, as a
-deprecated alias): TLS on, DB auth on, ACL on, and a random admin password
-generated on the first run, printed once, and stored in the CLI config file.
-A real `QOD_ADMIN_PASSWORD` still wins. Rotate with
-`qod user update --username admin --password ...`.
+deprecated alias): TLS on, DB auth on, ACL on, and an admin password you
+choose on the first run (prompted twice, or taken from `QOD_ADMIN_PASSWORD` in
+your shell). It is never stored by the CLI, and later runs do not ask again.
+Rotate with `qod auth change-password`; if it is lost or the account is locked,
+run `qod admin reset-password` (works with the manager down).
 
 The embedded control plane lives at `<user-data-dir>/pg` on a fixed port
 (25432 by default, `--pg-port`), persists across restarts, and is never deleted.
@@ -193,8 +194,10 @@ kill the JVM directly, or DuckDB node processes are orphaned holding ports
 `21900+`). Durable state (`certs/`, DuckLake data, node state) lives under the
 platform user-data dir (`~/.local/share/qod` on Linux,
 `~/Library/Application Support/qod` on macOS); jars and the provisioned duckdb
-CLI cache under the user-cache dir. Default credentials:
-`admin@localhost.local` / `admin` (rotate via `QOD_ADMIN_PASSWORD`). The
+CLI cache under the user-cache dir. The admin is
+`admin@localhost.local` with the password chosen at first boot (no built-in
+default; rotate with `qod auth change-password`, recover with
+`qod admin reset-password`). The
 manager logs `auth: providers configured` when DB auth is on, and
 `auth: OPEN` otherwise.
 
@@ -392,7 +395,7 @@ qod auth reset-password
 
 Lockout only ever applies to rows with an `email` set (`qod user create/update --email`). A user with a non-email username and no email is never locked and has no self-service path - recover it with an admin password reset instead:
 
-An email-format username is its own email and cannot be set separately: `qod user create/update --email` with a conflicting value 400s `invalid_email`, and pre-existing such rows were backfilled automatically. This includes the seeded admin (`admin@localhost.local` by default): because its username is email-format, it is auto-assigned `email = username`, so it IS eligible for lockout when lockout is on, and for self-service reset. A locked superuser is still recoverable without the email flow: restarting the manager re-seeds the admin (resetting the password to `QOD_ADMIN_PASSWORD` and clearing `failed_attempts` / `locked_at` in the same statement), and the static `X-API-Key` bypasses login lockout entirely. Note that `admin@localhost.local` is not a routable mailbox, so the seeded admin's self-service email reset will not deliver by default - set `QOD_ADMIN_USERNAME` to a real deliverable address if you want the admin to self-recover by email, otherwise use restart or the API key.
+An email-format username is its own email and cannot be set separately: `qod user create/update --email` with a conflicting value 400s `invalid_email`, and pre-existing such rows were backfilled automatically. This includes the seeded admin (`admin@localhost.local` by default): because its username is email-format, it is auto-assigned `email = username`, so it IS eligible for lockout when lockout is on, and for self-service reset. A locked or forgotten superuser password is recovered with `qod admin reset-password` (writes the new hash straight into the control-plane database and clears `failed_attempts` / `locked_at`, works with the manager down), or by another superuser / the static `X-API-Key` through `qod user update --password`. A restart does NOT reset it: the admin is seeded only when its row is missing, and `QOD_ADMIN_PASSWORD` is used on that first boot only (`qod start` / `qod serve` prompt for it then and never store it). Because `admin@localhost.local` is not a routable mailbox, its self-service email reset does not deliver by default - set `QOD_ADMIN_USERNAME` to a real address for email self-recovery.
 
 ```bash
 qod user update <user-id> --password a-new-password
@@ -1977,7 +1980,7 @@ opt-in except pod security:
 
 ## When operating
 
-- The default admin password is `admin`. Rotate via `QOD_ADMIN_PASSWORD` before exposing the edge.
+- There is no built-in admin password: it is chosen at the first `qod start` / `qod serve` and the admin row is never rewritten on restart. Rotate with `qod auth change-password`; recover a lost or locked password with `qod admin reset-password`.
 - With no `QOD_API_KEY` pinned, boot generates a random one and prints it in a startup banner; it changes on every restart, so pin `QOD_API_KEY` (and `QOD_SESSION_JWT_SECRET`) before any non-localhost deploy.
 - All config scalars have matching `QOD_*` env-var overrides. Prefer env vars over editing `application.conf` (it is bundled into the jar at build time).
 

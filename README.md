@@ -327,7 +327,7 @@ Every scalar in `application.conf` accepts a matching `QOD_*` env-var override. 
 |---|---|---|
 | Static admin key | `QOD_API_KEY` | unset (open if unset!) |
 | Session JWT secret | `QOD_SESSION_JWT_SECRET` | well-known dev string (change!) |
-| Admin password | `QOD_ADMIN_PASSWORD` | `admin` (change!) |
+| Admin password | `QOD_ADMIN_PASSWORD` | none; used on first boot only (`qod start` / `qod serve` prompt for it) |
 | Metastore password | `QOD_PG_PASSWORD` | `azizam` (change!) |
 | Enable per-statement RBAC | `QOD_ACL_ENABLED` | `false` |
 

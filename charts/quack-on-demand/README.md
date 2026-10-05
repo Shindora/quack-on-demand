@@ -105,7 +105,7 @@ The chart configures three independent auth axes. All are optional; the
 defaults give you database auth everywhere with the seeded admin user.
 
 **1. Admin credentials, API key, sessions** (always on): `admin.username` /
-`admin.password` (or `admin.existingSecret`) seed the superuser on every boot;
+`admin.password` (or `admin.existingSecret`) seed the superuser on first boot only (an existing admin row is never rewritten, so rotating the Secret does not change the password: use `qod auth change-password`, or `qod admin reset-password` with database access);
 `apiKey.value` optionally enables the static `X-API-Key` arm for `/api/*`;
 `sessionJwtSecret` signs UI sessions and is REQUIRED when `replicaCount > 1`.
 
