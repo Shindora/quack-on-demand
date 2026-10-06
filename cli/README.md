@@ -105,9 +105,10 @@ Settings resolve in this order for every field, highest priority first:
 3. Value saved in the active profile
 4. Built-in default
 
-Profiles are named sections in a TOML file at the platform config
-directory: `~/.config/qod/config.toml` on Linux, `~/Library/Application
-Support/qod/config.toml` on macOS, `%APPDATA%\qod\config.toml` on Windows.
+Profiles are named sections in a TOML file at `~/.qod/config.toml` on every
+platform (`%USERPROFILE%\.qod\config.toml` on Windows). A file left at the
+former platform config directory (`~/.config/qod`, `~/Library/Application
+Support/qod`, `%APPDATA%\qod`) is moved there on first use.
 `QOD_CONFIG_FILE` overrides the full path. The file is written with mode
 0600 because it can hold a session token and an opt-in SQL password. Select
 a profile with `--profile NAME` or `QOD_PROFILE`; the default profile is

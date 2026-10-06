@@ -15,10 +15,10 @@ describe('visibleNav', () => {
   it('shows the full tree to a superuser with every feature on, in order', () => {
     expect(ids(superCtx)).toEqual([
       'dashboard', 'servers',
+      'workbench',
       'tenant', 'databases', 'catalog', 'pools', 'maintenance', 'branches', 'auth-provider', 'access-control',
       'access', 'users', 'groups', 'roles',
       'audit', 'control-plane', 'statements', 'usage',
-      'workbench',
       'settings', 'config', 'profile',
     ]);
   });

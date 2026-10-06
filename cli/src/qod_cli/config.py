@@ -2,8 +2,9 @@
 
 Resolution order per setting: explicit override (command flag) > QOD_* env
 var > profile file > built-in default. The profile file is TOML at the
-platform config dir (QOD_CONFIG_FILE overrides the full path) and is written
-with mode 0600 because it can hold a session token and an opt-in SQL password.
+`~/.qod/config.toml` on every platform (QOD_CONFIG_FILE overrides the full path) and
+is written with mode 0600 because it can hold a session token and an opt-in SQL
+password. A file left at the former platform config dir is moved there on first use.
 
 The same file also holds a separate top-level `[start]` table: arbitrary
 QOD_*/PROXY_* env vars persisted by `qod setup` and merged into `qod start`'s
@@ -15,6 +16,7 @@ a manager; `[start]` configures the manager process `qod start` launches.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -66,7 +68,25 @@ def config_path() -> Path:
     env = os.environ.get("QOD_CONFIG_FILE")
     if env:
         return Path(env)
+    path = Path.home() / ".qod" / "config.toml"
+    _migrate_legacy(path)
+    return path
+
+
+def _legacy_config_path() -> Path:
+    """Where releases up to 0.9.10 kept the file: the platformdirs config dir."""
     return Path(platformdirs.user_config_dir("qod", appauthor=False, roaming=True)) / "config.toml"
+
+
+def _migrate_legacy(path: Path) -> None:
+    """Move a file left at the legacy location to PATH, once. Never overwrites:
+    when both exist, PATH wins and the legacy file stays where it is."""
+    legacy = _legacy_config_path()
+    if path.exists() or not legacy.is_file():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(legacy), str(path))
+    os.chmod(path, 0o600)
 
 
 def _read_file() -> dict:

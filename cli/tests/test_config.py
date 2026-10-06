@@ -146,3 +146,39 @@ def test_start_env_file_mode_is_0600():
     save_start_env({"QOD_PG_HOST": "db.internal"})
     mode = stat.S_IMODE(config_path().stat().st_mode)
     assert mode == 0o600
+
+
+def _home_layout(monkeypatch, tmp_path):
+    """Unset QOD_CONFIG_FILE and point home + the legacy platform dir into tmp_path."""
+    import qod_cli.config as cfg
+
+    monkeypatch.delenv("QOD_CONFIG_FILE", raising=False)
+    home = tmp_path / "home"
+    legacy = tmp_path / "legacy" / "config.toml"
+    monkeypatch.setattr(cfg.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(cfg, "_legacy_config_path", lambda: legacy)
+    return home / ".qod" / "config.toml", legacy
+
+
+def test_default_path_is_home_dot_qod(monkeypatch, tmp_path):
+    new, _ = _home_layout(monkeypatch, tmp_path)
+    assert config_path() == new
+
+
+def test_legacy_file_is_moved_on_first_use(monkeypatch, tmp_path):
+    new, legacy = _home_layout(monkeypatch, tmp_path)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('[profiles.default]\ntoken = "old"\n')
+    assert load_settings().token == "old"
+    assert new.is_file()
+    assert not legacy.exists()
+
+
+def test_existing_new_file_wins_and_legacy_is_kept(monkeypatch, tmp_path):
+    new, legacy = _home_layout(monkeypatch, tmp_path)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('[profiles.default]\ntoken = "old"\n')
+    new.parent.mkdir(parents=True)
+    new.write_text('[profiles.default]\ntoken = "new"\n')
+    assert load_settings().token == "new"
+    assert legacy.is_file()
