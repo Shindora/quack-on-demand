@@ -32,6 +32,7 @@ export const NAV: NavItem[] = [
       { id: 'servers', label: 'Fleet servers', icon: 'server', path: '/servers', rules: ['admin', 'superuser', 'fleet'] },
     ],
   },
+  { id: 'workbench', label: 'Workbench', icon: 'workbench', external: 'workbench', rules: ['starlake'] },
   {
     id: 'tenant', label: 'Tenant', icon: 'tenant', rules: ['admin'],
     children: [
@@ -64,7 +65,6 @@ export const NAV: NavItem[] = [
       { id: 'usage', label: 'Usage', icon: 'usage', section: 'audit/usage' },
     ],
   },
-  { id: 'workbench', label: 'Workbench', icon: 'workbench', external: 'workbench', rules: ['starlake'] },
   {
     id: 'settings', label: 'Settings', icon: 'settings',
     children: [
