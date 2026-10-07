@@ -83,7 +83,7 @@ load_config() {
   MEMORY_LIMIT_SQL=""
   [[ -n "$MEMORY_LIMIT" ]] && MEMORY_LIMIT_SQL="SET memory_limit='$MEMORY_LIMIT';"
 
-  # Default DATA_PATH matches `scripts/run-docker.sh` (CWD-anchored, not
+  # Default DATA_PATH matches `scripts/docker/run-docker.sh` (CWD-anchored, not
   # repo-anchored) so a native loader and a same-CWD `docker run` agree on
   # the same absolute string. Override DATA_PATH to point at any location
   # that BOTH the loader and the manager will see (see the path-matching

@@ -62,25 +62,25 @@
 #                                                 (default false)
 #
 # Usage:
-#   ./scripts/run-docker-compose.sh                            # latest
-#   QOD_VERSION=0.1.0 ./scripts/run-docker-compose.sh          # pinned
-#   QOD_VERSION=BUILD ./scripts/run-docker-compose.sh          # local build
-#   QOD_VERSION=LOCAL ./scripts/run-docker-compose.sh          # reuse :local image
-#   LOAD_TPCH=1 ./scripts/run-docker-compose.sh                # + TPC-H only SF=1
-#   LOAD_TPCDS=10 ./scripts/run-docker-compose.sh              # + TPC-DS only SF=10
-#   LOAD_SSB=1 ./scripts/run-docker-compose.sh                 # + SSB star schema SF=1
-#   LOAD_TPC=1 ./scripts/run-docker-compose.sh                 # + all three SF=1 (legacy)
-#   LOAD_TPCH=1 LOAD_TPCDS=10 ./scripts/run-docker-compose.sh  # + both, independent SFs
-#   NUKE=1 ./scripts/run-docker-compose.sh                     # wipe + fresh boot
-#   NUKE=1 DEMO=minimal LOAD_TPCH=1 ./scripts/run-docker-compose.sh  # single-instance profile
-#   PROFILES=observability ./scripts/run-docker-compose.sh     # + Prometheus + Grafana
-#   STARFLOW_ENABLED=true ./scripts/run-docker-compose.sh      # + Starflow on :9900
+#   ./scripts/docker/run-docker-compose.sh                            # latest
+#   QOD_VERSION=0.1.0 ./scripts/docker/run-docker-compose.sh          # pinned
+#   QOD_VERSION=BUILD ./scripts/docker/run-docker-compose.sh          # local build
+#   QOD_VERSION=LOCAL ./scripts/docker/run-docker-compose.sh          # reuse :local image
+#   LOAD_TPCH=1 ./scripts/docker/run-docker-compose.sh                # + TPC-H only SF=1
+#   LOAD_TPCDS=10 ./scripts/docker/run-docker-compose.sh              # + TPC-DS only SF=10
+#   LOAD_SSB=1 ./scripts/docker/run-docker-compose.sh                 # + SSB star schema SF=1
+#   LOAD_TPC=1 ./scripts/docker/run-docker-compose.sh                 # + all three SF=1 (legacy)
+#   LOAD_TPCH=1 LOAD_TPCDS=10 ./scripts/docker/run-docker-compose.sh  # + both, independent SFs
+#   NUKE=1 ./scripts/docker/run-docker-compose.sh                     # wipe + fresh boot
+#   NUKE=1 DEMO=minimal LOAD_TPCH=1 ./scripts/docker/run-docker-compose.sh  # single-instance profile
+#   PROFILES=observability ./scripts/docker/run-docker-compose.sh     # + Prometheus + Grafana
+#   STARFLOW_ENABLED=true ./scripts/docker/run-docker-compose.sh      # + Starflow on :9900
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=_docker-common.sh
-source "$REPO_DIR/scripts/_docker-common.sh"
+source "$REPO_DIR/scripts/docker/_docker-common.sh"
 cd "$REPO_DIR"
 
 QOD_VERSION="${QOD_VERSION:-latest}"

@@ -12,12 +12,12 @@
 #                 Implies REMOVE=1. Irreversible.               (default 0)
 #
 # Usage:
-#   ./scripts/stop-docker-compose.sh                    # graceful drain
-#   NUKE=1     ./scripts/stop-docker-compose.sh         # graceful + delete host state
+#   ./scripts/docker/stop-docker-compose.sh                    # graceful drain
+#   NUKE=1     ./scripts/docker/stop-docker-compose.sh         # graceful + delete host state
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 NUKE="${NUKE:-0}"

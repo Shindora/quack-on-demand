@@ -26,16 +26,16 @@ platforms are mandatory (the build fails without them); the Windows
 dll rides in automatically whenever it is present, no env flag
 required.
 
-Refreshed by `scripts/refresh-quackwire-binaries.sh`: it rebuilds the
+Refreshed by `scripts/release/refresh-quackwire-binaries.sh`: it rebuilds the
 host platform locally via CMake and downloads the rest from the latest
 green run of `.github/workflows/quackwire.yml` on main, then leaves the
 diff for a developer to review and commit like any other change.
-`scripts/release.sh` (and CI's release.yml before publishing) verifies
+`scripts/release/release.sh` (and CI's release.yml before publishing) verifies
 the stamped `VERSION` and every `.sha256` match `libquackwireVersion`
 in `build.sbt` before a release proceeds.
 
 **Pin bump:** edit `val libquackwireVersion` in `build.sbt`, push (CI
-builds the new binaries), run `scripts/refresh-quackwire-binaries.sh`,
+builds the new binaries), run `scripts/release/refresh-quackwire-binaries.sh`,
 review and commit the diff.
 
 ## Version scheme

@@ -65,12 +65,12 @@
 # the recovery recipes.
 #
 # Usage:
-#   PG_HOST=db.internal PG_PASSWORD=*** ./scripts/run-docker.sh
-#   QOD_VERSION=0.1.0 PG_HOST=... PG_PASSWORD=... ./scripts/run-docker.sh
-#   QOD_VERSION=latest-snapshot PG_HOST=... PG_PASSWORD=... ./scripts/run-docker.sh
-#   QOD_VERSION=BUILD PG_HOST=... PG_PASSWORD=... ./scripts/run-docker.sh   # local Dockerfile build
-#   QOD_VERSION=LOCAL PG_HOST=... PG_PASSWORD=... ./scripts/run-docker.sh   # reuse the :local image
-#   NUKE=1 PG_HOST=... PG_PASSWORD=... ./scripts/run-docker.sh   # wipe local mounts first
+#   PG_HOST=db.internal PG_PASSWORD=*** ./scripts/docker/run-docker.sh
+#   QOD_VERSION=0.1.0 PG_HOST=... PG_PASSWORD=... ./scripts/docker/run-docker.sh
+#   QOD_VERSION=latest-snapshot PG_HOST=... PG_PASSWORD=... ./scripts/docker/run-docker.sh
+#   QOD_VERSION=BUILD PG_HOST=... PG_PASSWORD=... ./scripts/docker/run-docker.sh   # local Dockerfile build
+#   QOD_VERSION=LOCAL PG_HOST=... PG_PASSWORD=... ./scripts/docker/run-docker.sh   # reuse the :local image
+#   NUKE=1 PG_HOST=... PG_PASSWORD=... ./scripts/docker/run-docker.sh   # wipe local mounts first
 
 set -euo pipefail
 
@@ -138,7 +138,7 @@ NUKE="${NUKE:-0}"
 # directory is created if missing and the path is canonicalized to an
 # absolute one - `docker run -v` requires it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=_docker-common.sh
 source "$SCRIPT_DIR/_docker-common.sh"
 DATA_PATH="${DATA_PATH:-$PWD/ducklake}"

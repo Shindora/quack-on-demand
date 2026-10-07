@@ -34,11 +34,11 @@ overwrite each other.
 ## Run
 
 ```bash
-scripts/load-22/run.sh                          # acme / bi / tpch1, 1 worker, 5 runs
-scripts/load-22/run.sh --workers 8              # 8 workers run each query at once
-scripts/load-22/run.sh --workers 16 --runs 10 --warmup 2
-scripts/load-22/run.sh --tenant globex --pool bi --schema tpch1
-scripts/load-22/run.sh --out-dir /tmp/tpch-bench
+scripts/bench/load-22/run.sh                          # acme / bi / tpch1, 1 worker, 5 runs
+scripts/bench/load-22/run.sh --workers 8              # 8 workers run each query at once
+scripts/bench/load-22/run.sh --workers 16 --runs 10 --warmup 2
+scripts/bench/load-22/run.sh --tenant globex --pool bi --schema tpch1
+scripts/bench/load-22/run.sh --out-dir /tmp/tpch-bench
 ```
 
 `run.sh` provisions a one-time Python venv with the ADBC FlightSQL driver
@@ -66,7 +66,7 @@ through to `benchmark.py`.
 | `--warmup` | `1` | throwaway executions per worker before timing |
 | `--superuser` / `--no-superuser` | superuser on | system-realm login (bootstrap admin) |
 | `--insecure` | on | skip TLS verification (dev self-signed cert) |
-| `--out-dir` | `scripts/load-22/out` | where the CSV + HTML land |
+| `--out-dir` | `scripts/bench/load-22/out` | where the CSV + HTML land |
 
 Every flag also has an `LT_*` env-var equivalent (`LT_TENANT`, `LT_WORKERS`,
-`LT_RUNS`, `LT_SCHEMA`, ...), matching `scripts/tpch-load-test/tpch-load-test.py`.
+`LT_RUNS`, `LT_SCHEMA`, ...), matching `scripts/bench/tpch-load-test/tpch-load-test.py`.

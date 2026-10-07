@@ -7,7 +7,7 @@ package ai.starlake.quack.ondemand.catalog.iceberg
   * Credentials: [[snapshots]] is the only reader of `iceberg_load_table_response`, and it projects
   * `snapshots` and `current-snapshot-id` out of `metadata` ON THE NODE. `storage_credentials` and
   * `config` (vended credentials, catalog settings) never leave the node. Verified shape: DuckDB
-  * 1.5.6 against `scripts/iceberg-fixture.yml`, 2026-09-29.
+  * 1.5.6 against `scripts/fixtures/iceberg-fixture.yml`, 2026-09-29.
   */
 object IcebergCatalogSql:
 

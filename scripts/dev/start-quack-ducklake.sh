@@ -20,10 +20,10 @@
 #   PG_ADMIN_DB       (DB used to bootstrap CREATE DATABASE; default `postgres`)
 #
 # Quick start:
-#   ./scripts/start-quack-ducklake.sh
+#   ./scripts/dev/start-quack-ducklake.sh
 #
 # With a custom schema name:
-#   SCHEMA_NAME=warehouse ./scripts/start-quack-ducklake.sh
+#   SCHEMA_NAME=warehouse ./scripts/dev/start-quack-ducklake.sh
 #
 # The script stays foreground inside the duckdb REPL. Ctrl-D (or `.exit`)
 # shuts down Quack. The auth token Quack generates at startup is printed

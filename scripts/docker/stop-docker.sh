@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Stop the quack-on-demand Docker container started by scripts/run-docker.sh.
+# Stop the quack-on-demand Docker container started by scripts/docker/run-docker.sh.
 #
 # Idempotent: exits 0 cleanly when the container is already stopped or
 # never started. Because run-docker.sh uses `docker run --rm`, the
@@ -15,8 +15,8 @@
 #                    so keep it >= 15s if you have live load.
 #
 # Usage:
-#   ./scripts/stop-docker.sh
-#   CONTAINER_NAME=qod-prod STOP_TIMEOUT=60 ./scripts/stop-docker.sh
+#   ./scripts/docker/stop-docker.sh
+#   CONTAINER_NAME=qod-prod STOP_TIMEOUT=60 ./scripts/docker/stop-docker.sh
 
 set -euo pipefail
 

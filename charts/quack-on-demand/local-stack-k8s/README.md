@@ -278,21 +278,21 @@ Swap `username=admin password=admin` for `reader/reader` to exercise the non-sup
 
 ## Run a load test
 
-[`scripts/tpch-load-test/tpch-load-test.py`](../../../scripts/tpch-load-test/tpch-load-test.py) is a small ADBC FlightSQL load tester that cycles a TPC-H query mix across N worker threads. It works against the kind rig over the same port-forward you'd use for an interactive client.
+[`scripts/bench/tpch-load-test/tpch-load-test.py`](../../../scripts/bench/tpch-load-test/tpch-load-test.py) is a small ADBC FlightSQL load tester that cycles a TPC-H query mix across N worker threads. It works against the kind rig over the same port-forward you'd use for an interactive client.
 
 ```bash
 # In one terminal:
 kubectl -n qod port-forward svc/qod-quack-on-demand-flightsql 31338:31338
 
 # In another -- defaults (8 workers x 100 iterations, TPC-H mix on schema tpch1):
-./scripts/tpch-load-test/tpch-load-test.py
+./scripts/bench/tpch-load-test/tpch-load-test.py
 
 # Heavier mix:
-./scripts/tpch-load-test/tpch-load-test.py --workers 24 --iterations 50 --warmup 5
+./scripts/bench/tpch-load-test/tpch-load-test.py --workers 24 --iterations 50 --warmup 5
 
 # Single query, no warmup, count-only:
 LT_QUERY='SELECT count(*) FROM tpch1.lineitem' \
-  ./scripts/tpch-load-test/tpch-load-test.py --iterations 200 --warmup 0
+  ./scripts/bench/tpch-load-test/tpch-load-test.py --iterations 200 --warmup 0
 ```
 
 Defaults the script picks up via env vars (override on the CLI as shown):

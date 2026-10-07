@@ -411,7 +411,7 @@ sha256_of() {
 # Re-build libquackwire for the host platform via CMake and drop the result
 # straight into the vendored libquackwire/binaries/<host>/ tree (git-tracked;
 # the other platforms' binaries are already in the repo, refreshed by
-# scripts/refresh-quackwire-binaries.sh). The build.sbt resourceGenerator
+# scripts/release/refresh-quackwire-binaries.sh). The build.sbt resourceGenerator
 # picks all of it up on the following `sbt assembly` - no publishLocal, no
 # remote-repository round-trip.
 rebuild_libquackwire_locally() {

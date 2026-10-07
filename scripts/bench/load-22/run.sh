@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh - run the TPC-H 22-query benchmark (scripts/load-22/benchmark.py)
+# run.sh - run the TPC-H 22-query benchmark (scripts/bench/load-22/benchmark.py)
 # against the quack-on-demand FlightSQL edge, producing a CSV + HTML report
 # (X axis = query number, Y axis = median duration in ms).
 #
@@ -12,13 +12,13 @@
 # All flags are passed through to benchmark.py. Defaults target the demo
 # acme/bi/tpch1 workload seeded by scripts/load-tpch-dbgen.sh:
 #
-#   scripts/load-22/run.sh
-#   scripts/load-22/run.sh --runs 10 --warmup 2
-#   scripts/load-22/run.sh --tenant globex --pool bi --schema tpch1
-#   scripts/load-22/run.sh --out-dir /tmp/tpch-bench
+#   scripts/bench/load-22/run.sh
+#   scripts/bench/load-22/run.sh --runs 10 --warmup 2
+#   scripts/bench/load-22/run.sh --tenant globex --pool bi --schema tpch1
+#   scripts/bench/load-22/run.sh --out-dir /tmp/tpch-bench
 #
 # Output: <out-dir>/tpch-bench.csv and <out-dir>/tpch-bench.html
-# (out-dir defaults to scripts/load-22/out).
+# (out-dir defaults to scripts/bench/load-22/out).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

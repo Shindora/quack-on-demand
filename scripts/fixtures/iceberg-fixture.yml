@@ -1,7 +1,7 @@
 # Local + CI fixture for the Iceberg REST end-to-end specs.
 #
-#   docker compose -f scripts/iceberg-fixture.yml up -d --wait
-#   docker compose -f scripts/iceberg-fixture.yml down -v
+#   docker compose -f scripts/fixtures/iceberg-fixture.yml up -d --wait
+#   docker compose -f scripts/fixtures/iceberg-fixture.yml down -v
 #
 # The REST fixture is UNAUTHENTICATED, which is why the end-to-end specs use
 # authType = none. oauth2 / token / sigv4 rendering is unit-tested instead, in

@@ -48,7 +48,7 @@ on:
       - "src/test/scala/ai/starlake/quack/route/LocaleIndependenceSpec.scala"
       - "src/main/scala/ai/starlake/quack/model/Names.scala"
       - "src/main/resources/db/changelog/**"
-      - "scripts/iceberg-fixture.yml"
+      - "scripts/fixtures/iceberg-fixture.yml"
       - ".github/workflows/iceberg.yml"
       # The quack client's attach-time catalog sync must stay within what the metadata filter
       # rewrites (#114): the pin spec, the two lists it compares, and the vendored client.
@@ -86,7 +86,7 @@ on:
       - "src/test/scala/ai/starlake/quack/route/LocaleIndependenceSpec.scala"
       - "src/main/scala/ai/starlake/quack/model/Names.scala"
       - "src/main/resources/db/changelog/**"
-      - "scripts/iceberg-fixture.yml"
+      - "scripts/fixtures/iceberg-fixture.yml"
       - ".github/workflows/iceberg.yml"
       # The quack client's attach-time catalog sync must stay within what the metadata filter
       # rewrites (#114): the pin spec, the two lists it compares, and the vendored client.
@@ -182,7 +182,7 @@ jobs:
           "$HOME/.local/bin/duckdb" -noheader -list -c "select version();"
 
       - name: Start the Iceberg REST fixture
-        run: docker compose -f scripts/iceberg-fixture.yml up -d --wait
+        run: docker compose -f scripts/fixtures/iceberg-fixture.yml up -d --wait
 
       - name: Wait for the catalog
         run: |
@@ -231,8 +231,8 @@ jobs:
 
       - name: Fixture logs on failure
         if: failure()
-        run: docker compose -f scripts/iceberg-fixture.yml logs --no-color
+        run: docker compose -f scripts/fixtures/iceberg-fixture.yml logs --no-color
 
       - name: Tear the fixture down
         if: always()
-        run: docker compose -f scripts/iceberg-fixture.yml down -v
+        run: docker compose -f scripts/fixtures/iceberg-fixture.yml down -v

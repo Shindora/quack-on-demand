@@ -3,7 +3,7 @@ name: quackwire native build
 # Builds the JNI shim `libquackwire.{so,dylib,dll}` for the five platforms
 # the manager runs on and uploads each as a build artifact. Binaries are
 # vendored in git under libquackwire/binaries/ (see build.sbt's
-# resourceGenerator); scripts/refresh-quackwire-binaries.sh builds the host
+# resourceGenerator); scripts/release/refresh-quackwire-binaries.sh builds the host
 # platform locally and downloads the rest from the latest green run of this
 # workflow on main, then a developer reviews and commits the diff. No
 # Central publish, no GPG, no Sonatype.
@@ -190,7 +190,7 @@ jobs:
   # hand-assembled DUCKDB_HOME rather than a system package. Produces the
   # un-prefixed `quackwire.dll` (System.mapLibraryName has no "lib" prefix on
   # Windows), uploaded as quackwire-windows-x86_64 alongside the four Unix
-  # artifacts so scripts/refresh-quackwire-binaries.sh's `quackwire-*` glob
+  # artifacts so scripts/release/refresh-quackwire-binaries.sh's `quackwire-*` glob
   # picks it up when it downloads from the latest green run on main.
   build-windows:
     name: build windows-x86_64

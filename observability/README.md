@@ -26,17 +26,17 @@ scrape_configs:
 
 ### 2.1 Local stack (Prometheus + Grafana via docker compose)
 
-The bundled `scripts/run-docker-compose.sh` brings up the whole stack
+The bundled `scripts/docker/run-docker-compose.sh` brings up the whole stack
 in one shot: manager + Postgres + Prometheus + Grafana, with TPC-H
 SF=1 already loaded into the bootstrap tenant-db so the dashboard
 has live data to chart the moment Grafana opens.
 
 ```bash
 # One command: manager + Postgres + TPC-H SF=1 seed + Prometheus + Grafana.
-LOAD_TPCH=1 PROFILES=observability ./scripts/run-docker-compose.sh
+LOAD_TPCH=1 PROFILES=observability ./scripts/docker/run-docker-compose.sh
 
 # Wipe first if you want a clean slate.
-NUKE=1 LOAD_TPCH=1 PROFILES=observability ./scripts/run-docker-compose.sh
+NUKE=1 LOAD_TPCH=1 PROFILES=observability ./scripts/docker/run-docker-compose.sh
 ```
 
 The `observability` compose profile pulls in the Prometheus + Grafana
@@ -63,7 +63,7 @@ Tear down:
 docker compose -f docker-compose.yml --profile observability down
 
 # Or wipe everything and start fresh next time.
-NUKE=1 PROFILES=observability ./scripts/run-docker-compose.sh
+NUKE=1 PROFILES=observability ./scripts/docker/run-docker-compose.sh
 ```
 
 This directory's standalone `docker-compose.yml` is a secondary

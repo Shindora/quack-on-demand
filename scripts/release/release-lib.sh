@@ -10,13 +10,13 @@
 #
 # Source this file; do not execute it. It anchors CWD at the repo root and
 # exposes the version-math helpers plus verify_quackwire_binaries (the
-# vendored-binaries check - see scripts/refresh-quackwire-binaries.sh for how
+# vendored-binaries check - see scripts/release/refresh-quackwire-binaries.sh for how
 # the binaries themselves get refreshed). Steps are idempotent: each no-ops
 # the work it detects is already done (tag already present, version.sbt
 # already bumped), so an interrupted cut is resumed by re-running release.sh.
 
-# Repo root, derived from this file's own location (scripts/release-lib.sh).
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Repo root, derived from this file's own location (scripts/release/release-lib.sh).
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 REGISTRY_IMAGE="${REGISTRY_IMAGE:-starlakeai/quack-on-demand}"
@@ -88,7 +88,7 @@ sha256_of() {
 
 # ---- vendored libquackwire verification ----------------------------------
 # Replaces the old Maven-Central-availability gate: binaries are vendored in
-# git now (refreshed by scripts/refresh-quackwire-binaries.sh), so "is
+# git now (refreshed by scripts/release/refresh-quackwire-binaries.sh), so "is
 # libquackwire safe to ship with this manager release" means "does the
 # working tree's libquackwire/binaries/ match the pinned version and its own
 # checksums" rather than "is it on Central". Shared by release.sh's phase 1
@@ -98,7 +98,7 @@ verify_quackwire_binaries() {
   version="$(grep -E '^val libquackwireVersion' build.sbt | sed -E 's/.*"(.*)".*/\1/')"
   stamped="$(cat libquackwire/binaries/VERSION 2>/dev/null || true)"
   [[ "$stamped" == "$version" ]] \
-    || { echo "libquackwire/binaries/VERSION ($stamped) != libquackwireVersion ($version). Run scripts/refresh-quackwire-binaries.sh." >&2; return 1; }
+    || { echo "libquackwire/binaries/VERSION ($stamped) != libquackwireVersion ($version). Run scripts/release/refresh-quackwire-binaries.sh." >&2; return 1; }
 
   # Mandatory platforms must have their binary present - an unmatched glob in
   # the checksum loop below silently iterates zero times, so a tree missing a
@@ -117,16 +117,16 @@ verify_quackwire_binaries() {
     [[ -f "libquackwire/binaries/$plat/$file" ]] || missing+=("$plat")
   done
   [[ ${#missing[@]} -eq 0 ]] \
-    || { echo "missing vendored libquackwire binaries: ${missing[*]}. Run scripts/refresh-quackwire-binaries.sh." >&2; return 1; }
+    || { echo "missing vendored libquackwire binaries: ${missing[*]}. Run scripts/release/refresh-quackwire-binaries.sh." >&2; return 1; }
 
   # windows-x86_64/quackwire.dll rides along whenever present; only its
   # checksum is verified below, same as every other platform's binary.
   local f
   for f in libquackwire/binaries/*/libquackwire.* libquackwire/binaries/*/quackwire.dll; do
     [[ -f "$f" && "$f" != *.sha256 ]] || continue
-    [[ -f "$f.sha256" ]] || { echo "missing checksum $f.sha256. Run scripts/refresh-quackwire-binaries.sh." >&2; return 1; }
+    [[ -f "$f.sha256" ]] || { echo "missing checksum $f.sha256. Run scripts/release/refresh-quackwire-binaries.sh." >&2; return 1; }
     [[ "$(sha256_of "$f")" == "$(cat "$f.sha256")" ]] \
-      || { echo "checksum mismatch for $f. Run scripts/refresh-quackwire-binaries.sh." >&2; return 1; }
+      || { echo "checksum mismatch for $f. Run scripts/release/refresh-quackwire-binaries.sh." >&2; return 1; }
   done
   echo "phase 1 OK: vendored libquackwire binaries match $version"
 }

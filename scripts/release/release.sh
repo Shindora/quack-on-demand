@@ -11,7 +11,7 @@
 #
 # If a CI channel fails, re-run the workflow against the existing tag
 # (workflow_dispatch takes the version) instead of publishing by hand.
-# scripts/release-docker.sh remains only as a manual fallback for a broken
+# scripts/release/release-docker.sh remains only as a manual fallback for a broken
 # Docker channel; nothing else publishes locally anymore.
 #
 # Steps are idempotent so an interrupted run can simply be re-run:
@@ -22,7 +22,7 @@
 #
 # Prerequisite: the vendored libquackwire binaries must match
 # `libquackwireVersion` in build.sbt (refresh with
-# scripts/refresh-quackwire-binaries.sh). No PyPI/Docker/PGP/Sonatype
+# scripts/release/refresh-quackwire-binaries.sh). No PyPI/Docker/PGP/Sonatype
 # credentials are needed here - the CI workflow holds the publish secrets.
 #
 # Optional env: RELEASE_VERSION (pin the release; default = strip -SNAPSHOT),
@@ -30,8 +30,8 @@
 #               RELEASE_YES=1   (skip the confirmation prompt).
 #
 # Usage:
-#   ./scripts/release.sh
-#   RELEASE_VERSION=0.6.0 NEXT_VERSION=0.7.0-SNAPSHOT ./scripts/release.sh
+#   ./scripts/release/release.sh
+#   RELEASE_VERSION=0.6.0 NEXT_VERSION=0.7.0-SNAPSHOT ./scripts/release/release.sh
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-lib.sh"
@@ -43,7 +43,7 @@ warn_if_not_main
 # ---- Gate: vendored libquackwire binaries match the pin -------------------
 libq="$(libquackwire_version)"
 verify_quackwire_binaries \
-  || die "vendored libquackwire binaries are stale or missing for $libq. Run ./scripts/refresh-quackwire-binaries.sh first."
+  || die "vendored libquackwire binaries are stale or missing for $libq. Run ./scripts/release/refresh-quackwire-binaries.sh first."
 
 # ---- Resolve versions ----------------------------------------------------
 current="$(manager_version)"
@@ -141,7 +141,7 @@ fi
 # libquackwireVersion is deliberately NOT bumped here. It only changes when
 # its inputs change (the DuckDB pin or the C++ under native/quackwire/): edit
 # the val in build.sbt manually, push (CI builds the new binaries), then run
-# scripts/refresh-quackwire-binaries.sh and commit the diff. Auto-bumping per
+# scripts/release/refresh-quackwire-binaries.sh and commit the diff. Auto-bumping per
 # manager release would mint a new pin every cycle with zero native changes.
 
 # ---- 4. Push commits + tag: the tag push IS the publish trigger -----------

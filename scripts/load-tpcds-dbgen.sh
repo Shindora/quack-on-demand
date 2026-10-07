@@ -23,7 +23,7 @@
 #     container. Quack nodes fail to read the data files.
 #
 #   - Docker manager + Docker loader   -> works, paths match by construction
-#     Use `LOAD_TPCDS=true ./scripts/run-docker-compose.sh` (or
+#     Use `LOAD_TPCDS=true ./scripts/docker/run-docker-compose.sh` (or
 #     `docker compose exec quack /app/scripts/load-tpcds-dbgen.sh` against
 #     a running stack) so the loader runs inside the same /app/ducklake
 #     mount as the manager.
