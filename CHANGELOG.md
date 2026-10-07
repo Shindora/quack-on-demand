@@ -1,6 +1,56 @@
 # Changelog
 
-## Unreleased
+## 0.9.11
+
+- **Security: a custom admin password now holds on demo stacks.** The bundled demo manifests
+  (`bootstrap-demo.yaml`, `bootstrap-demo-minimal.yaml`) declared a superuser `admin` with password
+  `admin`. Boot seeds `admin` with your first-boot password, then the demo import replaced it, so
+  every demo stack (compose or `qod start` with `LOAD_*`, `qod serve --demo`) accepted `admin` /
+  `admin` whatever `QOD_ADMIN_PASSWORD` said, while `admin@localhost.local` got your password. The
+  entry is gone: both seeded admins now take the password you chose, and `admin` / `admin` stops
+  working wherever you set one. Default runs are unchanged (`admin` / `admin`).
+
+- **The demo banner shows the real admin logins.** It hardcoded `admin` / `admin` and left out
+  `admin@localhost.local`. It now lists every seeded admin name, with `admin` as the password when
+  the demo defaulted it and `<QOD_ADMIN_PASSWORD>` when you exported one, so a chosen password is
+  never printed.
+
+- **Docker launchers accept `QOD_ADMIN_USERNAME` / `QOD_ADMIN_PASSWORD`.** `docker-compose.yml` and
+  `scripts/docker/run-docker.sh` only read the short `ADMIN_USERNAME` / `ADMIN_PASSWORD`, so an
+  exported `QOD_ADMIN_PASSWORD` was silently ignored. Both names work now and the `QOD_` one wins
+  (the `.env` created from `.env.example` always sets the short one). The default stays `admin`, and
+  like everywhere else it applies on the first boot only: rotate later with
+  `qod auth change-password`.
+
+- **`run-docker-compose.sh` honours remapped ports.** With `MANAGER_PORT` / `EDGE_PORT` set, the
+  readiness probe still polled `localhost:20900` (so a manager already running there made the wait
+  pass without checking the stack) and the banner printed `:20900` / `:31338`. Both use the
+  configured ports now.
+
+- **The CLI config file moves to `~/.qod/config.toml` on every platform**
+  (`%USERPROFILE%\.qod\config.toml` on Windows), from the platform config dir
+  (`~/Library/Application Support/qod` on macOS, `~/.config/qod` on Linux, `%APPDATA%\qod` on
+  Windows). A file at the old location is moved on first use, keeping mode 0600; when both exist the
+  new one wins and the old one is left alone. `QOD_CONFIG_FILE` still overrides the path. Data and
+  cache dirs do not move.
+
+- **`scripts/` is grouped by audience** (checkout users only). Entry points stay at the top level
+  (`run-jar`, `stop-jar`, `spawn-quack-node`, the demo loaders, `install.sh`,
+  `kill-quack-nodes.sh`); the Docker launchers move to `scripts/docker/`, release tooling to
+  `scripts/release/`, `adbc.sh` and the load tests to `scripts/bench/`, developer shortcuts to
+  `scripts/dev/` and the Iceberg fixture to `scripts/fixtures/`. Update any path you scripted, for
+  example `./scripts/docker/run-docker-compose.sh`. The Iceberg fixture's compose project name
+  changes from `scripts` to `fixtures`, so bring a running fixture down with the old path first.
+  `scripts/README.md` describes every script.
+
+- **PAT revoke: a failed statement kill or kill broadcast is now visible.** A committed revoke
+  still answers 200 and writes its audit event (the tokens are already dead; a still-running
+  statement stays bounded by its own timeout), but a kill or broadcast that throws is now
+  WARN-logged instead of silently swallowed, and the `AuthPatRevoke` audit event's detail gains
+  `killFailed` and `broadcastFailed` (`true` / `false`) so `killedStatements: 0` is
+  distinguishable from nothing-to-kill. Refs #86 (items 2 and 4).
+
+## 0.9.10
 
 - **BREAKING: the user account field `role` is now `kind` on every surface.** The
   `qodstate_user.role` column (admin | user, the management-rights flag, never an RBAC role) is
@@ -49,12 +99,30 @@
   the main checkout's `.duckdb` cache, and a native library that cannot load fails the statement
   with an error instead of hanging the suite.
 
-- **PAT revoke: a failed statement kill or kill broadcast is now visible.** A committed revoke
-  still answers 200 and writes its audit event (the tokens are already dead; a still-running
-  statement stays bounded by its own timeout), but a kill or broadcast that throws is now
-  WARN-logged instead of silently swallowed, and the `AuthPatRevoke` audit event's detail gains
-  `killFailed` and `broadcastFailed` (`true` / `false`) so `killedStatements: 0` is
-  distinguishable from nothing-to-kill. Refs #86 (items 2 and 4).
+- **Per-tenant OPA authorization.** `qod tenant set-acl` (or `POST /api/tenant/setAcl`) hands a
+  tenant's data-access decisions to its own OPA server: pool access at handshake and table access
+  per statement, with QoD grants ignored for that tenant. It fails closed (only a literal
+  `allow == true` admits; an outage or timeout is `UNAVAILABLE`, never a permission error), and
+  superusers never reach OPA. Configured by `QOD_ACL_MODE`, `QOD_OPA_URL`, `QOD_OPA_TIMEOUT_MS` and
+  `QOD_OPA_CACHE_TTL_SEC`; `qod tenant opa-test` is a dry run. A starter policy is in
+  `examples/opa/`.
+
+- **The admin password is set once, at first boot, and never stored.** Admin rows are seeded only
+  when missing and never rewritten, and there is no built-in default: with `QOD_ADMIN_PASSWORD`
+  unset a missing admin is not seeded. `qod start` / `qod serve` prompt for it on first boot (or
+  take it from the shell) and refuse without either. Before, it sat in plaintext in `config.toml`
+  and a restart re-hashed it, silently undoing `qod auth change-password`. Recover a lost one with
+  `qod admin reset-password`, which works with the manager down.
+
+- **`qod start` / `qod serve --with-starflow` run Starflow next to the manager**, installed on first
+  use, its metadata in a `starlake` database on the manager's Postgres, paired for SSO, REST and
+  FlightSQL. The compose twin is the `starflow` profile (`STARFLOW_ENABLED=true`). Startup banners
+  now link to the client connection docs instead of printing connection strings.
+
+- **Fleet servers can run as Docker containers.** The `starlakeai/quack-on-demand-worker` image runs
+  `qod fleet join` with DuckDB, capacity follows cgroup limits, `QOD_FLEET_NODE_PG_HOST` /
+  `QOD_FLEET_NODE_PG_PORT` rewrite the Postgres address in assignments, and the
+  `docker-compose.fleet.yml` override runs the bundled stack in fleet mode with two workers.
 
 ## 0.9.9
 
