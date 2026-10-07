@@ -9,9 +9,11 @@ import ai.starlake.quack.ondemand.auth.TokenRestriction
   * attenuated EffectiveSet on a connection context, which needs no signature change but makes the
   * security property rest on remembering to attenuate first. Here, omitting it does not compile.
   *
-  * `patId` is carried but unpopulated by this task: a later task threads it into audit and
-  * statement-history rows once a PAT-backed caller exists. Defaulting it to `None` here means that
-  * later task only has to populate the field, not touch every one of these call sites again.
+  * `patId` is set for a PAT bearer by [[RestCaller]] (the catalog preview, data-diff, undrop and
+  * restore REST endpoints) and by `McpDataTools.callerFor` (MCP). The routed executor
+  * (`Main.routedExecutor`) threads it into `FlightSqlRouter.execute`, so the statement-history and
+  * audit rows and the `ActiveStatementRegistry` entry carry it: that is what lets a revoke of the
+  * token kill the statement. System and session callers carry `None`.
   *
   * `system` is the ONLY privilege signal: a system caller gets the synthetic superuser EffectiveSet
   * in the routed executor (no ACL, no CLS/RLS, never attenuated). It is set only by

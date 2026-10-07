@@ -1390,10 +1390,14 @@ class FlightSqlRouterSpec extends AnyFlatSpec with Matchers:
     val registry2 = new ActiveStatementRegistry()
     val router2   = new FlightSqlRouter(sup2, sessions2, tkr, adapter2, registry = registry2)
 
-    val result = router2.execute("retry-reg-1", "alice", pk2, "SELECT 1").unsafeRunSync()
+    val result =
+      router2
+        .execute("retry-reg-1", "alice", pk2, "SELECT 1", patId = Some("pat-retry"))
+        .unsafeRunSync()
     result shouldBe a[Right[?, ?]]
     // Statement must be visible while the stream is open.
     registry2.list().map(_.user) shouldBe List("alice")
+    registry2.list().map(_.patId) shouldBe List(Some("pat-retry"))
     result.toOption.get.close()
     // After close the entry must be gone.
     registry2.list() shouldBe Nil
