@@ -8,9 +8,9 @@ import org.scalatest.matchers.should.Matchers
 import scala.io.Source
 import scala.util.Using
 
-/** Structural assertions for the bundled `bootstrap-demo-minimal.yaml` (DEMO=minimal profile):
-  * one tenant, one pool, one dual node, lean RBAC. Mirrors [[BootstrapDemoYamlSpec]] so hand
-  * edits that drift the profile's contract fail fast.
+/** Structural assertions for the bundled `bootstrap-demo-minimal.yaml` (DEMO=minimal profile): one
+  * tenant, one pool, one dual node, lean RBAC. Mirrors [[BootstrapDemoYamlSpec]] so hand edits that
+  * drift the profile's contract fail fast.
   */
 class BootstrapDemoMinimalYamlSpec extends AnyFlatSpec with Matchers:
 
@@ -56,7 +56,30 @@ class BootstrapDemoMinimalYamlSpec extends AnyFlatSpec with Matchers:
   }
 
   it should "declare the lean users, all pool grants on bi" in {
-    manifest.users.map(_.username).toSet shouldBe Set("root", "admin", "alice", "acme-admin")
+    manifest.users.map(_.username).toSet shouldBe Set("root", "alice", "acme-admin")
     val grants = manifest.users.flatMap(_.poolGrants).flatMap(_.pool).toSet
     grants shouldBe Set("bi")
+  }
+
+  // The default bootstrap admin names (application.conf `quack-on-demand.admin.username`, read
+  // unresolved so a developer's QOD_ADMIN_USERNAME cannot mask a collision). seedAdminUsers creates
+  // these rows with the operator's first-boot password BEFORE the demo hook imports this manifest,
+  // and the importer upserts users, so a manifest user with one of these names silently replaces
+  // that password with the manifest's plaintext.
+  private def defaultAdminNames: Set[String] =
+    com.typesafe.config.ConfigFactory
+      .parseResources("application.conf")
+      .resolve(com.typesafe.config.ConfigResolveOptions.defaults().setAllowUnresolved(true))
+      .getString("quack-on-demand.admin.username")
+      .split(",")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .toSet
+
+  it should "not redeclare a seeded bootstrap admin (it would overwrite the chosen password)" in {
+    defaultAdminNames should not be empty
+    manifest.users
+      .filter(_.tenant.isEmpty)
+      .map(_.username)
+      .toSet intersect defaultAdminNames shouldBe empty
   }
