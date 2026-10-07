@@ -495,9 +495,15 @@ esac
 # See the comment on the quack service in docker-compose.yml.
 
 # ---- Wait for manager ----
-echo -n "waiting for manager REST on :20900 "
+# Host-side ports as docker-compose.yml publishes them (MANAGER_PORT / EDGE_PORT,
+# env over .env). Probing a hardcoded :20900 with MANAGER_PORT remapped would wait
+# on whatever else owns 20900 (a native manager answers, so the wait passes
+# without the stack ever being checked) and the banner would name the wrong port.
+MANAGER_PORT_EFFECTIVE="$(read_env MANAGER_PORT 20900)"
+EDGE_PORT_EFFECTIVE="$(read_env EDGE_PORT 31338)"
+echo -n "waiting for manager REST on :${MANAGER_PORT_EFFECTIVE} "
 deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
-until code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:20900/api/health 2>/dev/null || true)"; \
+until code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${MANAGER_PORT_EFFECTIVE}/api/health" 2>/dev/null || true)"; \
       [[ -n "$code" && "$code" != "000" ]]; do
   if (( $(date +%s) > deadline )); then
     echo
@@ -682,8 +688,8 @@ cat <<EOM
 
 stack is up:
   image:      starlakeai/quack-on-demand:$QOD_VERSION
-  REST + UI:  http://localhost:20900/ui/
-  FlightSQL:  ${scheme}://localhost:31338  (TLS=$tls)
+  REST + UI:  http://localhost:${MANAGER_PORT_EFFECTIVE}/ui/
+  FlightSQL:  ${scheme}://localhost:${EDGE_PORT_EFFECTIVE}  (TLS=$tls)
   Postgres:   localhost:${PG_PORT_EFFECTIVE} (external)  /  postgres:5432 (internal)
   Data:       ./pgdata + ./ducklake + ./certs (host bind mounts)
 EOM

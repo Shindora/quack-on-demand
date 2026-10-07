@@ -59,11 +59,11 @@ users:
     password: demo-root
     kind: admin
 
-  # Matches the Keycloak realm user `admin` so an OIDC login maps to
-  # this superuser row; the password is only used for Basic/DB auth.
-  - username: admin
-    password: admin
-    kind: admin
+  # No `admin` entry here on purpose. The Keycloak realm user `admin` maps (by
+  # preferred_username) to the superuser that boot seeds from QOD_ADMIN_USERNAME
+  # (default `admin@localhost.local,admin`) with the operator's first-boot
+  # password. Seeding runs before this import and the importer upserts users, so
+  # declaring `admin` here would overwrite that password with a plaintext one.
 
   - tenant: acme
     username: alice

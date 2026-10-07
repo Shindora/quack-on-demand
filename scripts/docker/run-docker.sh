@@ -31,6 +31,9 @@
 #                    Required for the admin UI to log in.
 #   ADMIN_USERNAME   admin login (when AUTH=true)           (default admin)
 #   ADMIN_PASSWORD   admin password (when AUTH=true)        (default admin - rotate!)
+#                    QOD_ADMIN_USERNAME / QOD_ADMIN_PASSWORD are accepted too and
+#                    win over the short names. First boot only: the manager never
+#                    rewrites an existing admin row.
 #   API_KEY          REST API X-API-Key                     (unset = open API + warning)
 #
 #   TLS              "true" to enable FlightSQL edge TLS    (default false)
@@ -119,8 +122,8 @@ PG_DBNAME="${PG_DBNAME:-tpch}"
 PG_SCHEMA="${PG_SCHEMA:-main}"
 
 AUTH="${AUTH:-true}"
-ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
+ADMIN_USERNAME="${QOD_ADMIN_USERNAME:-${ADMIN_USERNAME:-admin}}"
+ADMIN_PASSWORD="${QOD_ADMIN_PASSWORD:-${ADMIN_PASSWORD:-admin}}"
 API_KEY="${API_KEY:-}"
 TLS="${TLS:-false}"
 

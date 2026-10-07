@@ -63,11 +63,11 @@ class BootstrapDemoYamlSpec extends AnyFlatSpec with Matchers:
     byTenant("globex") shouldBe Set("analysts")
   }
 
-  it should "declare eight users including two superusers" in {
-    manifest.users.size shouldBe 8
-    // Two tenant-less superusers: `root` (Basic/DB auth) and `admin` (whose name
-    // matches the Keycloak realm user so an OIDC login maps to this superuser).
-    manifest.users.filter(_.tenant.isEmpty).map(_.username).toSet shouldBe Set("root", "admin")
+  it should "declare seven users including one superuser" in {
+    manifest.users.size shouldBe 7
+    // One tenant-less superuser, `root`. The `admin` superuser the Keycloak realm user maps
+    // to is seeded by boot from QOD_ADMIN_USERNAME, never declared here (see below).
+    manifest.users.filter(_.tenant.isEmpty).map(_.username).toSet shouldBe Set("root")
     manifest.users.count(_.tenant.contains("acme")) shouldBe 4
     manifest.users.count(_.tenant.contains("globex")) shouldBe 2
   }
@@ -75,4 +75,27 @@ class BootstrapDemoYamlSpec extends AnyFlatSpec with Matchers:
   it should "only use canonical RBAC verbs" in {
     val verbs = manifest.roles.flatMap(_.permissions).map(_.verb).toSet
     verbs.subsetOf(Set("RO", "RW", "DDL", "ALL")) shouldBe true
+  }
+
+  // The default bootstrap admin names (application.conf `quack-on-demand.admin.username`, read
+  // unresolved so a developer's QOD_ADMIN_USERNAME cannot mask a collision). seedAdminUsers creates
+  // these rows with the operator's first-boot password BEFORE the demo hook imports this manifest,
+  // and the importer upserts users, so a manifest user with one of these names silently replaces
+  // that password with the manifest's plaintext.
+  private def defaultAdminNames: Set[String] =
+    com.typesafe.config.ConfigFactory
+      .parseResources("application.conf")
+      .resolve(com.typesafe.config.ConfigResolveOptions.defaults().setAllowUnresolved(true))
+      .getString("quack-on-demand.admin.username")
+      .split(",")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .toSet
+
+  it should "not redeclare a seeded bootstrap admin (it would overwrite the chosen password)" in {
+    defaultAdminNames should not be empty
+    manifest.users
+      .filter(_.tenant.isEmpty)
+      .map(_.username)
+      .toSet intersect defaultAdminNames shouldBe empty
   }
