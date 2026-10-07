@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **`qod admin reset-password` never starts Postgres.** It used to start the `qod serve` embedded
+  Postgres on demand whenever that data dir existed and `QOD_PG_HOST` was unset, so a data dir left
+  by an earlier `qod serve` captured the default: on a machine running `qod start` against its own
+  Postgres, the reset booted the stale embedded cluster, reset the admins there, reported success,
+  and the live manager kept the old password. The default target is now the embedded control plane
+  only while its Postgres is running, else the external `QOD_PG_*` one; an explicit `--embedded` on
+  a stopped one is refused. Recovering an embedded admin password therefore needs `qod serve`
+  running first; against your own Postgres it still works with the manager down.
+
+- **A wrong password on `qod login` says so.** The CLI replaced every 401 message with "session
+  expired or invalid, run qod login", including the login endpoint's own answer, so `qod login`
+  told you to run `qod login`. The credential-checking endpoints (`login`, `change-password`,
+  `forgot-password`, `reset-password`) now show the server's message.
+
 ## 0.9.11
 
 - **Security: a custom admin password now holds on demo stacks.** The bundled demo manifests
