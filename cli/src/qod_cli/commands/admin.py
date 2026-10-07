@@ -2,7 +2,9 @@
 
 Runs the manager jar's one-shot `admin reset-password` subcommand, which
 writes the new bcrypt hash straight into the control-plane database (lockout
-cleared), so it works with the manager down and every login path blocked.
+cleared), so it works with every login path blocked. It never starts Postgres:
+an external control plane is reached as it is (the manager may be down), and
+the `qod serve` embedded one only while its Postgres is running.
 Authority is reaching that database with the configured credentials; anyone
 with that access could already rewrite the row by hand. The password travels
 on the child's stdin, never in argv or a file.
@@ -20,8 +22,9 @@ import typer
 from .. import admin_password, launcher
 from ..config import load_start_env
 from ._launch import resolve_jar, resolve_java
+from .status import _embedded_postgres_port, _tcp_open
 
-app = typer.Typer(help="Superuser recovery (works with the manager down).", no_args_is_help=True)
+app = typer.Typer(help="Superuser recovery (never starts Postgres).", no_args_is_help=True)
 
 
 @app.command("reset-password")
@@ -38,8 +41,9 @@ def reset_password(
     embedded: bool = typer.Option(
         None,
         "--embedded/--external",
-        help="Target the qod serve embedded control plane, or the external Postgres "
-        "(default: embedded when its data dir exists and QOD_PG_HOST is unset).",
+        help="Target the qod serve embedded control plane (its Postgres must be running), "
+        "or the external Postgres (default: embedded when its Postgres is running and "
+        "QOD_PG_HOST is unset).",
     ),
     version: str = typer.Option(None, "--version", envvar="QOD_VERSION", help="Manager release."),
     jar: Path = typer.Option(None, "--jar", help="Run this local jar instead of downloading."),
@@ -50,13 +54,30 @@ def reset_password(
     embedded_dir = Path(
         base_env.get("QOD_PG_EMBEDDED_DATA_DIR") or (launcher.default_data_dir() / "pg")
     )
-    has_pgdata = (embedded_dir / "pgdata").is_dir()
+    pgdata = embedded_dir / "pgdata"
+    has_pgdata = pgdata.is_dir()
+    # Same probe as `qod status`: the port from postmaster.pid, then a TCP connect (never a
+    # signal, which terminates the process on Windows). A missing pid file means stopped.
+    embedded_running = (
+        has_pgdata
+        and (pgdata / "postmaster.pid").is_file()
+        and _tcp_open("localhost", _embedded_postgres_port(pgdata))
+    )
     use_embedded = (
-        embedded if embedded is not None else (has_pgdata and not base_env.get("QOD_PG_HOST"))
+        embedded
+        if embedded is not None
+        else (embedded_running and not base_env.get("QOD_PG_HOST"))
     )
     if use_embedded and not has_pgdata:
         typer.echo(
             f"error: nothing to reset; run qod serve first (no control plane at {embedded_dir})",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if use_embedded and not embedded_running:
+        typer.echo(
+            f"error: the embedded control plane at {embedded_dir} is not running; start it with "
+            "qod serve, then retry (qod admin never starts Postgres)",
             err=True,
         )
         raise typer.Exit(1)

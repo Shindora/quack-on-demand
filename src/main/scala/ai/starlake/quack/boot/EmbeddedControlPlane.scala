@@ -116,8 +116,8 @@ object EmbeddedControlPlane:
       catch case scala.util.control.NonFatal(t) => throw startFailure(t, pgData)
     new EmbeddedControlPlane(instance, "localhost", instance.getPort, User, Password)
 
-  /** Coordinates of an embedded control plane for a one-shot tool, plus how to release it. */
-  final case class Handle(host: String, port: Int, user: String, password: String, stop: () => Unit)
+  /** Coordinates of a running embedded control plane for a one-shot tool. */
+  final case class Handle(host: String, port: Int, user: String, password: String)
 
   /** The port a running postmaster listens on: line 4 of `postmaster.pid`. */
   def postmasterPort(pgData: Path): Option[Int] =
@@ -127,11 +127,12 @@ object EmbeddedControlPlane:
       )
       .toOption
 
-  /** For one-shot tools (`admin reset-password`): attach to the server a running manager owns, or
-    * start one on the existing data dir. Never initializes a new cluster: a missing `pgdata` means
-    * there is no control plane to act on.
+  /** For one-shot tools (`admin reset-password`): attach to the server a running `qod serve`
+    * manager owns. Never starts Postgres and never initializes a cluster: a missing `pgdata` means
+    * there is no control plane to act on, and a stopped one is refused rather than booted behind
+    * the operator's back.
     */
-  def attachOrStart(cfg: EmbeddedPostgresConfig): Either[String, Handle] =
+  def attachRunning(cfg: EmbeddedPostgresConfig): Either[String, Handle] =
     val pgData = resolveDataDir(cfg.dataDir).resolve("pgdata")
     if !Files.isDirectory(pgData) then
       Left(s"nothing to reset; run qod serve first (no embedded control plane at $pgData)")
@@ -139,11 +140,13 @@ object EmbeddedControlPlane:
       livePostmaster(pgData) match
         case Some(_) =>
           postmasterPort(pgData) match
-            case Some(port) => Right(Handle("localhost", port, User, Password, () => ()))
+            case Some(port) => Right(Handle("localhost", port, User, Password))
             case None       => Left(s"cannot read the embedded Postgres port from $pgData")
         case None =>
-          val cp = start(cfg)
-          Right(Handle(cp.host, cp.port, cp.user, cp.password, () => cp.stop()))
+          Left(
+            s"the embedded control plane at $pgData is not running; start it with qod serve, " +
+              "then retry (qod admin never starts Postgres)"
+          )
 
   /** Copy the live coordinates onto the manager config. Touches ONLY the Postgres coordinate fields
     * of `defaultMetastore` (pgHost, pgPort, pgUser, pgPassword); `dbName` deliberately stays as
