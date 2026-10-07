@@ -20,7 +20,10 @@ uvx qod@latest serve --demo             # the full gateway on your laptop: no in
 uvx qod@latest serve ./sales.duckdb     # the same gateway over YOUR DuckDB file, persistent + secured
 uvx qod@latest serve ./warehouse/       # ...or a directory of parquet / csv
 uvx qod@latest serve s3://bucket/data/  # ...or a remote prefix
+QOD_ADMIN_PASSWORD='change-me' uvx qod@latest serve ./sales.duckdb  # set the admin password up front, no prompt
 
+# admin login: user admin; password admin with --demo, otherwise the one chosen on the first run
+#   (prompted, or QOD_ADMIN_PASSWORD; first run only, never stored; `uvx qod@latest admin reset-password` recovers it)
 # admin UI: http://localhost:20900/ui/
 # FlightSQL edge: localhost:31338 
 # DuckDB (native Quack): quack:localhost:9494
