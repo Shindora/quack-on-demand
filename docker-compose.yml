@@ -133,8 +133,11 @@ services:
 
       # ----- Auth + TLS toggles (defaults match a fast smoke test) -----
       QOD_AUTH_DB_ENABLED: ${AUTH:-true}
-      QOD_ADMIN_USERNAME:  ${ADMIN_USERNAME:-admin}
-      QOD_ADMIN_PASSWORD:  ${ADMIN_PASSWORD:-admin}
+      # Either name works: the manager's own QOD_ADMIN_* wins, then the short
+      # .env alias, then `admin`. The long name must win because .env.example
+      # (copied into .env on first run) always sets the short one.
+      QOD_ADMIN_USERNAME:  ${QOD_ADMIN_USERNAME:-${ADMIN_USERNAME:-admin}}
+      QOD_ADMIN_PASSWORD:  ${QOD_ADMIN_PASSWORD:-${ADMIN_PASSWORD:-admin}}
       QOD_API_KEY:         ${API_KEY:-}
       PROXY_TLS_ENABLED:        ${TLS:-false}
 
