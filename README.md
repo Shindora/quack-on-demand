@@ -151,12 +151,12 @@ below.
 Zero to first query in under 5 minutes. Clone this repo, then:
 
 ```bash
-cp .env.example .env                            # tweak ports / auth / admin password
+cp .env.example .env                            # tweak ports / auth / admin password (before the first run)
 LOAD_TPCH=1 ./scripts/docker/run-docker-compose.sh     # pulls starlakeai/quack-on-demand:latest + seeds TPC-H SF=1
 ```
 > **Windows: run inside WSL2** with `LOAD_TPCH=1 ./scripts/docker/run-docker-compose.sh`
 
-That brings up Postgres + the manager, bootstraps the demo tenants `acme` (tenant-db `acme_tpch` with pools `bi` and `etl`) and `globex` (pool `bi`), and seeds the DuckLake catalog with TPC-H at scale factor 1 (~6M lineitem rows) into `acme_tpch.tpch1`. The admin UI is on `http://localhost:20900/ui/` (log in `admin` / `admin` - change both before exposing anything beyond `localhost`). The FlightSQL edge is on `localhost:31338`; every client scopes its session with `tenant=acme` + `pool=bi`.
+That brings up Postgres + the manager, bootstraps the demo tenants `acme` (tenant-db `acme_tpch` with pools `bi` and `etl`) and `globex` (pool `bi`), and seeds the DuckLake catalog with TPC-H at scale factor 1 (~6M lineitem rows) into `acme_tpch.tpch1`. The admin UI is on `http://localhost:20900/ui/`: log in as `admin` with the `ADMIN_PASSWORD` from `.env` (default `admin`; `QOD_ADMIN_PASSWORD` also works and wins). It applies on the first boot only, so set it before the first run, or rotate it later with `qod auth change-password`; never expose the default beyond `localhost`. The FlightSQL edge is on `localhost:31338`; every client scopes its session with `tenant=acme` + `pool=bi`.
 
 Connect a BI tool or client with the [connection strings at the top](#quack-on-demand) - for this stack use `tenant=acme`, `pool=bi`, user `admin`.
 
@@ -326,9 +326,9 @@ Every scalar in `application.conf` accepts a matching `QOD_*` env-var override. 
 
 | Setting | Env var | Default |
 |---|---|---|
-| Static admin key | `QOD_API_KEY` | unset (open if unset!) |
-| Session JWT secret | `QOD_SESSION_JWT_SECRET` | well-known dev string (change!) |
-| Admin password | `QOD_ADMIN_PASSWORD` | none; used on first boot only (`qod start` / `qod serve` prompt for it) |
+| Static admin key | `QOD_API_KEY` | unset: a random key is generated and printed at each boot (none under HA) |
+| Session JWT secret | `QOD_SESSION_JWT_SECRET` | unset: a random secret is generated and printed at each boot, so sessions die on restart (HA refuses to boot without one) |
+| Admin password | `QOD_ADMIN_PASSWORD` | none; used on first boot only (`qod start` / `qod serve` prompt for it). The Docker launchers default it to `admin` (`ADMIN_PASSWORD`) |
 | Metastore password | `QOD_PG_PASSWORD` | `azizam` (change!) |
 | Enable per-statement RBAC | `QOD_ACL_ENABLED` | `false` |
 
