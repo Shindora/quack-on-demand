@@ -90,6 +90,31 @@ def test_401_with_token_hints_login():
     assert "run qod login" in exc.value.message
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/auth/login",
+        "/api/auth/change-password",
+        "/api/auth/forgot-password",
+        "/api/auth/reset-password",
+    ],
+)
+@pytest.mark.parametrize("token", ["stale-session", ""])
+@respx.mock
+def test_401_from_a_credential_endpoint_keeps_the_server_message(path, token):
+    # These endpoints check the credential in the body: their 401 means that credential is
+    # wrong, not that a session expired, so "run qod login" would send `qod login` in a circle.
+    respx.post(f"{BASE}{path}").mock(
+        return_value=httpx.Response(
+            401, json={"error": "invalid_credentials", "message": "Authentication failed"}
+        )
+    )
+    with pytest.raises(ApiError) as exc:
+        client(token=token).request("POST", path, body={})
+    assert exc.value.error == "invalid_credentials"
+    assert exc.value.message == "Authentication failed"
+
+
 @respx.mock
 def test_connection_error_maps_to_api_error():
     respx.get(f"{BASE}/health").mock(side_effect=httpx.ConnectError("refused"))
