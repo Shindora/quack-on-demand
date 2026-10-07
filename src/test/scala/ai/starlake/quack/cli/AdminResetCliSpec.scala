@@ -91,15 +91,41 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
     EmbeddedControlPlane.postmasterPort(dir) shouldBe Some(25432)
   }
 
-  "attachOrStart" should "refuse a data dir with no pgdata" in {
+  "attachRunning" should "refuse a data dir with no pgdata" in {
     val root = Files.createTempDirectory("qodpg")
     val cfg  = ai.starlake.quack.EmbeddedPostgresConfig(enabled = true, dataDir = root.toString)
-    EmbeddedControlPlane.attachOrStart(cfg).left.toOption.get should include(
+    EmbeddedControlPlane.attachRunning(cfg).left.toOption.get should include(
       "nothing to reset; run qod serve first"
     )
   }
 
-  "runWith" should "exit 2 when config loading or the embedded start throws" in {
+  it should "refuse, never start, a pgdata whose postmaster is not running" in {
+    val root   = Files.createTempDirectory("qodpg")
+    val pgData = Files.createDirectories(root.resolve("pgdata"))
+    val cfg    = ai.starlake.quack.EmbeddedPostgresConfig(enabled = true, dataDir = root.toString)
+    // No postmaster.pid at all, then a stale one naming a pid that is not alive.
+    for pidFile <- Seq(None, Some("2147483646\n/data\n1700000000\n25432\n/tmp\n")) do
+      pidFile.foreach(Files.writeString(pgData.resolve("postmaster.pid"), _))
+      val msg = EmbeddedControlPlane.attachRunning(cfg).left.toOption.get
+      msg should include(s"the embedded control plane at $pgData is not running")
+      msg should include("qod admin never starts Postgres")
+    Files.exists(pgData.resolve("PG_VERSION")) shouldBe false // nothing was initialized
+  }
+
+  it should "attach to a live postmaster on the port its pid file names" in {
+    val root   = Files.createTempDirectory("qodpg")
+    val pgData = Files.createDirectories(root.resolve("pgdata"))
+    val cfg    = ai.starlake.quack.EmbeddedPostgresConfig(enabled = true, dataDir = root.toString)
+    // This JVM's own pid stands in for a live postmaster.
+    Files.writeString(
+      pgData.resolve("postmaster.pid"),
+      s"${ProcessHandle.current().pid()}\n/data\n1700000000\n25499\n/tmp\n"
+    )
+    val h = EmbeddedControlPlane.attachRunning(cfg).toOption.get
+    (h.host, h.port) shouldBe ("localhost", 25499)
+  }
+
+  "runWith" should "exit 2 when config loading or the embedded attach throws" in {
     val err = new ByteArrayOutputStream()
     def go(
         load: () => ManagerConfig,
@@ -122,19 +148,15 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
       .at("quack-on-demand")
       .loadOrThrow[ManagerConfig]
     val embedded = cfg.copy(embeddedPostgres = cfg.embeddedPostgres.copy(enabled = true))
-    go(() => embedded, _ => throw new IllegalStateException("start boom")) shouldBe 2
-    err.toString should include("error: control plane unreachable: start boom")
+    go(() => embedded, _ => throw new IllegalStateException("attach boom")) shouldBe 2
+    err.toString should include("error: control plane unreachable: attach boom")
     go(() => embedded, _ => Left("nothing to reset; run qod serve first")) shouldBe 1
   }
 
   /** runWith against a fresh control-plane DB through the embedded seam: the handle points at the
-    * test Postgres, `stop` is the injected release.
+    * test Postgres.
     */
-  private def runOnDb(
-      url: String,
-      names: List[String],
-      release: () => Unit = () => ()
-  ): (Int, String, String) =
+  private def runOnDb(url: String, names: List[String]): (Int, String, String) =
     val dbName = url.substring(url.lastIndexOf('/') + 1)
     val base   = pureconfig.ConfigSource.default
       .at("quack-on-demand")
@@ -147,8 +169,7 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
       TestPostgres.pgHost,
       TestPostgres.pgPort,
       TestPostgres.pgUser,
-      TestPostgres.pgPass,
-      release
+      TestPostgres.pgPass
     )
     val out  = new ByteArrayOutputStream()
     val err  = new ByteArrayOutputStream()
@@ -202,16 +223,4 @@ class AdminResetCliSpec extends AnyFlatSpec with Matchers:
     err should include(
       "if the first boot never created it, export QOD_ADMIN_PASSWORD and restart the manager once"
     )
-  }
-
-  it should "keep exit 0 and warn when stopping the embedded Postgres throws" in withFreshDb {
-    url =>
-      val store = new UserStore(url, TestPostgres.pgUser, TestPostgres.pgPass)
-      try store.upsertUser(None, "root", "old-pw", "admin")
-      finally store.close()
-      val (code, _, err) =
-        runOnDb(url, List("root"), () => throw new IllegalStateException("stop boom"))
-      code shouldBe 0
-      err should include("warning: could not stop the embedded Postgres: stop boom")
-      verifies(url, "root", "new-pw") shouldBe true
   }

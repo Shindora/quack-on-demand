@@ -12,10 +12,12 @@ import scala.util.control.NonFatal
 
 /** `java -jar qod.jar admin reset-password <username>... [--must-change]`, password on the first
   * stdin line. Break-glass recovery of superuser passwords straight in the control-plane database,
-  * so it works with the manager down and every login path blocked. Every named superuser that
-  * exists is reset to the same password in one store session (the default admin names are seeded as
-  * one credential). Authority = reaching that database with the configured credentials. Exit 0 at
-  * least one updated, 1 none of the names is a superuser / usage / control plane not initialized, 2
+  * so it works with every login path blocked. It never starts Postgres: an external control plane
+  * is reached as configured (the manager may be down), the embedded one only while a running
+  * `qod serve` owns it ([[EmbeddedControlPlane.attachRunning]]). Every named superuser that exists
+  * is reset to the same password in one store session (the default admin names are seeded as one
+  * credential). Authority = reaching that database with the configured credentials. Exit 0 at least
+  * one updated, 1 none of the names is a superuser / usage / control plane not initialized, 2
   * control plane unreachable.
   */
 object AdminResetCli:
@@ -23,7 +25,7 @@ object AdminResetCli:
   private val Usage = "usage: admin reset-password <username>... [--must-change]"
 
   def run(args: List[String], in: InputStream, out: PrintStream, err: PrintStream): Int =
-    runWith(args, in, out, err, loadConfig, EmbeddedControlPlane.attachOrStart)
+    runWith(args, in, out, err, loadConfig, EmbeddedControlPlane.attachRunning)
 
   private def loadConfig(): ManagerConfig =
     ConfigSource.default.at("quack-on-demand").loadOrThrow[ManagerConfig]
@@ -77,24 +79,23 @@ object AdminResetCli:
       err.println(s"error: control plane unreachable: ${e.getMessage}")
       2
     try
-      val mgrCfg                                                    = loadCfg()
-      val coords: Either[String, (Map[String, String], () => Unit)] =
-        if !mgrCfg.embeddedPostgres.enabled then Right((mgrCfg.defaultMetastore.asMap, () => ()))
+      val mgrCfg                                      = loadCfg()
+      val coords: Either[String, Map[String, String]] =
+        if !mgrCfg.embeddedPostgres.enabled then Right(mgrCfg.defaultMetastore.asMap)
         else
           attach(mgrCfg.embeddedPostgres).map { h =>
-            val meta = mgrCfg.defaultMetastore.asMap ++ Map(
+            mgrCfg.defaultMetastore.asMap ++ Map(
               "pgHost"     -> h.host,
               "pgPort"     -> h.port.toString,
               "pgUser"     -> h.user,
               "pgPassword" -> h.password
             )
-            (meta, h.stop)
           }
       coords match
         case Left(msg) =>
           err.println(s"error: $msg")
           1
-        case Right((meta, release)) =>
+        case Right(meta) =>
           try
             val store = UserStore.fromDefaultMetastore(meta, mgrCfg.auth.lockout)
             try
@@ -117,9 +118,4 @@ object AdminResetCli:
               err.println("error: control plane not initialized; start the manager once first")
               1
             case NonFatal(e) => unreachable(e)
-          finally
-            try release()
-            catch
-              case NonFatal(e) =>
-                err.println(s"warning: could not stop the embedded Postgres: ${e.getMessage}")
     catch case NonFatal(e) => unreachable(e)

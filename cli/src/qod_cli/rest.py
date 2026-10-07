@@ -14,6 +14,18 @@ import httpx
 from .config import Settings
 
 
+# Endpoints that check a credential carried in the body. Their 401 means that credential is
+# wrong, so the server's message passes through instead of the "session expired" hint.
+_CREDENTIAL_PATHS = frozenset(
+    {
+        "/api/auth/login",
+        "/api/auth/change-password",
+        "/api/auth/forgot-password",
+        "/api/auth/reset-password",
+    }
+)
+
+
 class ApiError(Exception):
     def __init__(self, status: int, error: str, message: str):
         self.status = status
@@ -68,6 +80,10 @@ class RestClient:
                 error, message = "error", response.text
         except ValueError:
             error, message = "error", response.text or response.reason_phrase
-        if response.status_code == 401 and not settings.api_key:
+        if (
+            response.status_code == 401
+            and not settings.api_key
+            and path not in _CREDENTIAL_PATHS
+        ):
             message = "session expired or invalid, run qod login"
         raise ApiError(response.status_code, error, message)
