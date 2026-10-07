@@ -1,6 +1,6 @@
 package ai.starlake.quack.ondemand.demo
 
-import org.slf4j.LoggerFactory
+import com.typesafe.scalalogging.LazyLogging
 
 import java.nio.file.Files
 
@@ -17,9 +17,7 @@ import java.nio.file.Files
   * Runs the loader in the same process/host as the manager, so the DuckLake absolute-`DATA_PATH`
   * matching requirement holds by construction.
   */
-object DemoSeed:
-
-  private val logger = LoggerFactory.getLogger(getClass)
+object DemoSeed extends LazyLogging:
 
   private val Tables =
     List("region", "nation", "customer", "supplier", "part", "partsupp", "orders", "lineitem")

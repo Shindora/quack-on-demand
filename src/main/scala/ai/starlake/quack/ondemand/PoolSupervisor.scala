@@ -44,7 +44,7 @@ import ai.starlake.quack.spi.ManagerEvent
 import cats.effect.{IO, Outcome, Ref}
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
-import org.slf4j.LoggerFactory
+import com.typesafe.scalalogging.LazyLogging
 
 import scala.collection.concurrent.TrieMap
 import scala.util.Try
@@ -139,9 +139,7 @@ final class PoolSupervisor(
       */
     managedStore: Option[ai.starlake.quack.ManagedObjectStoreConfig] = None,
     duckLakeInitializer: (Map[String, String], Boolean) => Unit = DuckLakeInitializer.initBlocking
-):
-
-  private val logger = LoggerFactory.getLogger(getClass)
+) extends LazyLogging:
 
   // Surrogate-id-indexed caches of the persisted state.
   private val tenants   = TrieMap.empty[String, Tenant]   // id -> Tenant

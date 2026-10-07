@@ -31,12 +31,11 @@ import ai.starlake.quack.ondemand.state.{
   RolePermission,
   RoleRowPolicy
 }
+import com.typesafe.scalalogging.LazyLogging
 
 import java.util.Locale
 
-object ManifestImporter:
-
-  private val logger = org.slf4j.LoggerFactory.getLogger(getClass)
+object ManifestImporter extends LazyLogging:
 
   type ValidationResult = Either[List[String], Unit]
 

@@ -4,8 +4,8 @@ package ai.starlake.quack.ondemand.bootstrap
 import ai.starlake.quack.ondemand.manifest.{ConfigManifest, ManifestImporter}
 import ai.starlake.quack.ondemand.state.{ControlPlaneStore, FederatedSourceStore}
 import cats.effect.IO
+import com.typesafe.scalalogging.LazyLogging
 import io.circe.yaml.v12.parser
-import org.slf4j.LoggerFactory
 
 import scala.util.Try
 
@@ -16,11 +16,9 @@ import scala.util.Try
   * Dependencies are injected so the hook is unit-testable without touching the filesystem or the
   * real process environment.
   */
-object DemoBootstrapHook:
+object DemoBootstrapHook extends LazyLogging:
 
   private val EnvKey = "QOD_BOOTSTRAP_YAML"
-
-  private val logger = LoggerFactory.getLogger(getClass)
 
   /** Runs the hook. Always succeeds: failure paths log and return Unit.
     *

@@ -5,7 +5,7 @@ import ai.starlake.quack.edge.config.AclConfig
 import ai.starlake.quack.observability.metrics.MetricsConfigCodec
 import ai.starlake.quack.{FlightConfig, ManagerConfig}
 import cats.effect.{ExitCode, IO}
-import org.slf4j.LoggerFactory
+import com.typesafe.scalalogging.LazyLogging
 import pureconfig.ConfigSource
 
 /** `qod demo` orchestration. Boots a fully self-contained, seeded, RBAC-secured manager on an
@@ -14,12 +14,11 @@ import pureconfig.ConfigSource
   * Guardrail 1: the insecure demo posture is produced by [[DemoConfig.overlay]] here and nowhere
   * else; `normalManagerRun` never calls into this object.
   */
-object DemoRunner:
+object DemoRunner extends LazyLogging:
 
   import Main.given // camelCase ConfigReaders, matching normalManagerRun
   import MetricsConfigCodec.given
 
-  private val logger = LoggerFactory.getLogger(getClass)
   private val Sf     = 0.1
   private val DbName = "acme_tpch"
   private val Schema = "tpch1"
