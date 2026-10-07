@@ -8,6 +8,7 @@ import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.unsafe.implicits.global
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import sttp.model.StatusCode
 
 import scala.util.Try
 
@@ -69,6 +70,8 @@ class PatRevokeKillSpec extends AnyFlatSpec with Matchers:
       revokes.map(_.outcome) shouldBe List("ok")
       revokes.head.detail.get("revokedCount") shouldBe Some("2")
       revokes.head.detail.get("killedStatements") shouldBe Some("2")
+      revokes.head.detail.get("killFailed") shouldBe Some("false")
+      revokes.head.detail.get("broadcastFailed") shouldBe Some("false")
     }
 
   it should "neither kill nor broadcast on a failed revoke" in
@@ -109,4 +112,38 @@ class PatRevokeKillSpec extends AnyFlatSpec with Matchers:
       val revokes = auditStore.events.filter(_.action == AuditActions.AuthPatRevoke)
       revokes.map(_.outcome) shouldBe List("ok")
       revokes.head.detail.get("killedStatements") shouldBe Some("0")
+      revokes.head.detail.get("killFailed") shouldBe Some("true")
+      revokes.head.detail.get("broadcastFailed") shouldBe Some("true")
+      pats.findById(uid, child.id).get.revokedAt shouldNot be(empty)
+      pats.findById(uid, root.id).get.revokedAt shouldBe empty
+    }
+
+  it should "neither kill nor broadcast on an empty cascade and audit the denial" in
+    withFreshDb { (users, pats) =>
+      val uid         = seedUser(users)
+      val (root, raw) = pats.mint(uid, "root", TokenRestriction.Unrestricted, None, 0)
+      val (child, _)  = pats.mint(uid, "child", TokenRestriction.Unrestricted, Some(root.id), 1)
+      val auditStore  = new RecordingTelemetryStore
+      var killCalls   = 0
+      var castCalls   = 0
+      val h           = new PatHandlers(
+        pats,
+        new SessionTokenStore(),
+        userOf = (_, _) => None,
+        audit = new AuditRecorder(auditStore, _ => None),
+        killStatements = _ => { killCalls += 1; 0 },
+        broadcastKill = _ => castCalls += 1
+      )
+      h.revoke(Some(raw), PatRevokeRequest(child.id)).unsafeRunSync().isRight shouldBe true
+      killCalls shouldBe 1
+      castCalls shouldBe 1
+      // The child is still in the caller's subtree (isInSubtree ignores revocation), but the
+      // second revoke cascades over nothing.
+      val out = h.revoke(Some(raw), PatRevokeRequest(child.id)).unsafeRunSync()
+      out.left.map(_._1) shouldBe Left(StatusCode.NotFound)
+      killCalls shouldBe 1
+      castCalls shouldBe 1
+      auditStore.events
+        .filter(_.action == AuditActions.AuthPatRevoke)
+        .map(_.outcome) shouldBe List("ok", "denied")
     }

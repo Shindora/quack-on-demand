@@ -49,6 +49,13 @@
   the main checkout's `.duckdb` cache, and a native library that cannot load fails the statement
   with an error instead of hanging the suite.
 
+- **PAT revoke: a failed statement kill or kill broadcast is now visible.** A committed revoke
+  still answers 200 and writes its audit event (the tokens are already dead; a still-running
+  statement stays bounded by its own timeout), but a kill or broadcast that throws is now
+  WARN-logged instead of silently swallowed, and the `AuthPatRevoke` audit event's detail gains
+  `killFailed` and `broadcastFailed` (`true` / `false`) so `killedStatements: 0` is
+  distinguishable from nothing-to-kill. Refs #86 (items 2 and 4).
+
 ## 0.9.9
 
 - **Security: a personal access token on the catalog endpoints no longer runs as superuser.**

@@ -49,6 +49,17 @@ class KillBroadcastSpec extends AnyFlatSpec with Matchers:
     registry.list().map(_.id) shouldBe List(idSession)
     history.snapshot(10).map(_.status) shouldBe List("killed", "killed")
 
+  it should "kill both statements sharing one patId and record both" in:
+    val registry = new ActiveStatementRegistry()
+    val history  = new StatementHistoryStore()
+    val h        = freshHandlers(registry, history)
+    registry.register("agent", "acme", "bi", "n1", "SELECT 1", patId = Some("pat-shared"))
+    registry.register("agent", "acme", "bi", "n1", "SELECT 2", patId = Some("pat-shared"))
+    val idSession = registry.register("alice", "acme", "bi", "n1", "SELECT 3")
+    h.killByPats(Set("pat-shared")) shouldBe 2
+    registry.list().map(_.id) shouldBe List(idSession)
+    history.snapshot(10).map(_.status) shouldBe List("killed", "killed")
+
   "onPatKillBroadcast" should "kill by pat set from the wire payload" in:
     val registry = new ActiveStatementRegistry()
     val history  = new StatementHistoryStore()

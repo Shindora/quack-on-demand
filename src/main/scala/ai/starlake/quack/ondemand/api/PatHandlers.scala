@@ -5,6 +5,7 @@ import ai.starlake.quack.ondemand.auth.TokenRestriction
 import ai.starlake.quack.ondemand.state.{PatRecord, PatStore, RbacUser}
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
+import org.slf4j.LoggerFactory
 import sttp.model.StatusCode
 
 /** Self-service personal-access-token management (`/api/auth/pat/create|list|revoke|delete`).
@@ -80,6 +81,8 @@ final class PatHandlers(
       */
     broadcastKill: Set[String] => Unit = _ => ()
 ):
+
+  private val logger = LoggerFactory.getLogger(getClass)
 
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 
@@ -307,9 +310,20 @@ final class PatHandlers(
           // never be killed while its token is still live. The cascade has already committed, so
           // a failing kill or broadcast must not turn a successful revoke into an error -- the
           // tokens are already dead and any still-running statement stays bounded by its own
-          // timeout (see the design spec's error handling).
-          val killed = scala.util.Try(killStatements(ids)).getOrElse(0)
-          val _      = scala.util.Try(broadcastKill(ids))
+          // timeout (see the design spec's error handling). A failure is WARN-logged and flagged
+          // in the audit detail instead.
+          val killAttempt = scala.util.Try(killStatements(ids))
+          killAttempt.failed.foreach(e =>
+            logger.warn(
+              s"pat revoke $id: local statement kill failed for ${ids.size} revoked ids",
+              e
+            )
+          )
+          val castAttempt = scala.util.Try(broadcastKill(ids))
+          castAttempt.failed.foreach(e =>
+            logger.warn(s"pat revoke $id: kill broadcast failed for ${ids.size} revoked ids", e)
+          )
+          val killed = killAttempt.getOrElse(0)
           audit.rest(
             token,
             "auth",
@@ -320,7 +334,9 @@ final class PatHandlers(
               // NOT "revokedTokens": AuditEvent.forbiddenKey rejects any detail key containing
               // "token" (secret-leak guard) and would silently drop this audit event.
               "revokedCount"     -> revokedIds.size.toString,
-              "killedStatements" -> killed.toString
+              "killedStatements" -> killed.toString,
+              "killFailed"       -> killAttempt.isFailure.toString,
+              "broadcastFailed"  -> castAttempt.isFailure.toString
             )
           )
           Right(PatRevokeResponse("ok", killed))
