@@ -91,7 +91,7 @@ done on the issue itself (close it with `Fixes #N` from your PR).
 
 ## Releasing
 
-Releases are cut by maintainers via `./scripts/release.sh` (see the
+Releases are cut by maintainers via `./scripts/release/release.sh` (see the
 script's header for the full flow). Contributors don't need to worry
 about versioning; just merge to `main` and the snapshot CI takes care
 of publishing `:latest-snapshot` and the matching Maven snapshot.

@@ -1,6 +1,6 @@
 import xerial.sbt.Sonatype.sonatypeCentralHost
 
-// Version lives in `version.sbt` so scripts/release-jar.sh can rewrite it
+// Version lives in `version.sbt` so scripts/release/release.sh can rewrite it
 // across the release / next-snapshot bumps without touching this file.
 ThisBuild / scalaVersion := "3.7.4"
 ThisBuild / organization := "ai.starlake"
@@ -103,7 +103,7 @@ def docsTarget(docs: File, relative: String): String = {
 //                           us re-release after a C++ fix without
 //                           bumping the duckdb-quack pin.
 // The binaries are vendored in-repo under libquackwire/binaries/ and
-// refreshed by scripts/refresh-quackwire-binaries.sh; this val is no
+// refreshed by scripts/release/refresh-quackwire-binaries.sh; this val is no
 // longer a Maven coordinate. run-jar.sh greps it for the libduckdb ABI
 // check and the refresh script stamps it into libquackwire/binaries/VERSION.
 //
@@ -142,7 +142,7 @@ lazy val root = (project in file("."))
       if (missing.nonEmpty)
         sys.error(
           "missing vendored libquackwire binaries: " + missing.map(_._1).mkString(", ") +
-            " under libquackwire/binaries/. Run scripts/refresh-quackwire-binaries.sh (or QOD_VERSION=BUILD ./scripts/run-jar.sh for the host platform)."
+            " under libquackwire/binaries/. Run scripts/release/refresh-quackwire-binaries.sh (or QOD_VERSION=BUILD ./scripts/run-jar.sh for the host platform)."
         )
       val present = mandatory ++ optional.filter { case (p, f) => (srcRoot / p / f).exists }
       val natives = present.map { case (p, f) =>

@@ -20,9 +20,9 @@
 #               DOCKERHUB_USERNAME + DOCKER_PASSWORD (else uses your docker login).
 #
 # Usage:
-#   ./scripts/release-docker.sh
-#   ./scripts/release-docker.sh 0.3.5
-#   RELEASE_VERSION=0.3.5 ./scripts/release-docker.sh
+#   ./scripts/release/release-docker.sh
+#   ./scripts/release/release-docker.sh 0.3.5
+#   RELEASE_VERSION=0.3.5 ./scripts/release/release-docker.sh
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-lib.sh"

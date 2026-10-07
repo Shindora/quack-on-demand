@@ -21,10 +21,10 @@ Dependencies (provisioned automatically by run.sh):
     pip install adbc_driver_flightsql adbc_driver_manager pyarrow
 
 Usage:
-    scripts/load-22/run.sh                       # all defaults (acme/bi/tpch1)
-    scripts/load-22/run.sh --runs 10 --warmup 2
-    scripts/load-22/run.sh --tenant globex --pool bi --schema tpch1
-    scripts/load-22/run.sh --out-dir /tmp/tpch-bench
+    scripts/bench/load-22/run.sh                       # all defaults (acme/bi/tpch1)
+    scripts/bench/load-22/run.sh --runs 10 --warmup 2
+    scripts/bench/load-22/run.sh --tenant globex --pool bi --schema tpch1
+    scripts/bench/load-22/run.sh --out-dir /tmp/tpch-bench
 """
 from __future__ import annotations
 

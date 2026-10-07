@@ -34,7 +34,7 @@ final case class DuckdbRun(code: Int, stdout: String, stderr: String):
   private def nonBlank(s: String): List[String] =
     s.linesIterator.map(_.trim).filter(_.nonEmpty).toList
 
-/** Shared access to the `scripts/iceberg-fixture.yml` REST catalog and to a local duckdb CLI.
+/** Shared access to the `scripts/fixtures/iceberg-fixture.yml` REST catalog and to a local duckdb CLI.
   *
   * Following the repo's convention for specs that need an external dependency
   * (`QuackCompatibilitySpec` and the `duckdb` binary), the specs using this CANCEL rather than fail
@@ -87,7 +87,7 @@ object IcebergFixture:
 
   val missingFixture: String =
     s"Iceberg REST fixture not reachable at $endpoint. Start it with: " +
-      "docker compose -f scripts/iceberg-fixture.yml up -d --wait"
+      "docker compose -f scripts/fixtures/iceberg-fixture.yml up -d --wait"
 
   val missingDuckdb: String =
     s"duckdb CLI '$duckdbBin' not runnable. Install it (brew install duckdb, or see " +

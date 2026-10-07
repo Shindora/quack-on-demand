@@ -22,7 +22,7 @@
 #   ./seaweedfs-config-> SeaweedFS S3 creds   (seaweedfs profile) [SEAWEEDFS_CONFIG_DIR]
 #   ./starflow        -> Starflow projects + DAGs (starflow profile)    [STARFLOW_DIR]
 #
-# NOTE: `NUKE=1 scripts/run-docker-compose.sh` only wipes the repo-relative
+# NOTE: `NUKE=1 scripts/docker/run-docker-compose.sh` only wipes the repo-relative
 # defaults; external folders you point these vars at are left untouched.
 #
 # Settings live in `.env` (or env vars at compose time) - see .env.example.
@@ -72,7 +72,7 @@ services:
         no_proxy:    ${no_proxy:-}
       # Same host-gateway alias the runtime uses, so the build container
       # can reach a host-loopback proxy (cntlm/squid) after the URL
-      # rewrite in scripts/run-docker-compose.sh.
+      # rewrite in scripts/docker/run-docker-compose.sh.
       extra_hosts:
         - "host.docker.internal:host-gateway"
     # Single image name for both flows: `docker compose up --build` writes
@@ -532,7 +532,7 @@ volumes:
 #   http://localhost:${SEAWEEDFS_S3_PORT:-8333}    creds: ${QOD_S3_ACCESS_KEY_ID:-quack} / ${QOD_S3_SECRET_ACCESS_KEY:-quackquack}
 
 # TPC-H seeding is done by `docker compose exec quack /app/scripts/load-tpch-dbgen.sh`
-# (driven by scripts/run-docker-compose.sh when LOAD_TPCH is set). The loader is
+# (driven by scripts/docker/run-docker-compose.sh when LOAD_TPCH is set). The loader is
 # baked into the image (see Dockerfile) and sees the same /app/ducklake bind-mount
 # the manager spawns nodes against, so the absolute DATA_PATH the catalog persists
 # matches what nodes later resolve. No separate compose service required.

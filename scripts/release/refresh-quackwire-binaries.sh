@@ -8,9 +8,9 @@
 # and the VERSION stamp, and STOPS. Review the diff and commit like any other
 # change. No Maven, no GPG, no Sonatype.
 #
-# Usage: ./scripts/refresh-quackwire-binaries.sh
+# Usage: ./scripts/release/refresh-quackwire-binaries.sh
 set -euo pipefail
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 version="$(grep -E '^val libquackwireVersion' build.sbt | sed -E 's/.*"(.*)".*/\1/')"

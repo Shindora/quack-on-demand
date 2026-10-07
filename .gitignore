@@ -107,7 +107,7 @@ rustfs/
 native/quackwire/build*/
 
 # Vendored libquackwire binaries live in git under libquackwire/binaries/
-# (refreshed by scripts/refresh-quackwire-binaries.sh). Only the local
+# (refreshed by scripts/release/refresh-quackwire-binaries.sh). Only the local
 # cmake build tree stays ignored (native/quackwire/build*/ above).
 
 # Defense in depth: src/main/resources/native/ is no longer how

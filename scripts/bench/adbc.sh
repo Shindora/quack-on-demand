@@ -9,7 +9,7 @@
 # PIP_PROXY=http://127.0.0.1:3128) so the one-time install can reach PyPI.
 #
 # Usage:
-#   scripts/adbc.sh --url grpc+tls://localhost:31338 \
+#   scripts/bench/adbc.sh --url grpc+tls://localhost:31338 \
 #       --user alice --password demo-alice \
 #       --tenant acme --pool bi --insecure \
 #       --query "SELECT count(*) FROM tpch1.customer"

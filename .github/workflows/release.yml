@@ -1,7 +1,7 @@
 name: release
 
 # Cut a full release entirely from GitHub Actions. CI is the SOLE publisher
-# (decided 2026-07-26): scripts/release.sh only stamps versions, tags, and
+# (decided 2026-07-26): scripts/release/release.sh only stamps versions, tags, and
 # pushes; every publish channel lives here. One trigger fans out to:
 #   1. build-jar       - sbt assembly (all 5 libquackwire platforms bundled
 #                        from the vendored git binaries), sha256, artifact
@@ -17,7 +17,7 @@ name: release
 #
 # The version is pinned by the tag, so this workflow never writes the
 # release-version commit: it checks out the tag and builds from it;
-# scripts/release.sh writes that commit before pushing the tag.
+# scripts/release/release.sh writes that commit before pushing the tag.
 #
 # Trigger:
 #   - push a tag v<X.Y.Z>            (the normal path; create + push the tag)
@@ -110,7 +110,7 @@ jobs:
       - name: Verify vendored libquackwire binaries match the pin
         run: |
           set -euo pipefail
-          source scripts/release-lib.sh
+          source scripts/release/release-lib.sh
           verify_quackwire_binaries
 
       - name: sbt assembly
@@ -206,7 +206,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
-          source scripts/release-lib.sh
+          source scripts/release/release-lib.sh
           got_qod="$(cli_version)"
           got_shim="$(python3 -c "import tomllib;print(tomllib.load(open('cli/shim-qod-cli/pyproject.toml','rb'))['project']['version'])")"
           for pair in "qod:$got_qod" "qod-cli-shim:$got_shim"; do
@@ -675,7 +675,7 @@ jobs:
             echo "QOD_DISCORD_WEBHOOK_URL unset; skipping announce."
             exit 0
           fi
-          ./scripts/announce-release-discord.sh "${{ needs.prepare.outputs.version }}"
+          ./scripts/release/announce-release-discord.sh "${{ needs.prepare.outputs.version }}"
 
   # -----------------------------------------------------------------------
   # 6. Open a PR bumping version.sbt + the CLI versions to the next -SNAPSHOT.
@@ -699,7 +699,7 @@ jobs:
         id: bump
         run: |
           set -euo pipefail
-          source scripts/release-lib.sh
+          source scripts/release/release-lib.sh
           release_version="${{ needs.prepare.outputs.version }}"
           next="$(next_manager_snapshot "$release_version")"
           cli_next="${next%-SNAPSHOT}.dev0"

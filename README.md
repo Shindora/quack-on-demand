@@ -152,9 +152,9 @@ Zero to first query in under 5 minutes. Clone this repo, then:
 
 ```bash
 cp .env.example .env                            # tweak ports / auth / admin password
-LOAD_TPCH=1 ./scripts/run-docker-compose.sh     # pulls starlakeai/quack-on-demand:latest + seeds TPC-H SF=1
+LOAD_TPCH=1 ./scripts/docker/run-docker-compose.sh     # pulls starlakeai/quack-on-demand:latest + seeds TPC-H SF=1
 ```
-> **Windows: run inside WSL2** with `LOAD_TPCH=1 ./scripts/run-docker-compose.sh`
+> **Windows: run inside WSL2** with `LOAD_TPCH=1 ./scripts/docker/run-docker-compose.sh`
 
 That brings up Postgres + the manager, bootstraps the demo tenants `acme` (tenant-db `acme_tpch` with pools `bi` and `etl`) and `globex` (pool `bi`), and seeds the DuckLake catalog with TPC-H at scale factor 1 (~6M lineitem rows) into `acme_tpch.tpch1`. The admin UI is on `http://localhost:20900/ui/` (log in `admin` / `admin` - change both before exposing anything beyond `localhost`). The FlightSQL edge is on `localhost:31338`; every client scopes its session with `tenant=acme` + `pool=bi`.
 

@@ -6,14 +6,14 @@
 #
 # Called by release.yml's announce job right after the GitHub release. Also safe
 # to run standalone to (re)announce a version:
-#   ./scripts/announce-release-discord.sh 0.3.6
+#   ./scripts/release/announce-release-discord.sh 0.3.6
 #
 # Webhook: QOD_DISCORD_WEBHOOK_URL env var, falling back to a
 # QOD_DISCORD_WEBHOOK_URL=... line in the untracked .env. The URL is a
 # credential (anyone holding it can post to the channel) - never commit it.
 
 set -euo pipefail
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 version="${1:-}"
 [[ -n "$version" ]] || { echo "usage: $0 <version>   (e.g. 0.3.6)" >&2; exit 1; }
