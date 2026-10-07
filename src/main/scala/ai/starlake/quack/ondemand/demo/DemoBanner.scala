@@ -18,15 +18,26 @@ object DemoBanner:
       .map(indent + _)
       .mkString("\n")
 
-  def render(restPort: Int, flightPort: Int, dataPath: String, rows: String): String =
+  /** `adminNames` are the seeded bootstrap admins (QOD_ADMIN_USERNAME) and `adminPasswordLabel`
+    * what to print as their password (see [[DemoConfigs.adminPasswordLabel]]). Both are required:
+    * the admins are not manifest identities, so a hardcoded row goes stale the moment an operator
+    * picks their own password or names.
+    */
+  def render(
+      restPort: Int,
+      flightPort: Int,
+      dataPath: String,
+      rows: String,
+      adminNames: Seq[String],
+      adminPasswordLabel: String
+  ): String =
     val adminUiTable = table(
       header = Seq("Tenant", "User", "Password", "Access"),
-      rows = Seq(
-        Seq("(blank)", "root", "demo-root", "superuser console"),
-        Seq("(blank)", "admin", "admin", "superuser console"),
-        Seq("acme", "acme-admin", "demo-acme-admin", "acme-scoped view"),
-        Seq("acme", "alice", "demo-alice", "acme-scoped view")
-      ),
+      rows = Seq(Seq("(blank)", "root", "demo-root", "superuser console")) ++
+        adminNames.map(n => Seq("(blank)", n, adminPasswordLabel, "superuser console")) ++ Seq(
+          Seq("acme", "acme-admin", "demo-acme-admin", "acme-scoped view"),
+          Seq("acme", "alice", "demo-alice", "acme-scoped view")
+        ),
       indent = "    "
     )
     val flightSqlTable = table(
@@ -34,9 +45,8 @@ object DemoBanner:
       rows = Seq(
         Seq("alice", "demo-alice", "analyst", "c_phone masked, BUILDING rows only"),
         Seq("acme-admin", "demo-acme-admin", "everything in acme", "unmasked"),
-        Seq("root", "demo-root", "superuser", "add superuser=true"),
-        Seq("admin", "admin", "superuser", "add superuser=true")
-      ),
+        Seq("root", "demo-root", "superuser", "add superuser=true")
+      ) ++ adminNames.map(n => Seq(n, adminPasswordLabel, "superuser", "add superuser=true")),
       indent = "    "
     )
     s"""|

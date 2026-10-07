@@ -40,6 +40,22 @@ class DemoConfigSpec extends AnyFlatSpec with Matchers:
     overlayWith("from-shell") shouldBe "from-shell"
   }
 
+  it should "label the admin password for the banner without ever exposing a chosen one" in {
+    def labelWith(pw: String) =
+      DemoConfig
+        .overlay(
+          baseManager.copy(admin = baseManager.admin.copy(password = pw)),
+          baseFlight,
+          baseAcl,
+          pg,
+          home
+        )
+        .adminPasswordLabel
+    labelWith("") shouldBe "admin"
+    labelWith("from-shell") shouldBe "<QOD_ADMIN_PASSWORD>"
+    (labelWith("from-shell") should not).include("from-shell")
+  }
+
   it should "force the approved demo posture" in {
     val out = DemoConfig.overlay(baseManager, baseFlight, baseAcl, pg, home)
     out.manager.defaultMetastore.pgHost shouldBe "localhost"

@@ -7,7 +7,14 @@ class DemoBannerSpec extends AnyFlatSpec with Matchers:
 
   "DemoBanner.render" should "name the insecure caveats, the routing headers, the RLS/CLS beat, and link the client docs" in {
     val b =
-      DemoBanner.render(restPort = 20900, flightPort = 31338, dataPath = "/demo", rows = "~150K")
+      DemoBanner.render(
+        restPort = 20900,
+        flightPort = 31338,
+        dataPath = "/demo",
+        rows = "~150K",
+        adminNames = Seq("admin@localhost.local", "admin"),
+        adminPasswordLabel = "admin"
+      )
     b should include("self-signed TLS") // caveat: encrypted, but clients must skip verification
     b should include("ephemeral")       // caveat
     b should include(
@@ -22,7 +29,14 @@ class DemoBannerSpec extends AnyFlatSpec with Matchers:
 
   it should "print the admin UI url and every seeded credential as table rows" in {
     val b =
-      DemoBanner.render(restPort = 20900, flightPort = 31338, dataPath = "/demo", rows = "~150K")
+      DemoBanner.render(
+        restPort = 20900,
+        flightPort = 31338,
+        dataPath = "/demo",
+        rows = "~150K",
+        adminNames = Seq("admin@localhost.local", "admin"),
+        adminPasswordLabel = "admin"
+      )
     b should include("http://localhost:20900/ui/")
     // Admin UI table: Tenant | User | Password | Access, one row per seeded identity.
     b should include regex """│ Tenant\s+│ User\s+│ Password\s+│ Access\s+│"""
@@ -41,9 +55,35 @@ class DemoBannerSpec extends AnyFlatSpec with Matchers:
     b should include("└")
   }
 
+  it should "list every seeded admin name with the password label it is given" in {
+    val b =
+      DemoBanner.render(
+        restPort = 20900,
+        flightPort = 31338,
+        dataPath = "/demo",
+        rows = "~150K",
+        adminNames = Seq("admin@localhost.local", "admin"),
+        adminPasswordLabel = "<QOD_ADMIN_PASSWORD>"
+      )
+    for name <- Seq("admin@localhost.local", "admin") do
+      val n = java.util.regex.Pattern.quote(name)
+      b should include regex s"""│ \\(blank\\)\\s+│ $n\\s+│ <QOD_ADMIN_PASSWORD>\\s+│ superuser console\\s+│"""
+      b should include regex s"""│ $n\\s+│ <QOD_ADMIN_PASSWORD>\\s+│ superuser\\s+│ add superuser=true\\s+│"""
+    // The fixed demo identities keep their manifest passwords.
+    b should include regex """│ \(blank\)\s+│ root\s+│ demo-root\s+│ superuser console\s+│"""
+    (b should not).include(regex("""│ admin\s+│ admin\s+│"""))
+  }
+
   it should "not print client connection strings" in {
     val b =
-      DemoBanner.render(restPort = 20900, flightPort = 31338, dataPath = "/demo", rows = "~150K")
+      DemoBanner.render(
+        restPort = 20900,
+        flightPort = 31338,
+        dataPath = "/demo",
+        rows = "~150K",
+        adminNames = Seq("admin@localhost.local", "admin"),
+        adminPasswordLabel = "admin"
+      )
     (b should not).include("jdbc:arrow-flight-sql")
     (b should not).include("Arrow Flight SQL ODBC Driver")
     (b should not).include("dbapi.connect")

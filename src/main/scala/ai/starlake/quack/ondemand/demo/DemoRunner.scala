@@ -166,7 +166,9 @@ object DemoRunner extends LazyLogging:
       restPort = configs.manager.port,
       flightPort = configs.flight.port,
       dataPath = home.dataPath.toString,
-      rows = "~150K"
+      rows = "~150K",
+      adminNames = configs.manager.admin.usernameList,
+      adminPasswordLabel = configs.adminPasswordLabel
     )
     // Print the banner once the manager REST port actually accepts connections, so the
     // connect recipes land at the END of the boot output instead of scrolling away under
