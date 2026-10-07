@@ -5,7 +5,7 @@ import ai.starlake.quack.ondemand.auth.TokenRestriction
 import ai.starlake.quack.ondemand.state.{PatRecord, PatStore, RbacUser}
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
-import org.slf4j.LoggerFactory
+import com.typesafe.scalalogging.LazyLogging
 import sttp.model.StatusCode
 
 /** Self-service personal-access-token management (`/api/auth/pat/create|list|revoke|delete`).
@@ -80,9 +80,7 @@ final class PatHandlers(
       * HA; single-replica installs keep the no-op.
       */
     broadcastKill: Set[String] => Unit = _ => ()
-):
-
-  private val logger = LoggerFactory.getLogger(getClass)
+) extends LazyLogging:
 
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 

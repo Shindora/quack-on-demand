@@ -2,10 +2,10 @@ package ai.starlake.quack.ondemand.runtime
 
 import ai.starlake.quack.model.{NodeSpec, PoolKey, Role, RunningNode}
 import cats.effect.IO
+import com.typesafe.scalalogging.LazyLogging
 import io.fabric8.kubernetes.api.model._
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.utils.Serialization
-import org.slf4j.LoggerFactory
 
 import java.time.Instant
 import scala.jdk.CollectionConverters._
@@ -54,9 +54,8 @@ final class KubernetesQuackBackend(
     // Bound on stop()'s wait for the pod object to actually disappear (and on start()'s
     // poll for a Terminating twin to clear before retrying a 409'd create).
     stopTimeoutSec: Int = 60
-) extends QuackBackend:
-
-  private val logger = LoggerFactory.getLogger(getClass)
+) extends QuackBackend,
+      LazyLogging:
 
   private val (labelKey, labelValue) =
     podLabel.split("=", 2) match

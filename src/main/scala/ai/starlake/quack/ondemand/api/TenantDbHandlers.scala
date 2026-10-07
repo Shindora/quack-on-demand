@@ -6,7 +6,7 @@ import ai.starlake.quack.ondemand.auth.SessionScope
 import ai.starlake.quack.ondemand.state.FederatedSourceStore
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
-import org.slf4j.LoggerFactory
+import com.typesafe.scalalogging.LazyLogging
 import sttp.model.StatusCode
 
 /** REST handlers for the `qodstate_tenant_db` rows owned by each tenant. Identified by the natural
@@ -29,9 +29,7 @@ final class TenantDbHandlers(
       * databases are untouched, so enabling it never bricks a running deployment.
       */
     requireEncryption: Boolean
-):
-
-  private val logger = LoggerFactory.getLogger(getClass)
+) extends LazyLogging:
 
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 

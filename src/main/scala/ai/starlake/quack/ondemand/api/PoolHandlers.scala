@@ -6,7 +6,7 @@ import ai.starlake.quack.ondemand.{PoolSupervisor, SupervisorError}
 import ai.starlake.quack.ondemand.auth.SessionScope
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
-import org.slf4j.LoggerFactory
+import com.typesafe.scalalogging.LazyLogging
 import sttp.model.StatusCode
 
 final class PoolHandlers(
@@ -27,9 +27,7 @@ final class PoolHandlers(
     // reproduce exactly the bug the feature exists to catch. A lookup that can throw belongs
     // guarded (and logged) at the wiring site, where the failure can still be said out loud.
     attachFailuresOf: (String, java.time.Instant) => List[CatalogAttachFailureDto] = (_, _) => Nil
-):
-
-  private val logger = LoggerFactory.getLogger(getClass)
+) extends LazyLogging:
 
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 

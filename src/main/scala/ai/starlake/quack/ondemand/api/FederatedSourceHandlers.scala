@@ -12,6 +12,7 @@ import ai.starlake.quack.ondemand.federation.iceberg.IcebergRestConfig
 import ai.starlake.quack.ondemand.state.FederatedSourceOps
 import ai.starlake.quack.ondemand.telemetry.{AuditActions, AuditRecorder}
 import cats.effect.IO
+import com.typesafe.scalalogging.LazyLogging
 import sttp.model.StatusCode
 
 /** REST handlers for FederatedSource + FederatedSecret rows.
@@ -44,9 +45,7 @@ final class FederatedSourceHandlers(
     scopeOf: String => Option[SessionScope] = _ => None,
     catalogAliasOf: String => Option[String],
     attachStatusOf: (String, String) => Option[String] = (_, _) => None
-):
-
-  private val logger = org.slf4j.LoggerFactory.getLogger(getClass)
+) extends LazyLogging:
 
   type Out[A] = IO[Either[(StatusCode, ErrorResponse), A]]
 
