@@ -1,5 +1,6 @@
 package ai.starlake.quack.ondemand.telemetry
 
+import ai.starlake.quack.edge.admin.AdminSqlParser
 import io.circe.generic.semiauto.deriveEncoder
 import io.circe.syntax.*
 import io.circe.{Encoder, Json}
@@ -10,21 +11,23 @@ import java.time.Instant
   * then hands it to the wrapped store. Wrapping the store catches both write paths (the synchronous
   * [[AuditRecorder]] and the async [[EventJournal]]). The line goes out BEFORE the store append so
   * a Postgres outage drops the row, not the log line. `qodEvent` (`audit` | `statement`) sets these
-  * lines apart from regular log output for a log shipper to route. Statement SQL is emitted as
-  * captured (capped at 500 chars upstream); literal redaction is not applied.
+  * lines apart from regular log output for a log shipper to route. Log pipelines are a wider
+  * audience than the control plane, so string literals in statement `sql`/`error` and in audit
+  * detail `sql`/`reason`/`error` are replaced by `'?'` on the emitted line (see
+  * [[AdminSqlParser.redactLiterals]]); the wrapped store still receives the event unchanged.
   */
 final class StdoutTelemetrySink(inner: TelemetryStore, out: String => Unit = println)
     extends TelemetryStore:
-  import StdoutTelemetrySink.{line, given}
+  import StdoutTelemetrySink.{line, redact, given}
 
   def enabled: Boolean = inner.enabled
 
   def appendAudit(events: List[AuditEvent]): Unit =
-    events.foreach(e => out(line("audit", e.asJson)))
+    events.foreach(e => out(line("audit", redact(e).asJson)))
     inner.appendAudit(events)
 
   def appendStatements(events: List[StatementEvent]): Unit =
-    events.foreach(e => out(line("statement", e.asJson)))
+    events.foreach(e => out(line("statement", redact(e).asJson)))
     inner.appendStatements(events)
 
   def listAudit(q: AuditQuery): List[AuditRow]                = inner.listAudit(q)
@@ -44,6 +47,19 @@ final class StdoutTelemetrySink(inner: TelemetryStore, out: String => Unit = pri
 object StdoutTelemetrySink:
   private given Encoder[AuditEvent]     = deriveEncoder
   private given Encoder[StatementEvent] = deriveEncoder
+
+  private val SqlBearingKeys = Set("sql", "reason", "error")
+
+  private def redact(e: AuditEvent): AuditEvent =
+    e.copy(detail = e.detail.map { (k, v) =>
+      k -> (if SqlBearingKeys(k) then AdminSqlParser.redactLiterals(v) else v)
+    })
+
+  private def redact(e: StatementEvent): StatementEvent =
+    e.copy(
+      sql = AdminSqlParser.redactLiterals(e.sql),
+      error = e.error.map(AdminSqlParser.redactLiterals)
+    )
 
   private def line(kind: String, body: Json): String =
     body.mapObject(("qodEvent" -> Json.fromString(kind)) +: _).dropNullValues.noSpaces

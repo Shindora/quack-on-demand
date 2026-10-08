@@ -512,3 +512,22 @@ class AdminSqlParserSpec extends AnyFlatSpec with Matchers:
       Right(AdminCommand.AlterGroupAddUser("finance", "alice"))
     AdminSqlParser.parse("ALTER GROUP finance DROP USER alice") shouldBe
       Right(AdminCommand.AlterGroupDropUser("finance", "alice"))
+
+  "redactLiterals" should "replace every string-literal form and keep the statement shape" in:
+    import AdminSqlParser.redactLiterals
+    redactLiterals("CREATE SECRET s (TYPE s3, KEY_ID 'AKIA1', SECRET 'xyz')") shouldBe
+      "CREATE SECRET s (TYPE s3, KEY_ID '?', SECRET '?')"
+    redactLiterals("ATTACH 'dbname=x password=hunter2' AS pg (TYPE postgres)") shouldBe
+      "ATTACH '?' AS pg (TYPE postgres)"
+    redactLiterals("SELECT 'O''Brien', E'it\\'s', $$a$$, $tag$b$tag$") shouldBe
+      "SELECT '?', '?', '?', '?'"
+    redactLiterals("""SELECT "col'x", type'x' FROM t WHERE id = $1""") shouldBe
+      """SELECT "col'x", type'?' FROM t WHERE id = $1"""
+
+  it should "drop literals hidden in comments and fail closed on an unterminated construct" in:
+    AdminSqlParser.redactLiterals("SELECT 1 -- 'pw1'\n/* 'pw2' */") should (not include "pw1" and
+      not include "pw2")
+    AdminSqlParser.redactLiterals(
+      "SELECT 'cut-off secr"
+    ) shouldBe AdminSqlParser.RedactedPlaceholder
+    AdminSqlParser.redactLiterals("SELECT 1 /* open") shouldBe AdminSqlParser.RedactedPlaceholder

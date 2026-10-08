@@ -154,6 +154,33 @@ object AdminSqlParser:
       else None
     else None
 
+  /** `sql` with every string literal replaced by `'?'` and every comment by a space, for sinks that
+    * leave the control plane: secrets ride in literals (`CREATE SECRET ... SECRET '...'`,
+    * `ATTACH '...password=...'`), and a commented-out literal is still a literal. Whole words are
+    * copied as one run so an identifier ending in `e` before a quote is not misread as `E'...'`. An
+    * unterminated construct yields [[RedactedPlaceholder]]: fail closed rather than emit a tail the
+    * scanner could not classify.
+    */
+  def redactLiterals(sql: String): String =
+    val n   = sql.length
+    val out = new StringBuilder(n)
+    var i   = 0
+    while i < n do
+      val c       = sql(i)
+      val eString = (c == 'E' || c == 'e') && i + 1 < n && sql(i + 1) == '\''
+      if (c.isLetterOrDigit || c == '_') && !eString then
+        val start = i
+        while i < n && (sql(i).isLetterOrDigit || sql(i) == '_') do i += 1
+        out ++= sql.substring(start, i)
+      else
+        scanRegion(sql, i) match
+          case Some(Left(_))                        => return RedactedPlaceholder
+          case Some(Right((end, ScanKind.StrLit)))  => out ++= "'?'"; i = end
+          case Some(Right((end, ScanKind.Comment))) => out += ' '; i = end
+          case Some(Right((end, ScanKind.Ident)))   => out ++= sql.substring(i, end); i = end
+          case None                                 => out += c; i += 1
+    out.toString
+
   // Shared tokenizer core. `maxTokens` bounds how many tokens are collected before returning -
   // used by claims() to avoid a full-statement scan (per-token allocation and toUpperCase,
   // including on multi-megabyte string literals) on every statement of the hot path. Scanning

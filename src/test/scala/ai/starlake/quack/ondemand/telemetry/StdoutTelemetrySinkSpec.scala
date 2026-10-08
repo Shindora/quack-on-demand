@@ -62,6 +62,22 @@ class StdoutTelemetrySinkSpec extends AnyFlatSpec with Matchers:
     inner.searchStatements(StatementQuery()) should have size 3
   }
 
+  it should "redact SQL literals on the emitted line but hand the store the original" in {
+    val (s, inner, lines) = sink()
+    val secretSql         = "CREATE SECRET s (TYPE s3, KEY_ID 'AKIA1', SECRET 'xyz')"
+    s.appendStatements(List(stmt(0).copy(sql = secretSql, error = Some("bad 'xyz'"))))
+    s.appendAudit(List(audit.copy(detail = Map("sql" -> secretSql, "verb" -> "it's"))))
+
+    lines.foreach(_ should (not include "AKIA1" and not include "xyz"))
+    val st = parse(lines(0)).toOption.get.hcursor
+    st.get[String]("sql") shouldBe Right("CREATE SECRET s (TYPE s3, KEY_ID '?', SECRET '?')")
+    st.get[String]("error") shouldBe Right("bad '?'")
+    parse(lines(1)).toOption.get.hcursor.downField("detail").get[String]("verb") shouldBe
+      Right("it's")
+    inner.searchStatements(StatementQuery()).map(_.event.sql) shouldBe List(secretSql)
+    inner.events.head.detail("sql") shouldBe secretSql
+  }
+
   it should "emit the line even when the store append fails" in {
     val (s, inner, lines) = sink()
     inner.failNext = true
