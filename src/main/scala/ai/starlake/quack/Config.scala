@@ -449,8 +449,23 @@ final case class TelemetryConfig(
       description =
         "Days to keep daily rollup buckets (the usage-accounting ledger) before the periodic purge removes them. 400 covers a full billing year."
     )
-    usageRetentionDays: Int = 400
-)
+    usageRetentionDays: Int = 400,
+    @field
+    @ConfigField(
+      envVar = "QOD_AUDIT_SINK",
+      description =
+        "Extra destination for every audit and statement event, on top of the store: none | stdout (one JSON line per event, tagged qodEvent=audit|statement, for a log shipper). Requires store=postgres."
+    )
+    auditSink: String = "none"
+):
+  require(
+    auditSink == "none" || auditSink == "stdout",
+    s"unknown telemetry.auditSink: '$auditSink' (supported: none, stdout)"
+  )
+  require(
+    auditSink == "none" || store != "none",
+    "telemetry.auditSink requires telemetry.store=postgres: store=none records nothing anywhere"
+  )
 
 object TelemetryConfig:
   def validate(store: String, stmtHistoryRetentionDays: Int): Either[String, Unit] =

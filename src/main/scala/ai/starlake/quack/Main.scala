@@ -43,6 +43,7 @@ import ai.starlake.quack.ondemand.telemetry.{
   EventJournal,
   NoopTelemetryStore,
   PostgresTelemetryStore,
+  StdoutTelemetrySink,
   TelemetryStore
 }
 import ai.starlake.quack.ondemand.ha.{
@@ -382,10 +383,14 @@ object Main extends IOApp with LazyLogging:
     val cpJdbcUrl = s"jdbc:postgresql://${meta("pgHost")}:${meta("pgPort")}/${meta("dbName")}"
     // Built early so handlers constructed before runWithMetrics can record audit
     // events; its metrics drop-counter is wired later, drops until then are silent.
-    val telemetryStore: TelemetryStore = mgrCfg.telemetry.store match
+    val baseTelemetryStore: TelemetryStore = mgrCfg.telemetry.store match
       case "none" => NoopTelemetryStore
       case _      => new PostgresTelemetryStore(cpJdbcUrl, meta("pgUser"), meta("pgPassword"))
-    if telemetryStore.enabled then logger.info("telemetry: postgres (qodstate_audit)")
+    val telemetryStore: TelemetryStore = mgrCfg.telemetry.auditSink match
+      case "stdout" => new StdoutTelemetrySink(baseTelemetryStore)
+      case _        => baseTelemetryStore
+    if telemetryStore.enabled then
+      logger.info(s"telemetry: postgres (qodstate_audit), auditSink=${mgrCfg.telemetry.auditSink}")
     else logger.info("telemetry: none (audit log disabled; nothing is recorded)")
     val haOn = mgrCfg.ha.enabled
     // Opens against the `postgres` system DB to CREATE/DROP per-tenant-db databases.
