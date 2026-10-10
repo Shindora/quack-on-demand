@@ -283,7 +283,11 @@ object Main extends IOApp with LazyLogging:
       .foreach(msg => sys.error(msg))
 
     TelemetryConfig
-      .validate(mgrCfg.telemetry.store, mgrCfg.telemetry.stmtHistoryRetentionDays)
+      .validate(
+        mgrCfg.telemetry.store,
+        mgrCfg.telemetry.stmtHistoryRetentionDays,
+        mgrCfg.telemetry.auditSink
+      )
       .left
       .foreach(msg => sys.error(msg))
 
@@ -386,9 +390,10 @@ object Main extends IOApp with LazyLogging:
     val baseTelemetryStore: TelemetryStore = mgrCfg.telemetry.store match
       case "none" => NoopTelemetryStore
       case _      => new PostgresTelemetryStore(cpJdbcUrl, meta("pgUser"), meta("pgPassword"))
-    val telemetryStore: TelemetryStore = mgrCfg.telemetry.auditSink match
-      case "stdout" => new StdoutTelemetrySink(baseTelemetryStore)
-      case _        => baseTelemetryStore
+    val stdoutSink = Option.when(mgrCfg.telemetry.auditSink == "stdout")(
+      new StdoutTelemetrySink(baseTelemetryStore, mgrCfg.telemetry.journalCapacity)
+    )
+    val telemetryStore: TelemetryStore = stdoutSink.getOrElse(baseTelemetryStore)
     if telemetryStore.enabled then
       logger.info(s"telemetry: postgres (qodstate_audit), auditSink=${mgrCfg.telemetry.auditSink}")
     else logger.info("telemetry: none (audit log disabled; nothing is recorded)")
@@ -1111,6 +1116,11 @@ object Main extends IOApp with LazyLogging:
           onStatementDrop = journalStatementDropped
         )
       auditRecorder.onDropCounter(journalDropped)
+      stdoutSink.foreach(_.onDropCounter { n =>
+        metricsReg.composite
+          .counter("qod_journal_dropped_total", "table", "stdout")
+          .increment(n.toDouble)
+      })
 
       // Per-pool attached-catalogs lookup for ACL resolution, cached 60s per PoolKey.
       // Disabled sources are included deliberately: their alias stays ATTACHed on
