@@ -120,7 +120,8 @@ final class PoolHandlers(
         minNodes = band.map(_._1),
         maxNodes = band.map(_._2),
         pending = sup.pendingCount(key),
-        pendingReason = sup.pendingReason(key)
+        pendingReason = sup.pendingReason(key),
+        pendingDetail = sup.pendingDetail(key)
       )
     }
 

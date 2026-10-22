@@ -6,6 +6,7 @@ import ai.starlake.quack.ondemand.fleet.{
   FleetLiveness,
   NodePgAddress,
   NodeResourceSql,
+  PendingDetail,
   ServerLiveness
 }
 import ai.starlake.quack.ondemand.state.{
@@ -25,13 +26,15 @@ import scala.util.Try
 /** No server is free (or none fits) for `nodeId`. `heldBy` names the schedulable server that still
   * holds the node id's assignment (kept, since the replacement claim rolled back), None when
   * nothing holds it or the holder is drained: a drained holder (a crash between drain's release and
-  * its flag) must not keep the node forever.
+  * its flag) must not keep the node forever. `detail` is the operator-facing sentence of
+  * [[ai.starlake.quack.ondemand.fleet.PendingDetail]], None when the server listing failed.
   */
 final case class NoFreeServer(
     poolKey: PoolKey,
     nodeId: String,
     reason: String,
-    heldBy: Option[String] = None
+    heldBy: Option[String] = None,
+    detail: Option[String] = None
 ) extends RuntimeException(s"no fleet server for $poolKey/$nodeId ($reason)")
 final case class FleetStartTimeout(server: String, nodeId: String, seconds: Int)
     extends RuntimeException(s"fleet server $server did not report $nodeId running in ${seconds}s")
@@ -123,13 +126,10 @@ final class FleetQuackBackend(
     // Claim and arm the release atomically: a cancellation between the claim and the guarantee
     // would otherwise leak a claimed server. Every non-success outcome after the claim (error,
     // cancellation, failed report, timeout) releases it.
+    val need                          = requiredMemoryBytes(spec)
     val claimAndWait: IO[RunningNode] = IO.uncancelable { poll =>
       IO.blocking(
-        store.claimReplacing(
-          assignmentFor(spec, token),
-          cfg.heartbeatTimeoutSec,
-          requiredMemoryBytes(spec)
-        )
+        store.claimReplacing(assignmentFor(spec, token), cfg.heartbeatTimeoutSec, need)
       ).flatMap {
         case Left(miss) =>
           val reason = miss match
@@ -137,8 +137,15 @@ final class FleetQuackBackend(
             case ClaimMiss.NoneFits => "none_fits"
           val holderIO =
             IO.blocking(store.byNodeId(spec.nodeId).filterNot(_.unschedulable).map(_.name))
+          // A failed listing must not mask the miss itself: the slot stays pending either way.
+          val detailIO =
+            IO.blocking(PendingDetail.describe(reason, store.list(), livenessOf, need))
+              .attempt
+              .map(_.toOption)
           holderIO.flatMap { holder =>
-            IO.raiseError(NoFreeServer(spec.poolKey, spec.nodeId, reason, holder))
+            detailIO.flatMap { detail =>
+              IO.raiseError(NoFreeServer(spec.poolKey, spec.nodeId, reason, holder, detail))
+            }
           }
         case Right(row) =>
           val waited = awaitRunning(row.name, spec.nodeId).map { _ =>

@@ -164,7 +164,8 @@ final class PoolSupervisor(
   // Why the last spawn attempt left a slot pending (`none_free` | `none_fits`), fed by
   // NoFreeServer. Replica-local: it explains this replica's last attempt, which under HA is the
   // leader's reconcile or the replica that served the scale call. Read via pendingReason.
-  private val pendingReasons = TrieMap.empty[PoolKey, String]
+  private final case class PendingCause(reason: String, detail: Option[String])
+  private val pendingReasons = TrieMap.empty[PoolKey, PendingCause]
   // Dead nodes the last reconcile pass KEPT because no other server was free (owner policy: the
   // dead server keeps its assignment and row so it resumes its node if it returns first). They are
   // not pending slots (the row is there) but still explain `pendingReason`. Replica-local, like
@@ -819,9 +820,9 @@ final class PoolSupervisor(
         (IO.delay(tracker.remove(spec.nodeId)) *>
           IO.uncancelable { poll =>
             poll(startNodeEmitting(key, spec)).flatMap(n => started.update(_ :+ n))
-          }).recoverWith { case NoFreeServer(_, id, reason, _) =>
+          }).recoverWith { case NoFreeServer(_, id, reason, _, detail) =>
           IO.delay {
-            pendingReasons.put(key, reason)
+            pendingReasons.put(key, PendingCause(reason, detail))
             logger.info(s"fleet: slot $id of $key pending ($reason)")
           }
         }
@@ -1142,14 +1143,14 @@ final class PoolSupervisor(
                   (backend.stopStray(n) *>
                     startNodeEmitting(key, respawnSpec(key, spawnState, n))).attempt
                     .flatMap {
-                      case Left(NoFreeServer(_, _, reason, None)) =>
+                      case Left(NoFreeServer(_, _, reason, None, detail)) =>
                         // Fleet: no server holds the node any more (drained, removed or
                         // released) and no other is free. Drop the row; the missing-slot fill
                         // of a later pass recreates it when capacity appears. The stop is a
                         // no-op release, kept as the row deletion's own guarantee that no
                         // server is left assigned to an id no row tracks.
                         IO.delay {
-                          pendingReasons.put(key, reason)
+                          pendingReasons.put(key, PendingCause(reason, detail))
                           logger.warn(
                             s"fleet: $key/${n.nodeId} has no server and none is free " +
                               s"($reason); slot pending"
@@ -1157,7 +1158,7 @@ final class PoolSupervisor(
                         } *> stopNodeBestEffort(key, n.nodeId, "reconcile-pending") *>
                           IO.blocking(store.deleteNode(n.nodeId)) *>
                           IO.delay(tracker.remove(n.nodeId)).as((kept, true, stranded))
-                      case Left(NoFreeServer(_, _, reason, Some(_))) =>
+                      case Left(NoFreeServer(_, _, reason, Some(_), detail)) =>
                         // Fleet, owner policy: the node's server is dead and no other is free.
                         // KEEP the row and the assignment (claimReplacing rolled back, so the
                         // dead server still holds it): if that server returns first, its join process
@@ -1168,7 +1169,7 @@ final class PoolSupervisor(
                         // reports no change for it; the row keeps the slot's index, so the fill
                         // never renumbers it; the router skips it (its probe fails).
                         IO.delay {
-                          pendingReasons.put(key, reason)
+                          pendingReasons.put(key, PendingCause(reason, detail))
                           logger.info(
                             s"fleet: $key/${n.nodeId} is dead and no other server is free " +
                               s"($reason); keeping it on its server until one frees or it returns"
@@ -1360,7 +1361,14 @@ final class PoolSupervisor(
     * dead node on its unreachable server for lack of a free one; None (and the entry cleared) once
     * neither holds.
     */
-  def pendingReason(key: PoolKey): Option[String] =
+  def pendingReason(key: PoolKey): Option[String] = pendingCause(key).map(_.reason)
+
+  /** The operator-facing sentence behind [[pendingReason]]: what every server is doing and the next
+    * command. Same lifetime and replica-locality as the reason.
+    */
+  def pendingDetail(key: PoolKey): Option[String] = pendingCause(key).flatMap(_.detail)
+
+  private def pendingCause(key: PoolKey): Option[PendingCause] =
     if pendingCount(key) > 0 || hasStrandedNode(key) then pendingReasons.get(key)
     else
       pendingReasons.remove(key)

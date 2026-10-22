@@ -27,6 +27,8 @@ class FleetReconcileSpec extends AnyFlatSpec with Matchers:
   private final class FleetLikeBackend extends QuackBackend:
     val nodes                      = TrieMap.empty[String, RunningNode]
     @volatile var freeServers: Int = 0
+    // The explanation a miss carries (NoFreeServer.detail).
+    @volatile var missDetail: Option[String] = None
     // When set, `start` raises this instead of claiming (a non-NoFreeServer failure).
     @volatile var failWith: Option[Throwable]  = None
     val liveIds                                = scala.collection.mutable.Set.empty[String]
@@ -39,7 +41,8 @@ class FleetReconcileSpec extends AnyFlatSpec with Matchers:
             spec.poolKey,
             spec.nodeId,
             "none_free",
-            nodes.get(spec.nodeId).flatMap(_.serverName)
+            nodes.get(spec.nodeId).flatMap(_.serverName),
+            missDetail
           )
         )
       else
@@ -89,6 +92,16 @@ class FleetReconcileSpec extends AnyFlatSpec with Matchers:
     storedIds(sup, st, key) shouldBe List(id(1))
     sup.pendingCount(key) shouldBe 2
     sup.pendingReason(key) shouldBe Some("none_free")
+  }
+
+  "pendingDetail" should "carry the backend's explanation of the last miss, and clear with it" in {
+    val (b, sup, _, key) = fixture(); b.freeServers = 0
+    b.missDetail = Some("1 server: 1 drained (a): qod fleet undrain a, or join another server")
+    sup.createPool(key, RoleDistribution(0, 0, 1)).unsafeRunSync()
+    sup.pendingDetail(key) shouldBe b.missDetail
+    b.freeServers = 1
+    sup.reconcile().unsafeRunSync()
+    sup.pendingDetail(key) shouldBe None
   }
 
   "reconcile" should "fill pending slots as servers join" in {

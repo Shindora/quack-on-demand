@@ -165,7 +165,9 @@ final case class PoolResponse(
     // `pendingReason` is replica-local (it explains the last spawn attempt of the replica that
     // answers): under HA a follower may report pending > 0 with pendingReason = None.
     pending: Int = 0,
-    pendingReason: Option[String] = None
+    pendingReason: Option[String] = None,
+    // The sentence behind pendingReason: servers by state and the next command. Replica-local too.
+    pendingDetail: Option[String] = None
 )
 
 final case class SetPoolResourcesRequest(

@@ -179,6 +179,20 @@ class FleetQuackBackendSpec extends AnyFlatSpec with Matchers:
       .unsafeRunSync()).reason shouldBe "none_fits"
   }
 
+  it should "explain the miss in NoFreeServer.detail" in {
+    val (store, backend, _, _) = fixture()
+    (the[NoFreeServer] thrownBy backend.start(spec("n1")).unsafeRunSync()).detail shouldBe
+      Some("no server has joined the fleet: run qod fleet join on a server")
+    val small = new FakeAgent(store, "small", memoryBytes = Some(512L << 20)); small.beat()
+    (the[NoFreeServer] thrownBy backend
+      .start(spec("n1").copy(memory = Some("8Gi")))
+      .unsafeRunSync()).detail shouldBe
+      Some(
+        "needs 8.0 GiB; the largest free server (small) reports 0.5 GiB: add a server with " +
+          "more memory or lower the pool's memory request"
+      )
+  }
+
   it should "release the claim and raise FleetStartTimeout when the agent never reports running" in {
     val (store, backend, setNow, now) = fixture()
     val agent = new FakeAgent(store, "srv-1"); agent.reportAs = "starting"; agent.beat()
