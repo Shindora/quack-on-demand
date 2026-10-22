@@ -474,6 +474,40 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     store.get("a") shouldBe None
   }
 
+  it should "explain why an active server cannot be removed and how to retire it" in {
+    val (store, h) = adminFixture()
+    beat(store, "a", "10.0.0.1")
+    val e = h
+      .remove(FleetServerOpRequest("a"), Some("k"))(superuser)
+      .unsafeRunSync()
+      .left
+      .toOption
+      .get
+      ._2
+    e.message shouldBe "server 'a' is active (reachable, schedulable, holds no node, last " +
+      "heartbeat 0s ago): its qod fleet join would re-register it"
+    e.actions.toList.flatten.map(a => (a.where, a.command, a.note)) shouldBe List(
+      (
+        "manager",
+        "qod fleet drain a",
+        Some("then stop qod fleet join on a, then qod fleet remove a")
+      )
+    )
+    e.retryable shouldBe Some(false)
+  }
+
+  "drain" should "name a missing server and point at the listing" in {
+    val (_, h) = adminFixture()
+    val e      = h
+      .drain(FleetServerOpRequest("ghost"), Some("k"))(superuser)
+      .unsafeRunSync()
+      .left
+      .toOption
+      .get
+    (e._1, e._2.message) shouldBe (StatusCode.NotFound, "no such server 'ghost'")
+    e._2.actions.toList.flatten.map(_.command) shouldBe List("qod fleet servers")
+  }
+
   it should "remove a reachable, schedulable server that is still pending" in {
     val (store, h) = adminFixture()
     store.recordHeartbeat(
@@ -561,8 +595,13 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     val e =
       h.approve(FleetServerOpRequest("p"), Some("k"))(superuser).unsafeRunSync().left.toOption.get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "source_unknown")
-    e._2.message shouldBe "server 'p' has no known source address yet; approve it after its " +
-      "next heartbeat, and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy"
+    e._2.message shouldBe "server 'p' has no known source address yet (last heartbeat 0s ago); " +
+      "approve it after its next heartbeat"
+    e._2.actions.toList.flatten.map(_.command) shouldBe List(
+      "qod fleet approve p",
+      "set QOD_FLEET_TRUSTED_PROXIES to the proxy's address"
+    )
+    e._2.retryable shouldBe Some(true)
     val row = store.get("p").get
     (row.approved, row.approvedBy, row.approvedSource) shouldBe (false, None, None)
   }

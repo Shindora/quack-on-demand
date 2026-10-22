@@ -55,9 +55,6 @@ final class FleetHandlers(
       )
     )
 
-  private def fail[A](status: StatusCode, error: String, message: String): Out[A] =
-    IO.pure(Left((status, ErrorResponse(error, message))))
-
   private val disabled = FleetErrors.disabled
 
   /** A raised store error becomes `502 backend_error` with a fixed message: the cause (SQL text,
@@ -245,7 +242,7 @@ final class FleetHandlers(
           storeErrorTo502(s"$action of '${req.name}'")(_ => auditAs("error")) {
             IO.blocking(store.get(req.name)).flatMap {
               case None =>
-                fail(StatusCode.NotFound, "not_found", s"no such server '${req.name}'")
+                IO.pure(Left(FleetErrors.notFound(req.name)))
               case Some(row) =>
                 f(b, row).flatTap(r => IO.delay(auditAs(if r.isRight then "ok" else "error")))
             }
@@ -288,15 +285,10 @@ final class FleetHandlers(
     serverOp(req, apiKey, AuditActions.FleetApprove)(scopeOf) { (_, row) =>
       IO.blocking(store.approve(row.name, audit.actorOf(apiKey)._1)).flatMap {
         case ApproveResult.NotFound =>
-          fail(StatusCode.NotFound, "not_found", s"no such server '${row.name}'")
+          IO.pure(Left(FleetErrors.notFound(row.name)))
         // An approval with no known source would bind to whoever heartbeats first.
         case ApproveResult.SourceUnknown =>
-          fail(
-            StatusCode.Conflict,
-            "source_unknown",
-            s"server '${row.name}' has no known source address yet; approve it after its next " +
-              "heartbeat, and check QOD_FLEET_TRUSTED_PROXIES if the manager sits behind a proxy"
-          )
+          IO.pure(Left(FleetErrors.sourceUnknown(row, cfg.trustedProxies)))
         case _ => IO.delay(publish.topologyChanged()).as(Right(()))
       }
     }
@@ -311,12 +303,7 @@ final class FleetHandlers(
   ): Out[Unit] =
     serverOp(req, apiKey, AuditActions.FleetRemove)(scopeOf) { (b, row) =>
       if row.approved && b.livenessOf(row) == ServerLiveness.Reachable && !row.unschedulable
-      then
-        fail(
-          StatusCode.Conflict,
-          "server_active",
-          "drain the server and stop its qod fleet join process before removing it"
-        )
+      then IO.pure(Left(FleetErrors.serverActive(row, b.livenessOf(row))))
       else IO.blocking(store.delete(row.name)).as(Right(()))
     }
 

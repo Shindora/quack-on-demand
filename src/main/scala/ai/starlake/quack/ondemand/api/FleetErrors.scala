@@ -1,5 +1,6 @@
 package ai.starlake.quack.ondemand.api
 
+import ai.starlake.quack.ondemand.fleet.ServerLiveness
 import ai.starlake.quack.ondemand.state.FleetServerRow
 import sttp.model.StatusCode
 
@@ -197,3 +198,57 @@ object FleetErrors:
       ),
       retryable = false
     )
+
+  def notFound(name: String): Err = err(
+    StatusCode.NotFound,
+    "not_found",
+    s"no such server '$name'",
+    Map("server" -> name),
+    List(onManager("qod fleet servers", "lists the joined servers and their names")),
+    retryable = false
+  )
+
+  /** Refused remove: an approved, reachable, schedulable server; its join would re-register it. */
+  def serverActive(row: FleetServerRow, liveness: ServerLiveness): Err =
+    val live = FleetHandlers.livenessString(liveness)
+    val held = row.assignedNodeId.fold("holds no node")(n => s"holds $n")
+    err(
+      StatusCode.Conflict,
+      "server_active",
+      s"server '${row.name}' is active ($live, schedulable, $held, last heartbeat " +
+        s"${row.silentSeconds}s ago): its qod fleet join would re-register it",
+      Map(
+        "server"           -> row.name,
+        "liveness"         -> live,
+        "drained"          -> "false",
+        "assignedNode"     -> row.assignedNodeId.getOrElse(""),
+        "lastHeartbeatSec" -> row.silentSeconds.toString
+      ),
+      List(
+        onManager(
+          s"qod fleet drain ${row.name}",
+          s"then stop qod fleet join on ${row.name}, then qod fleet remove ${row.name}"
+        )
+      ),
+      retryable = false
+    )
+
+  def sourceUnknown(row: FleetServerRow, trustedProxies: String): Err = err(
+    StatusCode.Conflict,
+    "source_unknown",
+    s"server '${row.name}' has no known source address yet (last heartbeat " +
+      s"${row.silentSeconds}s ago); approve it after its next heartbeat",
+    Map(
+      "server"           -> row.name,
+      "lastHeartbeatSec" -> row.silentSeconds.toString,
+      "trustedProxies"   -> trustedProxies
+    ),
+    List(
+      onManager(s"qod fleet approve ${row.name}", "again, after its next heartbeat"),
+      onManager(
+        "set QOD_FLEET_TRUSTED_PROXIES to the proxy's address",
+        "when the manager sits behind a proxy that sends X-Forwarded-For"
+      )
+    ),
+    retryable = true
+  )
