@@ -1,6 +1,45 @@
 # Changelog
 
-## Unreleased
+## 0.10.1
+
+- **Fleet errors state the facts and suggest the fix.** A refused heartbeat or fleet admin call now
+  says what the manager sees, not only what it refused: `address_change_refused` names the
+  registered and the reported address and whether the server is drained or holds a node;
+  `source_change_refused` and `approval_unbound` name the approved and the current source and the
+  `QOD_FLEET_AUTO_APPROVE` list; `server_active` gives the server's liveness, node and last
+  heartbeat. Each error ends with the commands that fix it and where to run them, on the manager
+  or on the server. The error body gains optional `details`, `actions` (alternatives, each a
+  `where`, a `command` and an optional `note`) and `retryable` fields, left out when unset, so
+  every other error body is unchanged. The join token, passwords and SQL never appear in one.
+
+- **Every `qod` command prints the manager's fix under an error,** as a `to fix:` block (`to fix
+  (any one):` when there are alternatives); the admin UI shows the same block under a failed
+  action.
+
+- **`qod fleet join` stops on a misconfiguration no retry can fix.** Before its first successful
+  heartbeat, an `https://` URL pointed at the manager's plain-HTTP REST port, a wrong join token, a
+  URL with no fleet endpoint, or a name registered with another address now print the fix and exit
+  with code 2 instead of retrying every 5 seconds forever. After a successful heartbeat it never
+  exits on a refusal: it keeps its node running and retries. A failure that repeats prints one
+  `still failing (<code>, N times), retrying` line instead of the full message each time, and a
+  network failure leads with the explanation, the raw TLS or socket error last. The sample systemd
+  unit gains `RestartSec=5` and `StartLimitIntervalSec=0`, so a join that exited is re-run.
+
+- **Pending fleet slots and failed nodes explain themselves.** A pool waiting for a server carries
+  `pendingDetail`, e.g. `3 servers: 1 pending approval (b), 1 drained (a), 1 busy (c): qod fleet
+  approve b, or qod fleet undrain a, or join another server`, or the memory a slot needs against
+  the largest free server; the UI shows it on the pending badge. `qod fleet join` recognises the
+  common node start failures (port in use, DuckDB extension download blocked, catalog Postgres
+  unreachable, duckdb missing) and reports a suggested fix, shown as `nodeAction` in `qod fleet
+  servers` and the servers page. Liquibase `0046` adds the nullable `node_action` column to
+  `qodstate_fleet_heartbeat`; it is applied at boot and safe under a rolling HA upgrade.
+
+- **Fleet docs point `--manager` at the TLS proxy.** The examples used `https://<host>:20900`, the
+  manager's own plain-HTTP port, which fails the TLS handshake. They now use the proxy URL
+  (`https://mgr`); `http://<host>:20900 --insecure` stays the test-only form.
+
+- **Manager modules must be recompiled against this core** (source-compatible, but the
+  `ErrorResponse` constructor gained fields).
 
 - **Release announcements on Discord are a digest.** The #news post lists each changelog entry's
   title and links to the full section at the release tag, in at most three messages, instead of
