@@ -1989,13 +1989,14 @@ final class PostgresControlPlaneStore(
         val up = c.prepareStatement(
           """INSERT INTO qodstate_fleet_heartbeat
             |  (name, last_heartbeat_at, qod_version, os, duckdb_version, cpus, memory_bytes,
-            |   node_state, node_error, node_pid, node_started_at, source_addr)
-            |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            |   node_state, node_error, node_pid, node_started_at, source_addr, node_action)
+            |VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             |ON CONFLICT (name) DO UPDATE SET
             |  last_heartbeat_at = now(), qod_version = EXCLUDED.qod_version, os = EXCLUDED.os,
             |  duckdb_version = EXCLUDED.duckdb_version, cpus = EXCLUDED.cpus, memory_bytes = EXCLUDED.memory_bytes,
             |  node_state = EXCLUDED.node_state, node_error = EXCLUDED.node_error, node_pid = EXCLUDED.node_pid,
-            |  node_started_at = EXCLUDED.node_started_at, source_addr = EXCLUDED.source_addr""".stripMargin
+            |  node_started_at = EXCLUDED.node_started_at, source_addr = EXCLUDED.source_addr,
+            |  node_action = EXCLUDED.node_action""".stripMargin
         )
         try
           up.setString(1, hb.name)
@@ -2007,6 +2008,7 @@ final class PostgresControlPlaneStore(
           setNullable(up, 8, hb.node.error); setNullableLong(up, 9, hb.node.pid);
           setNullableInstant(up, 10, hb.node.startedAt)
           setNullable(up, 11, hb.sourceAddr)
+          setNullable(up, 12, hb.node.action)
           up.executeUpdate()
         finally up.close()
         if joined then HeartbeatOutcome.Joined else HeartbeatOutcome.Updated
@@ -2271,7 +2273,7 @@ final class PostgresControlPlaneStore(
       |  EXTRACT(EPOCH FROM now() - s.claimed_at)::bigint AS claim_age_seconds,
       |  h.last_heartbeat_at, EXTRACT(EPOCH FROM now() - h.last_heartbeat_at)::bigint AS silent_seconds,
       |  h.qod_version, h.os, h.duckdb_version, h.cpus, h.memory_bytes,
-      |  h.node_state, h.node_error, h.node_pid, h.node_started_at
+      |  h.node_state, h.node_error, h.node_pid, h.node_started_at, h.node_action
       |FROM qodstate_fleet_server s JOIN qodstate_fleet_heartbeat h USING (name)""".stripMargin
 
   private def readFleetRow(c: Connection, name: String): Option[FleetServerRow] =
@@ -2315,7 +2317,8 @@ final class PostgresControlPlaneStore(
       approvedAt = Option(rs.getTimestamp("approved_at")).map(_.toInstant),
       approvedBy = Option(rs.getString("approved_by")),
       sourceAddr = Option(rs.getString("source_addr")),
-      approvedSource = Option(rs.getString("approved_source"))
+      approvedSource = Option(rs.getString("approved_source")),
+      nodeAction = Option(rs.getString("node_action"))
     )
 
   // ---------------- helpers ----------------

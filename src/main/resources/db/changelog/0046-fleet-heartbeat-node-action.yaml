@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0046-fleet-heartbeat-node-action
+      author: qod
+      changes:
+        # The suggested fix qod fleet join classifies from a failed node's error; null when the
+        # node is healthy or the failure is not one it recognises.
+        - addColumn:
+            tableName: qodstate_fleet_heartbeat
+            columns:
+              - column: { name: node_action, type: text }

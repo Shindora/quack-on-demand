@@ -95,3 +95,5 @@ databaseChangeLog:
       file: db/changelog/0044-tenant-opa.yaml
   - include:
       file: db/changelog/0045-user-kind-builtin-rbac.yaml
+  - include:
+      file: db/changelog/0046-fleet-heartbeat-node-action.yaml

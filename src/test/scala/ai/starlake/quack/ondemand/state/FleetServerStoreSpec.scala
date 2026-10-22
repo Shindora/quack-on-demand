@@ -230,6 +230,33 @@ trait FleetServerStoreBehaviour { this: AnyFlatSpec & Matchers =>
         s.get("a").get.nodeState shouldBe "stale"
     }
 
+    it should "store a failed node's error and suggested action, clearing both on recovery" in withStore {
+      h =>
+        val s = h.store
+        s.recordHeartbeat(hb("a"))
+        s.claim(assignment("n1"), 30, None)
+        s.recordHeartbeat(
+          hb(
+            "a",
+            node = NodeReport(
+              1,
+              Some("n1"),
+              "failed",
+              None,
+              Some("Address already in use"),
+              None,
+              action = Some("another process holds port 21900")
+            )
+          )
+        )
+        s.get("a").map(r => (r.nodeError, r.nodeAction)) shouldBe
+          Some((Some("Address already in use"), Some("another process holds port 21900")))
+        s.recordHeartbeat(
+          hb("a", node = NodeReport(1, Some("n1"), "running", Some(7L), None, None))
+        )
+        s.get("a").map(r => (r.nodeError, r.nodeAction)) shouldBe Some((None, None))
+    }
+
     it should "mark a report for another node id stale even when the epoch matches" in withStore {
       h =>
         val s = h.store

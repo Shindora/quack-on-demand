@@ -427,6 +427,20 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
   private val tenantAdmin: String => Option[SessionScope] =
     _ => Some(SessionScope(false, Set("acme")))
 
+  "listServers" should "carry the node's suggested action from the heartbeat" in {
+    val (_, h) = adminFixture()
+    val failed = req("a").copy(node =
+      FleetNodeReportDto(0, None, "failed", None, Some("boom"), None, action = Some("fix it"))
+    )
+    h.heartbeat(failed, Some("secret"), loopback, None).unsafeRunSync().isRight shouldBe true
+    h.listServers(Some("k"))(superuser)
+      .unsafeRunSync()
+      .toOption
+      .get
+      .servers
+      .map(_.nodeAction) shouldBe List(Some("fix it"))
+  }
+
   "listServers" should "classify liveness and carry the pool key of the assignment" in {
     val (store, h) = adminFixture()
     beat(store, "silent", "10.0.0.2"); store.backdate("silent", 100)

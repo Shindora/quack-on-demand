@@ -32,7 +32,9 @@ final case class NodeReport(
     state: String, // none | starting | running | failed | stopped
     pid: Option[Long],
     error: Option[String],
-    startedAt: Option[Instant]
+    startedAt: Option[Instant],
+    // The join process's suggested fix for a failed node; None when healthy or unclassified.
+    action: Option[String] = None
 )
 
 /** One server, joined over its heartbeat row. `silentSeconds` is computed by the store from ITS
@@ -74,7 +76,9 @@ final case class FleetServerRow(
     // The resolved source an approved server is bound to (Liquibase 0042): the heartbeat that
     // auto-approved it, or the latest source when an admin approved it. None while pending, and
     // for an approval whose source was unknown (bound by the next heartbeat with a known source).
-    approvedSource: Option[String]
+    approvedSource: Option[String],
+    // The suggested fix for the node's failure (`node_action`, Liquibase 0046), from the report.
+    nodeAction: Option[String] = None
 )
 
 /** Heartbeat upsert input: everything the join process reports. */

@@ -91,7 +91,8 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             approvedAt = Option.when(hb.autoApprove)(now),
             approvedBy = Option.when(hb.autoApprove)("auto"),
             sourceAddr = hb.sourceAddr,
-            approvedSource = if hb.autoApprove then hb.sourceAddr else None
+            approvedSource = if hb.autoApprove then hb.sourceAddr else None,
+            nodeAction = hb.node.action
           )
         )
         HeartbeatOutcome.Joined
@@ -137,6 +138,7 @@ final class InMemoryFleetServerStore(clock: () => Instant = () => Instant.now())
             nodeError = hb.node.error,
             nodePid = hb.node.pid,
             nodeStartedAt = hb.node.startedAt,
+            nodeAction = hb.node.action,
             approved = keepsApproval || hb.autoApprove,
             approvedAt = if keepsApproval then r.approvedAt else Option.when(hb.autoApprove)(now),
             approvedBy =

@@ -8277,6 +8277,8 @@ components:
           type: string
         startedAt:
           type: string
+        action:
+          type: string
     FleetPoolKeyDto:
       title: FleetPoolKeyDto
       type: object
@@ -8355,6 +8357,8 @@ components:
         sourceAddr:
           type: string
         approvedSource:
+          type: string
+        nodeAction:
           type: string
     FleetServerListResponse:
       title: FleetServerListResponse

@@ -97,7 +97,8 @@ final class FleetHandlers(
         req.node.state,
         req.node.pid,
         req.node.error,
-        startedAt.flatten
+        startedAt.flatten,
+        action = req.node.action
       )
       val source = ClientAddress.resolve(peer, forwardedFor, trustedProxies)
       val autoOk = source.exists(a => Cidr.anyContains(autoApproveList, a))
@@ -208,7 +209,8 @@ final class FleetHandlers(
       approvedBy = r.approvedBy,
       approvedAt = r.approvedAt.map(_.toString),
       sourceAddr = r.sourceAddr,
-      approvedSource = r.approvedSource
+      approvedSource = r.approvedSource,
+      nodeAction = r.nodeAction
     )
 
   def listServers(apiKey: Option[String])(

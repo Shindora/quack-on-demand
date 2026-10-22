@@ -311,7 +311,8 @@ final case class FleetNodeReportDto(
     state: String,
     pid: Option[Long],
     error: Option[String],
-    startedAt: Option[String]
+    startedAt: Option[String],
+    action: Option[String] = None
 )
 final case class FleetHeartbeatRequest(
     name: String,
@@ -374,8 +375,9 @@ final case class FleetServerDto(
     approval: String,           // approved | pending
     approvedBy: Option[String], // auto | upgrade | the approving admin
     approvedAt: Option[String],
-    sourceAddr: Option[String],    // resolved address of the latest heartbeat
-    approvedSource: Option[String] // the source an approved server is bound to
+    sourceAddr: Option[String],       // resolved address of the latest heartbeat
+    approvedSource: Option[String],   // the source an approved server is bound to
+    nodeAction: Option[String] = None // suggested fix for nodeError, from qod fleet join
 )
 final case class FleetServerListResponse(servers: List[FleetServerDto])
 final case class FleetServerOpRequest(name: String)

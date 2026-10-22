@@ -22,3 +22,11 @@ class FleetHeartbeatRequestCodecSpec extends AnyFlatSpec with Matchers:
     decode[FleetHeartbeatRequest](body(""""agentVersion":"0.9.7",""")).map(_.qodVersion) shouldBe
       Right(None)
   }
+
+  "FleetNodeReportDto" should "read action, and default it to None when absent" in {
+    decode[FleetNodeReportDto](
+      """{"assignmentEpoch":1,"nodeId":"n1","state":"failed","error":"boom","action":"fix it"}"""
+    ).map(_.action) shouldBe Right(Some("fix it"))
+    decode[FleetNodeReportDto]("""{"assignmentEpoch":0,"state":"none"}""").map(_.action) shouldBe
+      Right(None)
+  }
