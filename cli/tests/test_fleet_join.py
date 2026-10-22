@@ -16,6 +16,7 @@ from qod_cli.fleet_join import (
     cgroup_memory_limit,
     host_capacity,
     network_hint,
+    node_failure_action,
     probe_duckdb_version,
     status_hint,
 )
@@ -101,7 +102,7 @@ def test_heartbeat_carries_identity_capacity_and_no_node_initially(tmp_path):
     assert headers["X-Fleet-Token"] == "secret"
     assert body["name"] == "srv-1" and body["advertiseHost"] == "10.0.0.7" and body["nodePort"] == 21900
     assert body["cpus"] == 8 and body["memoryBytes"] == 64 << 30
-    assert body["node"] == {"assignmentEpoch": 0, "nodeId": None, "state": "none", "pid": None, "error": None, "startedAt": None}
+    assert body["node"] == {"assignmentEpoch": 0, "nodeId": None, "state": "none", "pid": None, "error": None, "startedAt": None, "action": None}
 
 
 def test_assignment_starts_node_with_spawn_contract_and_reports_running(tmp_path):
@@ -800,3 +801,36 @@ def test_network_failure_leads_with_the_explanation(tmp_path, capsys, plain_http
     line = next(l for l in err if "cannot reach the manager" in l)
     assert "answered plain HTTP" in line and "WRONG_VERSION_NUMBER" not in line
     assert any("(cause:" in l and "WRONG_VERSION_NUMBER" in l for l in err)
+
+
+@pytest.mark.parametrize("error,expected", [
+    ("exited with 1: ERROR: duckdb not found (DUCKDB_BIN='', 'duckdb' not on PATH)", "duckdb is missing on this server"),
+    ("exited with 1: ERROR: /x/duckdb cannot run the .shell dot-command the node keep-alive needs", "lacks the .shell dot-command"),
+    ("exited with 1: IO Error: Could not bind: Address already in use", "another process holds port 21900"),
+    ('exited with 1: HTTP Error: Failed to download extension "postgres_scanner" at URL "http://extensions.duckdb.org/x"', "cannot download DuckDB extensions"),
+    ('exited with 1: IO Error: Unable to connect to Postgres at "host=pg port=5432": connection to server at "pg" (10.0.0.5), port 5432 failed: Connection refused', "cannot reach the catalog Postgres"),
+])
+def test_node_failure_action_classifies_known_failures(error, expected):
+    assert expected in node_failure_action(error, 21900)
+
+
+def test_node_failure_action_leaves_unknown_failures_alone():
+    assert node_failure_action("exited with 3: something else", 21900) is None
+    assert node_failure_action(None, 21900) is None
+
+
+def test_failed_node_reports_and_prints_its_suggested_action(tmp_path, capsys):
+    procs = []
+    def popen(cmd, env=None, **kw):
+        p = FakeProc(pid=300 + len(procs), alive=False)
+        p.stderr = io.BytesIO(b"IO Error: Could not bind: Address already in use\n")
+        procs.append(p); return p
+    http = FakeHttp([FakeResponse(200, {"heartbeatSec": 5, "assignment": assignment(1)}) for _ in range(2)])
+    member = make_member(http, popen, tmp_path, port_open=lambda p: False)
+    member.run_once()   # start, dies at once
+    member.run_once()   # reports failed, schedules the restart
+    node = http.requests[1][1]["node"]
+    assert node["state"] == "failed"
+    assert node["action"] == ("another process holds port 21900 on this server: stop it, or re-run "
+                              "qod fleet join with --node-port <free-port>")
+    assert "to fix: another process holds port 21900" in capsys.readouterr().err

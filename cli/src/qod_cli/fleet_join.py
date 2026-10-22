@@ -35,6 +35,35 @@ BACKOFF_MIN_S = 5
 BACKOFF_MAX_S = 300
 STDERR_TAIL = 20
 PIDFILE = "node.pid"
+
+# A failed node's error (exit status and stderr tail) -> the fix to suggest; first match wins.
+_NODE_FAILURES: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"duckdb not found"),
+     "duckdb is missing on this server: re-run qod fleet join without --duckdb-bin to let qod "
+     "provision it, or pass --duckdb-bin <path-to-duckdb>"),
+    (re.compile(r"cannot run the \.shell dot-command"),
+     "this duckdb build lacks the .shell dot-command the node needs: pass --duckdb-bin with the "
+     "DuckDB release CLI"),
+    (re.compile(r"address already in use", re.I),
+     "another process holds port {port} on this server: stop it, or re-run qod fleet join with "
+     "--node-port <free-port>"),
+    (re.compile(r"failed to (download|install) extension|extensions\.duckdb\.org", re.I),
+     "this server cannot download DuckDB extensions: allow outbound HTTPS to extensions.duckdb.org"),
+    (re.compile(r"unable to connect to postgres|could not connect to server|connection to server at", re.I),
+     "this server cannot reach the catalog Postgres: open the route from this server, or set "
+     "QOD_FLEET_NODE_PG_HOST / QOD_FLEET_NODE_PG_PORT on the manager"),
+)
+
+
+def node_failure_action(error: str | None, port: int) -> str | None:
+    """The suggested fix for a failed node, from its error text; None when the failure is not one
+    of the known classes (the error's stderr tail is then all the operator gets, as before)."""
+    if not error:
+        return None
+    for pattern, action in _NODE_FAILURES:
+        if pattern.search(error):
+            return action.format(port=port)
+    return None
 DRAIN_JOIN_S = 0.5
 
 # The node's environment is built from this allowlist, never from this process's whole environment:
@@ -393,7 +422,7 @@ class FleetMember:
         probe_host = "127.0.0.1" if bind_host == "0.0.0.0" else bind_host
         self.port_open = port_open or (lambda p: _port_open(probe_host, p))
         self.node: _Node | None = None
-        self.last_report: dict = {"assignmentEpoch": 0, "nodeId": None, "state": "none", "pid": None, "error": None, "startedAt": None}
+        self.last_report: dict = {"assignmentEpoch": 0, "nodeId": None, "state": "none", "pid": None, "error": None, "startedAt": None, "action": None}
         self.duckdb_version = duckdb_version
         self.failures = 0
         # None until the first successful heartbeat, then False while heartbeats fail: drives the
@@ -462,7 +491,8 @@ class FleetMember:
             n.drop_secrets()
         return {"assignmentEpoch": n.assignment["epoch"], "nodeId": n.assignment["nodeId"], "state": n.state,
                 "pid": n.proc.pid if alive else None, "error": n.error,
-                "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(n.wall_started_at))}
+                "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(n.wall_started_at)),
+                "action": node_failure_action(n.error, n.assignment["port"]) if n.state == "failed" else None}
 
     # ---- process control ----
     def _launch_spec(self, assignment: dict) -> tuple[list[str], dict[str, str], dict[str, str]]:
@@ -546,7 +576,7 @@ class FleetMember:
         self.pidfile.unlink(missing_ok=True)
         n.drop_secrets()
         self.last_report = {"assignmentEpoch": n.assignment["epoch"], "nodeId": n.assignment["nodeId"],
-                            "state": "stopped", "pid": None, "error": None, "startedAt": None}
+                            "state": "stopped", "pid": None, "error": None, "startedAt": None, "action": None}
         self.node = None
 
     # ---- reconciliation ----
@@ -570,6 +600,9 @@ class FleetMember:
                 delay = min(BACKOFF_MIN_S * (2 ** (self.failures - 1)), BACKOFF_MAX_S)
                 self.next_restart_at = self.clock() + delay
                 sys.stderr.write(f"qod fleet join: node failed ({n.error}); restarting in {delay}s\n")
+                action = node_failure_action(n.error, n.assignment["port"])
+                if action:
+                    sys.stderr.write(f"qod fleet join:   to fix: {action}\n")
             elif self.clock() >= self.next_restart_at:
                 spec = self._launch_spec(assignment)
                 self._stop()
