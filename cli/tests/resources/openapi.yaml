@@ -8027,6 +8027,19 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RolePermissionResponse'
+    ErrorAction:
+      title: ErrorAction
+      type: object
+      required:
+      - where
+      - command
+      properties:
+        where:
+          type: string
+        command:
+          type: string
+        note:
+          type: string
     ErrorResponse:
       title: ErrorResponse
       type: object
@@ -8038,6 +8051,14 @@ components:
           type: string
         message:
           type: string
+        details:
+          $ref: '#/components/schemas/Map_String'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ErrorAction'
+        retryable:
+          type: boolean
     FailedRestart:
       title: FailedRestart
       type: object

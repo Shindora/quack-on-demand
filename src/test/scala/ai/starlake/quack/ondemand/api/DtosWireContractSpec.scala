@@ -260,3 +260,25 @@ class DtosWireContractSpec extends AnyFlatSpec with Matchers:
       .map(_.isProtected) shouldBe Right(true)
     TagProtectRequest("a", "d", "v1", isProtected = true).asJson.hcursor
       .get[Boolean]("protected") shouldBe Right(true)
+
+  // ----- ErrorResponse: optional fields never reach the wire as null ------
+
+  "ErrorResponse" should "encode the two-field shape with no null keys" in:
+    ErrorResponse("not_found", "no such server 'x'").asJson.noSpaces shouldBe
+      """{"error":"not_found","message":"no such server 'x'"}"""
+
+  it should "carry details, actions and retryable when set, and round-trip" in:
+    val e = ErrorResponse(
+      "address_change_refused",
+      "m",
+      details = Some(Map("server" -> "a")),
+      actions = Some(List(ErrorAction("manager", "qod fleet drain a"))),
+      retryable = Some(false)
+    )
+    e.asJson.noSpaces shouldBe
+      """{"error":"address_change_refused","message":"m","details":{"server":"a"},""" +
+      """"actions":[{"where":"manager","command":"qod fleet drain a"}],"retryable":false}"""
+    decode[ErrorResponse](e.asJson.noSpaces) shouldBe Right(e)
+
+  it should "decode the two-field shape" in:
+    decode[ErrorResponse]("""{"error":"x","message":"y"}""") shouldBe Right(ErrorResponse("x", "y"))

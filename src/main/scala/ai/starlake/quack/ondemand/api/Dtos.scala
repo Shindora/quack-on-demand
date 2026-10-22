@@ -5,7 +5,7 @@ import ai.starlake.quack.ondemand.federation.iceberg.IcebergRestConfig
 import ai.starlake.quack.ondemand.federation.rdbms.RdbmsConfig
 import io.circe.{Codec, Decoder, DecodingFailure, Encoder, Json}
 import io.circe.derivation.{Configuration, ConfiguredCodec}
-import io.circe.generic.semiauto.deriveCodec
+import io.circe.generic.semiauto.{deriveCodec, deriveDecoder, deriveEncoder}
 
 final case class NodeTolerationDto(
     key: String,
@@ -392,7 +392,24 @@ final case class ActiveStatementsResponse(statements: List[ActiveStatementInfo])
 final case class KillStatementRequest(id: String)
 final case class KillStatementResponse(status: String) // accepted | already-completed
 
-final case class ErrorResponse(error: String, message: String)
+/** A suggested fix attached to an error. `where` is `manager` (any host with an admin qod profile)
+  * or `server` (the fleet server named in the error's `details("server")`). Several actions on one
+  * error are alternatives; a fix that takes several steps is one action whose `note` names the
+  * rest.
+  */
+final case class ErrorAction(where: String, command: String, note: Option[String] = None)
+
+/** `details` (facts), `actions` (suggested fixes) and `retryable` (false when no wait can fix it)
+  * are optional and left out of the JSON when unset, so a body that sets none of them is
+  * byte-identical to the two-field shape every client already parses.
+  */
+final case class ErrorResponse(
+    error: String,
+    message: String,
+    details: Option[Map[String, String]] = None,
+    actions: Option[List[ErrorAction]] = None,
+    retryable: Option[Boolean] = None
+)
 
 final case class TenantRequest(
     // Slug key (required): a lowercase identifier that IS the tenant's one
@@ -1630,7 +1647,6 @@ object Dtos:
   given Codec[FleetServerDto]           = deriveCodec
   given Codec[FleetServerListResponse]  = deriveCodec
   given Codec[FleetServerOpRequest]     = deriveCodec
-  given Codec[ErrorResponse]            = deriveCodec
   given Codec[TenantRequest]            = ConfiguredCodec.derived
   given Codec[TenantResponse]           = deriveCodec
   given Codec[TenantListResponse]       = deriveCodec
@@ -1903,3 +1919,9 @@ object Dtos:
   given Codec[BranchChangesResponse] = ConfiguredCodec.derived
   given Codec[BranchProposeResponse] = ConfiguredCodec.derived
   given Codec[BranchMergeResponse]   = ConfiguredCodec.derived
+
+  // Optional fields are dropped, not written as null: every non-fleet error body stays two-field.
+  given Codec[ErrorAction] =
+    Codec.from(deriveDecoder[ErrorAction], deriveEncoder[ErrorAction].mapJson(_.dropNullValues))
+  given Codec[ErrorResponse] =
+    Codec.from(deriveDecoder[ErrorResponse], deriveEncoder[ErrorResponse].mapJson(_.dropNullValues))
