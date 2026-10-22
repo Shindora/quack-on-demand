@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from qod_cli.fleet_join import (
+    BACKOFF_MIN_S,
     FleetMember,
     cgroup_cpu_limit,
     cgroup_memory_limit,
@@ -537,6 +538,33 @@ def test_https_to_a_plain_http_port_suggests_http_with_insecure(plain_http_port)
     url = f"https://127.0.0.1:{plain_http_port}"
     hint = network_hint(_real_error(url), url)
     assert f"--manager http://127.0.0.1:{plain_http_port} --insecure" in hint
+
+
+class RaisingHttp:
+    """A manager reached over the wrong scheme: every post raises the given error."""
+    def __init__(self, exc, replies=()):
+        self.exc, self.replies = exc, list(replies)
+    def post(self, url, json=None, headers=None, timeout=None):
+        if self.replies:
+            return self.replies.pop(0)
+        raise self.exc
+
+
+def test_scheme_mismatch_before_first_contact_exits_with_the_hint(tmp_path, capsys, plain_http_port):
+    url = f"https://127.0.0.1:{plain_http_port}"
+    member = make_member(RaisingHttp(_real_error(url)), lambda *a, **k: FakeProc(), tmp_path)
+    with pytest.raises(SystemExit) as e:
+        member.run_once()
+    assert e.value.code == 2
+    assert "--insecure" in capsys.readouterr().err
+
+
+def test_scheme_mismatch_after_contact_keeps_retrying(tmp_path, plain_http_port):
+    url = f"https://127.0.0.1:{plain_http_port}"
+    ok = FakeResponse(200, {"heartbeatSec": 5, "assignment": None})
+    member = make_member(RaisingHttp(_real_error(url), [ok]), lambda *a, **k: FakeProc(), tmp_path)
+    member.run_once()
+    assert member.run_once() == BACKOFF_MIN_S
 
 
 def test_unresolvable_host_names_the_host():

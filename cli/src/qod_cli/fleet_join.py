@@ -256,13 +256,19 @@ def _causes(exc: BaseException) -> list[BaseException]:
     return seen
 
 
+def scheme_mismatch(exc: BaseException, manager_url: str) -> bool:
+    """An https:// URL whose port answered plain HTTP: no retry can fix that, only another URL."""
+    return (httpx.URL(manager_url).scheme == "https"
+            and any("WRONG_VERSION_NUMBER" in str(e) for e in _causes(exc)))
+
+
 def network_hint(exc: BaseException, manager_url: str) -> str | None:
     """A likely fix for a heartbeat that never reached the manager, or None when unrecognised."""
     url = httpx.URL(manager_url)
     host, port = url.host, url.port or (443 if url.scheme == "https" else 80)
     chain = _causes(exc)
     text = " ".join(str(e) for e in chain)
-    if "WRONG_VERSION_NUMBER" in text and url.scheme == "https":
+    if scheme_mismatch(exc, manager_url):
         plain = str(url.copy_with(scheme="http")).rstrip("/")
         return (f"{host}:{port} answered plain HTTP to a TLS handshake (the manager's REST port has "
                 f"no TLS of its own). Use --manager {plain} --insecure")
@@ -560,6 +566,10 @@ class FleetMember:
         except Exception as exc:  # network: keep the node running, retry later
             self._report_failure(f"heartbeat to {self.manager_url} failed: {exc}",
                                  network_hint(exc, self.manager_url))
+            # A wrong scheme before the first contact is a misconfigured --manager: stop rather
+            # than retry forever. Once connected, a node may be running, so keep retrying.
+            if self.connected is None and scheme_mismatch(exc, self.manager_url):
+                raise SystemExit(2)
             return BACKOFF_MIN_S
         if not r.is_success:
             hint = status_hint(r.status_code, _error_code_of(r), name=self.name,
