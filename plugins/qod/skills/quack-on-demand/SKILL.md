@@ -1915,8 +1915,8 @@ Things to know:
 ## Fleet mode (nodes on your own servers, no Kubernetes)
 
 Manager: `QOD_RUNTIME_TYPE=fleet QOD_FLEET_JOIN_TOKEN=<random>` (plus HA if you run several managers).
-Every Linux or macOS server: `QOD_FLEET_JOIN_TOKEN=<random> uvx qod fleet join --manager http://mgr:20900 --insecure --advertise-host <data-ip>`
-(the REST port has no TLS of its own: use `https://` only through a TLS proxy in front of it; `--insecure` is required for `http://` because the assignment carries credentials)
+Every Linux or macOS server: `QOD_FLEET_JOIN_TOKEN=<random> uvx qod fleet join --manager https://mgr --advertise-host <data-ip>`
+(`https://mgr` is a TLS-terminating proxy in front of the REST port: the port itself has no TLS, so never point `https://` at `:20900`. `qod fleet join` refuses `http://` because the assignment carries credentials; `--manager http://mgr:20900 --insecure` is for tests on a trusted network only)
 under systemd or launchd (unit files below): `qod fleet join` is long-running, it heartbeats and runs the node the manager assigns until stopped. Pass the token through the environment, never
 `--join-token`: a command-line argument is visible to every local user in `ps`. A joined server runs exactly one node; pools are scheduled
 onto free servers whose reported RAM covers the pool's `--memory`. `qod pool create --size 3` before three
@@ -1975,7 +1975,7 @@ systemd unit (`/etc/systemd/system/qod-fleet-join.service`):
 [Unit]
 StartLimitIntervalSec=0
 [Service]
-ExecStart=/usr/local/bin/qod fleet join --manager http://mgr:20900 --insecure --advertise-host 10.0.3.17 --name %H
+ExecStart=/usr/local/bin/qod fleet join --manager https://mgr --advertise-host 10.0.3.17 --name %H
 Environment=QOD_FLEET_JOIN_TOKEN=<random>
 Restart=always
 RestartSec=5
