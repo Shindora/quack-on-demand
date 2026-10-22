@@ -1915,7 +1915,8 @@ Things to know:
 ## Fleet mode (nodes on your own servers, no Kubernetes)
 
 Manager: `QOD_RUNTIME_TYPE=fleet QOD_FLEET_JOIN_TOKEN=<random>` (plus HA if you run several managers).
-Every Linux or macOS server: `QOD_FLEET_JOIN_TOKEN=<random> uvx qod fleet join --manager https://mgr:20900 --advertise-host <data-ip>`
+Every Linux or macOS server: `QOD_FLEET_JOIN_TOKEN=<random> uvx qod fleet join --manager http://mgr:20900 --insecure --advertise-host <data-ip>`
+(the REST port has no TLS of its own: use `https://` only through a TLS proxy in front of it; `--insecure` is required for `http://` because the assignment carries credentials)
 under systemd or launchd (unit files below): `qod fleet join` is long-running, it heartbeats and runs the node the manager assigns until stopped. Pass the token through the environment, never
 `--join-token`: a command-line argument is visible to every local user in `ps`. A joined server runs exactly one node; pools are scheduled
 onto free servers whose reported RAM covers the pool's `--memory`. `qod pool create --size 3` before three
@@ -1954,11 +1955,22 @@ next heartbeat. Behind a trusted proxy that does not send `X-Forwarded-For`, a s
 stays unknown, so it stays pending and `qod fleet approve` answers `source_unknown`; fix the proxy
 or `QOD_FLEET_TRUSTED_PROXIES`.
 
+**Reading fleet errors.** Every fleet refusal states its facts (registered vs reported address,
+approved source, drained, the node a server holds) and ends with a `to fix` block saying where to
+run each command: `on the manager:` is any host with an admin qod profile, `on this server:` the
+joining machine; `to fix (any one):` lists alternatives. Before its first successful heartbeat,
+`qod fleet join` exits 2 on a refusal no retry can fix (wrong token, wrong URL or scheme, a name
+registered with another address); after that it keeps its node running and retries, printing one
+`still failing` line per attempt. In `qod fleet servers`, a failed node's `nodeError` comes with a
+`nodeAction` when the failure is a known one (port in use, extension download blocked, catalog
+Postgres unreachable, duckdb missing). A pending pool's `pendingDetail` (`qod pool list`, the UI's
+pending badge) says what every server is doing and the next command.
+
 systemd unit (`/etc/systemd/system/qod-fleet-join.service`):
 
 ```
 [Service]
-ExecStart=/usr/local/bin/qod fleet join --manager https://mgr:20900 --advertise-host 10.0.3.17 --name %H
+ExecStart=/usr/local/bin/qod fleet join --manager http://mgr:20900 --insecure --advertise-host 10.0.3.17 --name %H
 Environment=QOD_FLEET_JOIN_TOKEN=<random>
 Restart=always
 KillMode=control-group
