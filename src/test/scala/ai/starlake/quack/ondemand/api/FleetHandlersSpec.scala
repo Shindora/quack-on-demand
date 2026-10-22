@@ -60,6 +60,16 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync().isRight shouldBe true
   }
 
+  it should "tell a server with the wrong token how to fix it, echoing no token" in {
+    val (_, h) = fixture()
+    val e = h.heartbeat(req(), Some("nope"), loopback, None).unsafeRunSync().left.toOption.get._2
+    e.retryable shouldBe Some(false)
+    e.actions.toList.flatten.map(_.command) shouldBe
+      List("export QOD_FLEET_JOIN_TOKEN=<the manager's QOD_FLEET_JOIN_TOKEN>")
+    e.toString should not include "secret"
+    e.toString should not include "nope"
+  }
+
   it should "insert on first contact and answer with no assignment and the interval" in {
     val (store, h) = fixture()
     h.heartbeat(req(), Some("secret"), loopback, None).unsafeRunSync() shouldBe
@@ -103,6 +113,16 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .toOption
       .get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "address_change_refused")
+    e._2.message shouldBe "server 'srv-1' is registered at 10.0.0.1:21900; this heartbeat " +
+      "reports 10.0.0.2:21900 (not drained, holds no node)"
+    e._2.details.map(d => (d("registered"), d("reported"), d("drained"))) shouldBe
+      Some(("10.0.0.1:21900", "10.0.0.2:21900", "false"))
+    e._2.actions.toList.flatten.map(a => (a.where, a.command)) shouldBe List(
+      ("server", "qod fleet join ... --name <another-name>"),
+      ("manager", "qod fleet drain srv-1"),
+      ("manager", "qod fleet remove srv-1")
+    )
+    e._2.retryable shouldBe Some(false)
     store.setUnschedulable("srv-1", true)
     h.heartbeat(req(host = "10.0.0.2"), Some("secret"), loopback, None)
       .unsafeRunSync()
@@ -159,6 +179,7 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
     (e._1, e._2.error) shouldBe (StatusCode.BadGateway, "backend_error")
     // A fixed message: the cause goes to the manager log, never to the caller.
     e._2.message shouldBe "fleet store error, see manager log"
+    e._2.retryable shouldBe Some(true)
     e._2.message should not include "vanished"
   }
 
@@ -170,6 +191,10 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .left
       .map(e => (e._1, e._2.error)) shouldBe
       Left((StatusCode.BadRequest, "fleet_disabled"))
+    h.heartbeat(req(), Some("secret"), loopback, None)
+      .unsafeRunSync()
+      .left
+      .map(_._2.retryable) shouldBe Left(Some(false))
     store.list() shouldBe Nil
   }
 
@@ -296,10 +321,12 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .toOption
       .get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "source_change_refused")
-    e._2.message shouldBe "server 'srv-1' is approved from another address; to move it, drain " +
-      "it, approve it from the new address once it shows as pending, then undrain it, or add " +
-      "the new address to QOD_FLEET_AUTO_APPROVE"
-    e._2.message should include("undrain it")
+    e._2.message shouldBe "server 'srv-1' is approved from 10.1.2.3; this heartbeat comes from " +
+      "192.168.1.5, outside QOD_FLEET_AUTO_APPROVE"
+    e._2.details.map(d => (d("approvedSource"), d("source"), d("autoApprove"))) shouldBe
+      Some(("10.1.2.3", "192.168.1.5", "10.0.0.0/8"))
+    e._2.actions.toList.flatten.map(_.command).head shouldBe "qod fleet drain srv-1"
+    e._2.retryable shouldBe Some(false)
     val row = store.get("srv-1").get
     (row.approved, row.approvedSource, row.sourceAddr) shouldBe
       (true, Some("10.1.2.3"), Some("10.1.2.3"))
@@ -339,11 +366,12 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .toOption
       .get
     (e._1, e._2.error) shouldBe (StatusCode.Conflict, "approval_unbound")
-    e._2.message shouldBe "server 'srv-1' was approved before its source address was recorded " +
-      "and this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it, approve it once " +
-      "it shows as pending, then undrain it (`qod fleet drain srv-1`, " +
-      "`qod fleet approve srv-1`, `qod fleet undrain srv-1`)"
-    e._2.message should include("qod fleet undrain")
+    e._2.message shouldBe "server 'srv-1' was approved before its source address was recorded, " +
+      "and this heartbeat comes from 192.168.1.5, outside QOD_FLEET_AUTO_APPROVE"
+    val first = e._2.actions.toList.flatten.head
+    first.command shouldBe "qod fleet drain srv-1"
+    first.note.get should include("qod fleet undrain srv-1")
+    e._2.retryable shouldBe Some(false)
     e._2.message should not include "\u2014"
     val row = store.get("srv-1").get
     (row.approved, row.approvedSource, row.sourceAddr) shouldBe (true, None, Some("10.1.2.3"))

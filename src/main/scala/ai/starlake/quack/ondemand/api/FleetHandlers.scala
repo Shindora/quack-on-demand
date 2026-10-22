@@ -58,8 +58,7 @@ final class FleetHandlers(
   private def fail[A](status: StatusCode, error: String, message: String): Out[A] =
     IO.pure(Left((status, ErrorResponse(error, message))))
 
-  private val disabled =
-    (StatusCode.BadRequest, ErrorResponse("fleet_disabled", "runtimeType is not fleet"))
+  private val disabled = FleetErrors.disabled
 
   /** A raised store error becomes `502 backend_error` with a fixed message: the cause (SQL text,
     * constraint names, hosts) is logged at WARN, never echoed to the caller. `onRaised` runs after
@@ -73,7 +72,7 @@ final class FleetHandlers(
       case Left(t)  =>
         logger.warn(s"fleet: $what failed: ${t.getMessage}", t)
         onRaised(t)
-        Left((StatusCode.BadGateway, ErrorResponse("backend_error", FleetHandlers.StoreError)))
+        Left(FleetErrors.backendError)
     }
 
   /** `peer` is the TCP peer; `forwardedFor` is believed only when the peer is a trusted proxy. The
@@ -89,21 +88,11 @@ final class FleetHandlers(
     // Not a fleet manager: no server rows may be written, whoever the caller (on a local or K8s
     // manager the route sits behind the API-key guard, so a static-key caller reaches it).
     if backend.isEmpty then IO.pure(Left(disabled))
-    else if !tokenOk(token) then
-      fail(StatusCode.Unauthorized, "fleet_unauthorized", "invalid or missing X-Fleet-Token")
+    else if !tokenOk(token) then IO.pure(Left(FleetErrors.unauthorized))
     else if !ValidStates.contains(req.node.state) then
-      fail(
-        StatusCode.BadRequest,
-        "invalid_node_state",
-        s"unknown node state '${req.node.state}'; expected one of " +
-          "none, starting, running, failed, stopped"
-      )
+      IO.pure(Left(FleetErrors.invalidNodeState(req.node.state)))
     else if startedAt.contains(None) then
-      fail(
-        StatusCode.BadRequest,
-        "invalid_started_at",
-        s"node.startedAt '${req.node.startedAt.getOrElse("")}' is not an ISO-8601 instant"
-      )
+      IO.pure(Left(FleetErrors.invalidStartedAt(req.node.startedAt.getOrElse(""))))
     else
       val report = NodeReport(
         req.node.assignmentEpoch,
@@ -128,33 +117,25 @@ final class FleetHandlers(
         sourceAddr = source.map(_.getHostAddress),
         autoApprove = autoOk
       )
+      // A refusal writes nothing, so the row read right after it is the one that decided it.
+      def refuse(build: Option[FleetServerRow] => FleetErrors.Err): Out[FleetHeartbeatResponse] =
+        IO.blocking(store.get(req.name)).map(row => Left(build(row)))
       val record: Out[FleetHeartbeatResponse] =
         IO.blocking(store.recordHeartbeat(hb)).flatMap {
           case HeartbeatOutcome.AddressChangeRefused =>
-            fail(
-              StatusCode.Conflict,
-              "address_change_refused",
-              s"server '${req.name}' is known with another address; " +
-                "drain it before re-addressing"
+            refuse(row =>
+              FleetErrors.addressChangeRefused(
+                req.name,
+                s"${req.advertiseHost}:${req.nodePort}",
+                row
+              )
             )
           case HeartbeatOutcome.SourceChangeRefused =>
-            fail(
-              StatusCode.Conflict,
-              "source_change_refused",
-              s"server '${req.name}' is approved from another address; to move it, drain it, " +
-                "approve it from the new address once it shows as pending, then undrain it, " +
-                "or add the new address to QOD_FLEET_AUTO_APPROVE"
+            refuse(row =>
+              FleetErrors.sourceChangeRefused(req.name, hb.sourceAddr, row, cfg.autoApprove)
             )
           case HeartbeatOutcome.ApprovalUnbound =>
-            fail(
-              StatusCode.Conflict,
-              "approval_unbound",
-              s"server '${req.name}' was approved before its source address was recorded and " +
-                "this heartbeat comes from outside QOD_FLEET_AUTO_APPROVE; drain it, approve it " +
-                "once it shows as pending, then undrain it " +
-                s"(`qod fleet drain ${req.name}`, `qod fleet approve ${req.name}`, " +
-                s"`qod fleet undrain ${req.name}`)"
-            )
+            refuse(_ => FleetErrors.approvalUnbound(req.name, hb.sourceAddr, cfg.autoApprove))
           case outcome =>
             IO.blocking(store.get(req.name)).map { row =>
               val approval = if row.exists(_.approved) then "approved" else "pending"
