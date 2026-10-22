@@ -736,3 +736,67 @@ def test_probe_duckdb_version_non_executable_is_none(tmp_path):
     binary = tmp_path / "duckdb"
     binary.write_text("#!/bin/sh\necho v1.5.6\n")
     assert probe_duckdb_version(binary) is None
+
+
+def test_refusal_prints_the_managers_fix_instead_of_the_local_hint(tmp_path, capsys):
+    body = {"error": "address_change_refused",
+            "message": "server 'srv-1' is registered at 10.0.0.9:21900; this heartbeat reports 10.0.0.7:21900 (not drained, holds no node)",
+            "details": {"server": "srv-1"},
+            "actions": [{"where": "server", "command": "qod fleet join ... --name <another-name>"},
+                        {"where": "manager", "command": "qod fleet remove srv-1"}],
+            "retryable": False}
+    ok = FakeResponse(200, {"heartbeatSec": 5, "assignment": None})
+    member = make_member(FakeHttp([ok, FakeResponse(409, body)]), lambda *a, **k: FakeProc(), tmp_path)
+    member.run_once()
+    assert member.run_once() == BACKOFF_MIN_S  # after a first contact a refusal never exits
+    err = capsys.readouterr().err
+    assert "registered at 10.0.0.9:21900" in err
+    assert "to fix (any one):" in err and "on this server:" in err and "qod fleet remove srv-1" in err
+    assert "hint:" not in err
+
+
+def test_non_retryable_refusal_before_first_contact_exits(tmp_path, capsys):
+    body = {"error": "fleet_unauthorized", "message": "invalid or missing X-Fleet-Token", "retryable": False,
+            "actions": [{"where": "server", "command": "export QOD_FLEET_JOIN_TOKEN=<the manager's QOD_FLEET_JOIN_TOKEN>"}]}
+    member = make_member(FakeHttp([FakeResponse(401, body)]), lambda *a, **k: FakeProc(), tmp_path)
+    with pytest.raises(SystemExit) as e:
+        member.run_once()
+    assert e.value.code == 2
+    assert "export QOD_FLEET_JOIN_TOKEN" in capsys.readouterr().err
+
+
+def test_no_fleet_endpoint_before_first_contact_exits(tmp_path):
+    member = make_member(FakeHttp([FakeResponse(404, None)]), lambda *a, **k: FakeProc(), tmp_path)
+    with pytest.raises(SystemExit):
+        member.run_once()
+
+
+def test_retryable_refusal_before_first_contact_keeps_retrying(tmp_path):
+    body = {"error": "backend_error", "message": "fleet store error, see manager log", "retryable": True}
+    member = make_member(FakeHttp([FakeResponse(502, body)]), lambda *a, **k: FakeProc(), tmp_path)
+    assert member.run_once() == BACKOFF_MIN_S
+
+
+def test_a_repeated_failure_prints_one_line_per_retry(tmp_path, capsys):
+    refused = lambda: FakeResponse(409, {"error": "address_change_refused", "message": "known"})
+    member = make_member(FakeHttp([refused(), refused(), refused()]), lambda *a, **k: FakeProc(), tmp_path)
+    for _ in range(3):
+        member.run_once()
+    err = capsys.readouterr().err.splitlines()
+    assert sum("WARN manager answered 409" in l for l in err) == 1
+    assert [l for l in err if "still failing" in l] == [
+        "qod fleet join: still failing (address_change_refused, 2 times), retrying",
+        "qod fleet join: still failing (address_change_refused, 3 times), retrying",
+    ]
+
+
+def test_network_failure_leads_with_the_explanation(tmp_path, capsys, plain_http_port):
+    url = f"https://127.0.0.1:{plain_http_port}"
+    ok = FakeResponse(200, {"heartbeatSec": 5, "assignment": None})
+    member = make_member(RaisingHttp(_real_error(url), [ok]), lambda *a, **k: FakeProc(), tmp_path)
+    member.run_once()
+    member.run_once()
+    err = capsys.readouterr().err.splitlines()
+    line = next(l for l in err if "cannot reach the manager" in l)
+    assert "answered plain HTTP" in line and "WRONG_VERSION_NUMBER" not in line
+    assert any("(cause:" in l and "WRONG_VERSION_NUMBER" in l for l in err)

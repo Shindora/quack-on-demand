@@ -27,6 +27,7 @@ from typing import Callable
 import httpx
 
 from . import __version__
+from .fix_actions import action_lines
 
 STOP_GRACE_S = 60
 START_GRACE_S = 60
@@ -239,12 +240,32 @@ def _error_of(r) -> str:
     return getattr(r, "text", "") or ""
 
 
-def _error_code_of(r) -> str | None:
+def _body_of(r) -> dict:
     try:
         body = r.json()
     except (ValueError, TypeError, AttributeError):
-        return None
-    return body.get("error") if isinstance(body, dict) else None
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def refusal_lines(r, *, name: str, address: str) -> list[str]:
+    """The fix for a heartbeat the manager rejected: the manager's own `to fix` block, or this CLI's
+    hint for a manager that sends no actions."""
+    body = _body_of(r)
+    lines = action_lines(body.get("actions"), server="this server")
+    if lines:
+        return lines
+    hint = status_hint(r.status_code, body.get("error"), name=name, address=address)
+    return [f"hint: {hint}"] if hint else []
+
+
+def permanent_refusal(r) -> bool:
+    """A refusal no retry can fix: the manager says so (retryable: false), or this URL has no fleet
+    endpoint (404, or the 401 of a manager that is not in fleet mode, which carries no code)."""
+    body = _body_of(r)
+    if body.get("retryable") is False:
+        return True
+    return r.status_code == 404 or (r.status_code == 401 and not body.get("error"))
 
 
 def _causes(exc: BaseException) -> list[BaseException]:
@@ -380,6 +401,8 @@ class FleetMember:
         self.connected: bool | None = None
         # The last failed-heartbeat line, so its hint is printed once rather than every retry.
         self.last_failure: str | None = None
+        # How many heartbeats in a row failed with last_failure, for the one-line reminder.
+        self.repeats = 0
         # The manager's last approval answer (approved | pending), so the line prints on change only.
         self.approval: str | None = None
         # Monotonic deadline of the scheduled restart of a failed node; None while none is scheduled.
@@ -564,17 +587,25 @@ class FleetMember:
             r = self.http.post(f"{self.manager_url}/api/fleet/heartbeat", json=body,
                                headers={"X-Fleet-Token": self.join_token}, timeout=10.0)
         except Exception as exc:  # network: keep the node running, retry later
-            self._report_failure(f"heartbeat to {self.manager_url} failed: {exc}",
-                                 network_hint(exc, self.manager_url))
+            hint = network_hint(exc, self.manager_url)
+            if hint:
+                message, detail = f"cannot reach the manager at {self.manager_url}: {hint}", [f"(cause: {exc})"]
+            else:
+                message, detail = f"heartbeat to {self.manager_url} failed: {exc}", []
+            self._report_failure(message, detail, key=type(exc).__name__)
             # A wrong scheme before the first contact is a misconfigured --manager: stop rather
             # than retry forever. Once connected, a node may be running, so keep retrying.
             if self.connected is None and scheme_mismatch(exc, self.manager_url):
                 raise SystemExit(2)
             return BACKOFF_MIN_S
         if not r.is_success:
-            hint = status_hint(r.status_code, _error_code_of(r), name=self.name,
-                               address=f"{self.advertise_host}:{self.node_port}")
-            self._report_failure(f"WARN manager answered {r.status_code}: {_error_of(r)}", hint)
+            self._report_failure(f"WARN manager answered {r.status_code}: {_error_of(r)}",
+                                 refusal_lines(r, name=self.name, address=f"{self.advertise_host}:{self.node_port}"),
+                                 key=_body_of(r).get("error") or str(r.status_code))
+            # Same rule for a refusal the manager marks permanent (wrong token, wrong URL, a name
+            # registered elsewhere): before the first contact it is a misconfiguration.
+            if self.connected is None and permanent_refusal(r):
+                raise SystemExit(2)
             return BACKOFF_MIN_S
         self.last_failure = None
         if not self.connected:
@@ -592,11 +623,17 @@ class FleetMember:
             sys.stderr.write(f"qod fleet join: could not act on the manager's reply: {exc!r}\n")
             return BACKOFF_MIN_S
 
-    def _report_failure(self, message: str, hint: str | None) -> None:
-        """Log every failed heartbeat; the hint only when the failure changes, not every 5 s."""
-        sys.stderr.write(f"qod fleet join: {message}\n")
-        if hint and message != self.last_failure:
-            sys.stderr.write(f"qod fleet join:   hint: {hint}\n")
+    def _report_failure(self, message: str, detail: list[str], key: str) -> None:
+        """The full failure (message, then its fix) once per distinct failure, then one short line
+        per retry while it repeats, so a refused join does not flood its log every 5 s."""
+        if message != self.last_failure:
+            sys.stderr.write(f"qod fleet join: {message}\n")
+            for line in detail:
+                sys.stderr.write(f"qod fleet join:   {line}\n")
+            self.repeats = 1
+        else:
+            self.repeats += 1
+            sys.stderr.write(f"qod fleet join: still failing ({key}, {self.repeats} times), retrying\n")
         self.last_failure = message
         self._mark_disconnected()
 
