@@ -233,7 +233,7 @@ export default function PoolSection({ tenant }: { tenant: string }) {
                     <span
                       className="badge warn"
                       style={{ marginLeft: 6 }}
-                      title={p.pendingReason ?? ''}
+                      title={p.pendingDetail ?? p.pendingReason ?? ''}
                     >
                       {p.pending} pending{p.pendingReason === 'none_fits' ? ' (no server fits)' : ''}
                     </span>

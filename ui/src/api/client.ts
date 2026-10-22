@@ -132,6 +132,7 @@ import type {
   // Usage and accounting
   UsageResponse,
 } from './types';
+import { actionLines } from './errorActions';
 
 const BASE = '/api';
 
@@ -149,12 +150,13 @@ const FETCH_OPTS: RequestInit = { credentials: 'same-origin' };
 /** API error with a normalized message + HTTP status so callers can branch
  * on 401 (login-page redirect) vs. other failures. */
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public code?: string) { super(message); }
+  constructor(public status: number, message: string, public code?: string, public actions: string[] = []) { super(message); }
 }
 
-/** Normalize any thrown value to a display string (ApiError keeps its server message). */
+/** Normalize any thrown value to a display string (ApiError keeps its server message and fix). */
 export function errorMessage(e: unknown): string {
-  return e instanceof ApiError ? e.message : String(e);
+  if (!(e instanceof ApiError)) return String(e);
+  return e.actions.length ? `${e.message}\n${e.actions.join('\n')}` : e.message;
 }
 
 async function handle<T>(r: Response): Promise<T> {
@@ -162,12 +164,14 @@ async function handle<T>(r: Response): Promise<T> {
     const body = await r.text();
     let msg = body;
     let code: string | undefined;
+    let actions: string[] = [];
     try {
       const j = JSON.parse(body);
       msg = j.message ?? j.error ?? body;
       code = j.error;
+      actions = actionLines(j.actions, j.details?.server);
     } catch { /* not JSON */ }
-    throw new ApiError(r.status, msg || r.statusText, code);
+    throw new ApiError(r.status, msg || r.statusText, code, actions);
   }
   return r.headers.get('content-length') === '0'
     ? (undefined as T)

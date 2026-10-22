@@ -90,6 +90,8 @@ export interface PoolResponse {
   // attempt left them pending ("none_free" | "none_fits").
   pending?: number;
   pendingReason?: string | null;
+  // The sentence behind pendingReason: servers by state and the next command.
+  pendingDetail?: string | null;
 }
 
 // ----- Fleet backend: bare-metal / VM servers (QOD_RUNTIME_TYPE=fleet) -----
@@ -110,6 +112,7 @@ export interface FleetServer {
   pool?: string | null;
   nodeState: string;
   nodeError?: string | null;
+  nodeAction?: string | null;
   qodVersion?: string | null;
   duckdbVersion?: string | null;
   cpus?: number | null;

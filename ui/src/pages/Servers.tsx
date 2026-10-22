@@ -81,7 +81,7 @@ export default function Servers() {
   return (
     <>
       <h1>Servers</h1>
-      {err && <div className="login-err">{err}</div>}
+      {err && <div className="login-err" style={{ whiteSpace: 'pre-wrap' }}>{err}</div>}
       {actionErr && (
         <div className="login-err">
           {actionErr}{' '}
@@ -150,7 +150,7 @@ export default function Servers() {
                       </Link>
                     ) : <span className="subtle">-</span>}
                   </td>
-                  <td title={s.nodeError ?? ''}>
+                  <td title={[s.nodeError, s.nodeState === 'failed' && s.nodeAction && `to fix: ${s.nodeAction}`].filter(Boolean).join('\n')}>
                     {s.nodeState}
                     {s.nodeError && <span className="badge bad" style={{ marginLeft: 6 }}>error</span>}
                   </td>
