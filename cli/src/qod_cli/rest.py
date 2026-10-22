@@ -27,10 +27,15 @@ _CREDENTIAL_PATHS = frozenset(
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, error: str, message: str):
+    def __init__(self, status: int, error: str, message: str, details: dict | None = None,
+                 actions: list | None = None, retryable: bool | None = None):
         self.status = status
         self.error = error
         self.message = message
+        # The manager's facts and suggested fixes (fleet errors today); None when it sent none.
+        self.details = details if isinstance(details, dict) else None
+        self.actions = actions if isinstance(actions, list) else None
+        self.retryable = retryable if isinstance(retryable, bool) else None
         super().__init__(f"{status} {error}: {message}")
 
 
@@ -72,10 +77,13 @@ class RestClient:
             if not response.content:
                 return None
             return response.json()
+        details = actions = retryable = None
         try:
             payload = response.json()
             if isinstance(payload, dict):
                 error, message = payload.get("error", "error"), payload.get("message", response.text)
+                details, actions, retryable = (
+                    payload.get("details"), payload.get("actions"), payload.get("retryable"))
             else:
                 error, message = "error", response.text
         except ValueError:
@@ -85,5 +93,5 @@ class RestClient:
             and not settings.api_key
             and path not in _CREDENTIAL_PATHS
         ):
-            message = "session expired or invalid, run qod login"
-        raise ApiError(response.status_code, error, message)
+            message, actions = "session expired or invalid, run qod login", None
+        raise ApiError(response.status_code, error, message, details, actions, retryable)

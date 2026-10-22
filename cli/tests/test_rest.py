@@ -129,3 +129,15 @@ def test_non_dict_error_body_maps_cleanly():
     with pytest.raises(ApiError) as exc:
         client().request("GET", "/health")
     assert exc.value.status == 500
+
+
+@respx.mock
+def test_error_response_keeps_details_actions_and_retryable():
+    body = {"error": "server_active", "message": "server 'a' is active", "details": {"server": "a"},
+            "actions": [{"where": "manager", "command": "qod fleet drain a"}], "retryable": False}
+    respx.post(f"{BASE}/api/fleet/server/remove").mock(return_value=httpx.Response(409, json=body))
+    with pytest.raises(ApiError) as exc:
+        client().request("POST", "/api/fleet/server/remove", body={"name": "a"})
+    assert exc.value.details == {"server": "a"}
+    assert exc.value.actions == [{"where": "manager", "command": "qod fleet drain a"}]
+    assert exc.value.retryable is False

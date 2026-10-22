@@ -4,6 +4,7 @@ from typing import Any
 
 import typer
 
+from ..fix_actions import action_lines
 from ..output import render
 from ..rest import ApiError, RestClient
 
@@ -21,6 +22,8 @@ def call(
         data = RestClient(ctx.obj.settings).request(method, path, params=params, body=body, text=text)
     except ApiError as exc:
         typer.echo(f"error: {exc}", err=True)
+        for line in action_lines(exc.actions, (exc.details or {}).get("server")):
+            typer.echo(line, err=True)
         raise typer.Exit(1)
     if not quiet:
         render(data, ctx.obj.json_output)

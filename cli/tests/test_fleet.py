@@ -134,3 +134,16 @@ def test_fleet_join_reports_the_cached_binarys_probed_version_not_the_pin(monkey
     assert out.exit_code == 0, out.output
     assert probed == [tmp_path / "bin" / "duckdb"] == [captured["duckdb_bin"]]
     assert captured["duckdb_version"] == "1.5.6"
+
+
+def test_fleet_error_prints_the_managers_fix(monkeypatch):
+    def fake_request(self, method, path, params=None, body=None, text=False):
+        raise rest.ApiError(409, "server_active", "server 'b' is active", details={"server": "b"},
+                            actions=[{"where": "manager", "command": "qod fleet drain b",
+                                      "note": "then stop qod fleet join on b, then qod fleet remove b"}])
+    monkeypatch.setattr(rest.RestClient, "request", fake_request)
+    out = runner.invoke(app, ["fleet", "remove", "b"])
+    assert out.exit_code == 1
+    assert "error: 409 server_active: server 'b' is active" in out.output
+    assert "to fix:" in out.output
+    assert "on the manager:  qod fleet drain b  (then stop qod fleet join on b" in out.output
