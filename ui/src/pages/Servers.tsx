@@ -84,7 +84,7 @@ export default function Servers() {
       {err && <div className="login-err" style={{ whiteSpace: 'pre-wrap' }}>{err}</div>}
       {actionErr && (
         <div className="login-err">
-          {actionErr}{' '}
+          <span style={{ whiteSpace: 'pre-wrap' }}>{actionErr}</span>{' '}
           <button type="button" className="copy-btn" onClick={() => setActionErr(null)}>Dismiss</button>
         </div>
       )}

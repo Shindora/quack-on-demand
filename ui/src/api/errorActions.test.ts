@@ -7,6 +7,13 @@ describe('actionLines', () => {
     expect(actionLines([{ where: 'manager' }])).toEqual([]);
   });
 
+  it('renders a single action without a server name', () => {
+    expect(actionLines([{ where: 'server', command: 'x' }])).toEqual([
+      'to fix:',
+      '  on the server:  x',
+    ]);
+  });
+
   it('aligns alternatives like the CLI', () => {
     expect(actionLines([
       { where: 'server', command: 'qod fleet join ... --name <another-name>' },
