@@ -235,6 +235,29 @@ class StdoutTelemetrySinkSpec extends AnyFlatSpec with Matchers:
     lines.foreach(_ should not include "hunter2")
   }
 
+  // Second review of #156, reproduced against DuckDB 2.0: the `LINE 1:` context echoes a comment
+  // the sql field drops, and a bare SET value.
+  it should "scrub a literal in a comment and a bare SET value echoed in LINE 1" in {
+    val cases = List(
+      "/* SECRET 'hunter2xy' */ SELEC 1;",
+      "SELEC 1 -- SECRET 'hunter2xy'",
+      "SET s3_secret_access_key = hunter2xy extra;"
+    ).map(sql => sql -> s"Parser Error: syntax error at or near \"1\"\nLINE 1: $sql")
+
+    val f = new Fixture
+    f.sink.appendStatements(cases.map { case (sql, err) =>
+      stmt(0).copy(sql = sql, status = "error", error = Some(err))
+    })
+    f.sink.appendAudit(cases.map { case (sql, err) =>
+      audit.copy(detail = Map("sql" -> sql, "reason" -> err, "error" -> err))
+    })
+
+    val lines = f.flushed()
+    lines should have size 6
+    lines.foreach(_ should not include "hunter2xy")
+    js(lines.head).get[String]("sql") shouldBe Right("  SELEC 1;")
+  }
+
   it should "mask an error that names a double-quoted identifier (documented over-redaction)" in {
     val f = new Fixture
     f.sink.appendStatements(

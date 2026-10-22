@@ -39,10 +39,10 @@ import scala.util.control.NonFatal
   *   - On a failed `auth` event, the typed login name and tenant (where a mistyped password lands)
   *     are replaced by a keyed hash, so repeated failures stay correlatable within one process.
   *
-  * Known limits: a value written unquoted is not a literal and goes out as is; a quoted value under
-  * 4 characters is not chased through error text (the scrubber's floor); and a double-quoted
-  * identifier is chased like any value, so an error naming it is masked too (the scrubber's
-  * over-redaction trade-off).
+  * Known limits: a value written unquoted outside a leading `SET` / `PRAGMA` assignment is not a
+  * literal and goes out as is; a quoted value under 4 characters is not chased through error text
+  * (the scrubber's floor); and a double-quoted identifier is chased like any value, so an error
+  * naming it is masked too (the scrubber's over-redaction trade-off).
   */
 final class StdoutTelemetrySink(
     inner: TelemetryStore,

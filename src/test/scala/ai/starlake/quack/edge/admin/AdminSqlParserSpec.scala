@@ -548,3 +548,25 @@ class AdminSqlParserSpec extends AnyFlatSpec with Matchers:
 
   it should "undo quote doubling so the value matches what an error echoes" in:
     AdminSqlParser.quotedValues("""SELECT 'it''s', "a""b"""") shouldBe Set("it's", "a\"b")
+
+  // Second review of #156: DuckDB echoes a comment in its LINE 1 error context.
+  it should "collect quoted spans inside comments, nested markers read as prose" in:
+    AdminSqlParser.quotedValues(
+      "/* SECRET 'pw1' /* 'pw2' */ -- 'pw3' */ SELEC 1 -- x 'pw4'"
+    ) shouldBe
+      Set("pw1", "pw2", "pw3", "pw4")
+    AdminSqlParser.quotedValues("SELECT 1 /* open 'pw5'") shouldBe Set("pw5")
+
+  "redactLiterals and quotedValues" should "cover the bare value of a leading SET or PRAGMA" in:
+    import AdminSqlParser.{quotedValues, redactLiterals}
+    redactLiterals("SET s3_secret_access_key = hunter2xy") shouldBe "SET s3_secret_access_key = ?"
+    redactLiterals("""SET "s3_secret_access_key"=hunter2xy""") shouldBe """SET "?"=?"""
+    redactLiterals("/* c */ SET GLOBAL s3_session_token TO hunter-2xy; SELECT 1") shouldBe
+      "  SET GLOBAL s3_session_token TO ?; SELECT 1"
+    redactLiterals("SELECT 1; pragma threads = 4") shouldBe "SELECT 1; pragma threads = ?"
+    redactLiterals("SET memory_limit = '4GB'") shouldBe "SET memory_limit = '?'"
+    redactLiterals("UPDATE t SET api_key = k2 WHERE id = 1") shouldBe
+      "UPDATE t SET api_key = k2 WHERE id = 1"
+    redactLiterals("RESET s3_secret_access_key") shouldBe "RESET s3_secret_access_key"
+    quotedValues("SET s3_secret_access_key = hunter2xy extra ; SELECT 'a1'") shouldBe
+      Set("hunter2xy extra", "a1")
