@@ -476,6 +476,18 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       .map(_._1) shouldBe Left(StatusCode.NotFound)
   }
 
+  it should "name a missing server and point at the listing" in {
+    val (_, h) = adminFixture()
+    val e      = h
+      .drain(FleetServerOpRequest("ghost"), Some("k"))(superuser)
+      .unsafeRunSync()
+      .left
+      .toOption
+      .get
+    (e._1, e._2.message) shouldBe (StatusCode.NotFound, "no such server 'ghost'")
+    e._2.actions.toList.flatten.map(_.command) shouldBe List("qod fleet servers")
+  }
+
   "remove" should "409 while reachable and not drained, then delete" in {
     val (store, h) = adminFixture()
     beat(store, "a", "10.0.0.1")
@@ -508,18 +520,6 @@ class FleetHandlersSpec extends AnyFlatSpec with Matchers:
       )
     )
     e.retryable shouldBe Some(false)
-  }
-
-  "drain" should "name a missing server and point at the listing" in {
-    val (_, h) = adminFixture()
-    val e      = h
-      .drain(FleetServerOpRequest("ghost"), Some("k"))(superuser)
-      .unsafeRunSync()
-      .left
-      .toOption
-      .get
-    (e._1, e._2.message) shouldBe (StatusCode.NotFound, "no such server 'ghost'")
-    e._2.actions.toList.flatten.map(_.command) shouldBe List("qod fleet servers")
   }
 
   it should "remove a reachable, schedulable server that is still pending" in {

@@ -1958,9 +1958,12 @@ or `QOD_FLEET_TRUSTED_PROXIES`.
 **Reading fleet errors.** Every fleet refusal states its facts (registered vs reported address,
 approved source, drained, the node a server holds) and ends with a `to fix` block saying where to
 run each command: `on the manager:` is any host with an admin qod profile, `on this server:` the
-joining machine; `to fix (any one):` lists alternatives. Before its first successful heartbeat,
+joining machine (`qod fleet join` labels it that way; other qod commands and the UI print
+`on <server name>:`); `to fix (any one):` lists alternatives. Before its first successful heartbeat,
 `qod fleet join` exits 2 on a refusal no retry can fix (wrong token, wrong URL or scheme, a name
-registered with another address); after that it keeps its node running and retries, printing one
+registered with another address); retryable refusals and network errors are retried before the
+first heartbeat too, and under the systemd unit below a join that exited is re-run every 5 s.
+After the first heartbeat it keeps its node running and retries, printing one
 `still failing` line per attempt. In `qod fleet servers`, a failed node's `nodeError` comes with a
 `nodeAction` when the failure is a known one (port in use, extension download blocked, catalog
 Postgres unreachable, duckdb missing). A pending pool's `pendingDetail` (`qod pool list`, the UI's
@@ -1969,10 +1972,13 @@ pending badge) says what every server is doing and the next command.
 systemd unit (`/etc/systemd/system/qod-fleet-join.service`):
 
 ```
+[Unit]
+StartLimitIntervalSec=0
 [Service]
 ExecStart=/usr/local/bin/qod fleet join --manager http://mgr:20900 --insecure --advertise-host 10.0.3.17 --name %H
 Environment=QOD_FLEET_JOIN_TOKEN=<random>
 Restart=always
+RestartSec=5
 KillMode=control-group
 [Install]
 WantedBy=multi-user.target

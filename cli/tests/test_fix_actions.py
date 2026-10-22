@@ -6,6 +6,10 @@ def test_no_actions_renders_nothing():
     assert action_lines([{"where": "manager"}]) == []
 
 
+def test_non_string_command_is_skipped():
+    assert action_lines([{"where": "manager", "command": 1}]) == []
+
+
 def test_single_action_names_where_and_note():
     assert action_lines([{"where": "manager", "command": "qod fleet drain a", "note": "then undrain"}]) == [
         "to fix:",

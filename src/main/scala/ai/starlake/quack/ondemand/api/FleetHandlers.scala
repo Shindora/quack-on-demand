@@ -133,7 +133,7 @@ final class FleetHandlers(
               FleetErrors.sourceChangeRefused(req.name, hb.sourceAddr, row, cfg.autoApprove)
             )
           case HeartbeatOutcome.ApprovalUnbound =>
-            refuse(_ => FleetErrors.approvalUnbound(req.name, hb.sourceAddr, cfg.autoApprove))
+            IO.pure(Left(FleetErrors.approvalUnbound(req.name, hb.sourceAddr, cfg.autoApprove)))
           case outcome =>
             IO.blocking(store.get(req.name)).map { row =>
               val approval = if row.exists(_.approved) then "approved" else "pending"

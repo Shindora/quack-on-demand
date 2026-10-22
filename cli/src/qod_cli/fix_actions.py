@@ -14,10 +14,13 @@ def action_lines(actions, server: str | None = None) -> list[str]:
         return []
     rows = []
     for a in actions:
-        if not isinstance(a, dict) or not a.get("command"):
+        if not isinstance(a, dict):
+            continue
+        command = a.get("command")
+        if not isinstance(command, str) or not command:
             continue
         label = "on the manager:" if a.get("where") == "manager" else f"on {server or 'the server'}:"
-        rows.append((label, a["command"] + (f"  ({a['note']})" if a.get("note") else "")))
+        rows.append((label, command + (f"  ({a['note']})" if a.get("note") else "")))
     if not rows:
         return []
     width = max(len(label) for label, _ in rows)
