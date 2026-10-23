@@ -1,6 +1,7 @@
 package ai.starlake.quack.edge.admin
 
 import java.util.Locale
+import scala.util.matching.Regex
 
 /** Parser for the SQL admin dialect (spec 2026-09-09-sql-admin-dialect-design.md).
   *
@@ -153,6 +154,114 @@ object AdminSqlParser:
         else Some(Right((closeIdx + tag.length, ScanKind.StrLit)))
       else None
     else None
+
+  /** `sql` with every value masked, for sinks that leave the control plane: string literals become
+    * `'?'`, double-quoted spans `"?"`, comments a space, and the unquoted value of a
+    * statement-leading `SET` / `PRAGMA` assignment `?`. Secrets ride in both quote forms (`CREATE
+    * SECRET ... SECRET '...'` and `SECRET "..."`, `ATTACH '...password=...'`) and bare (`SET
+    * s3_secret_access_key = ...`), and a commented-out literal is still a literal. A span left open
+    * at the end (SQL cut by a length cap) is masked to the end, keeping the statement readable up
+    * to it.
+    */
+  def redactLiterals(sql: String): String =
+    BareAssignment.replaceAllIn(render(pieces(sql)), m => Regex.quoteReplacement(m.group(1) + "?"))
+
+  /** The contents of every quoted span of `sql` (string literals in any form and double-quoted
+    * spans, delimiters stripped, those inside comments included) and every bare `SET` / `PRAGMA`
+    * value. Feeds `AttachErrorRedactor.scrub` as the known values to chase through an engine error
+    * about this statement, which echoes them in its own quoting or in its `LINE 1:` context.
+    */
+  def quotedValues(sql: String): Set[String] =
+    val ps     = pieces(sql)
+    val quoted = ps.flatMap {
+      case Piece.Quoted(v, _)  => Vector(v)
+      case Piece.Comment(body) =>
+        pieces(body, comments = false).collect { case Piece.Quoted(v, _) => v }
+      case Piece.Text(_) => Vector.empty
+    }
+    val bare = BareAssignment.findAllMatchIn(render(ps)).map(_.group(2).trim)
+    (quoted ++ bare).filter(_.nonEmpty).toSet
+
+  /** A statement-leading `SET` / `PRAGMA` assignment (group 1) of an unquoted value (group 2), on
+    * [[render]]ed text. Any setting name: a name filter misses a quoted name (`SET
+    * "s3_secret_access_key" = ...`), and quoted values are masked regardless of name.
+    */
+  private val BareAssignment =
+    ("""(?i)((?:^|;)\s*(?:SET|PRAGMA)\s+(?:(?:GLOBAL|SESSION|LOCAL|VARIABLE)\s+)?""" +
+      """[^\s=;]+(?:\s*=\s*|\s+TO\s+))([^\s;'"][^;]*)""").r
+
+  private enum Piece:
+    case Text(s: String)
+    case Quoted(value: String, doubleQuoted: Boolean)
+    case Comment(body: String)
+
+  private def render(ps: Vector[Piece]): String =
+    ps.map {
+      case Piece.Text(s)          => s
+      case Piece.Quoted(_, false) => "'?'"
+      case Piece.Quoted(_, true)  => "\"?\""
+      case Piece.Comment(_)       => " "
+    }.mkString
+
+  /** One pass of [[scanRegion]] over `sql`. Whole words are copied as one run, `$` allowed after
+    * the first character as in [[tokenizeUpTo]] and DuckDB, so `type'x'` is not misread as `E'...'`
+    * and `a$b$c` not as a `$b$` dollar quote. An unterminated construct becomes a tail piece. With
+    * `comments = false` (a comment's body, whose nested markers are prose) comment openers are
+    * plain text, which also keeps the scan linear however deep the nesting.
+    */
+  private def pieces(sql: String, comments: Boolean = true): Vector[Piece] =
+    val n   = sql.length
+    val out = Vector.newBuilder[Piece]
+    var i   = 0
+    while i < n do
+      val c        = sql(i)
+      val eString  = (c == 'E' || c == 'e') && i + 1 < n && sql(i + 1) == '\''
+      val opensCmt =
+        i + 1 < n && (c == '-' && sql(i + 1) == '-' || c == '/' && sql(i + 1) == '*')
+      if (c.isLetterOrDigit || c == '_') && !eString then
+        val start = i
+        while i < n && (sql(i).isLetterOrDigit || sql(i) == '_' || sql(i) == '$') do i += 1
+        out += Piece.Text(sql.substring(start, i))
+      else if opensCmt && !comments then
+        out += Piece.Text(c.toString); i += 1
+      else
+        val (open, close) = delimiters(sql, i)
+        scanRegion(sql, i) match
+          case Some(Right((end, ScanKind.Comment))) =>
+            out += Piece.Comment(sql.substring(i + open, end - close)); i = end
+          case Some(Right((end, kind))) =>
+            out += Piece.Quoted(
+              unescape(c, sql.substring(i + open, end - close)),
+              kind == ScanKind.Ident
+            )
+            i = end
+          case Some(Left(_)) if c == '/' => out += Piece.Comment(sql.substring(i + open)); i = n
+          case Some(Left(_))             =>
+            out += Piece.Quoted(unescape(c, sql.substring((i + open).min(n))), c == '"')
+            i = n
+          case None => out += Piece.Text(c.toString); i += 1
+    out.result()
+
+  /** A quoted span's content as the engine reads it: `''` / `""` doubling undone, so the value an
+    * error echoes (`it's`) is the one handed to the scrubber. `E'...'` escapes are left to the
+    * scrubber's own normalization.
+    */
+  private def unescape(open: Char, raw: String): String =
+    open match
+      case '\'' => raw.replace("''", "'")
+      case '"'  => raw.replace("\"\"", "\"")
+      case _    => raw
+
+  /** Opening and closing delimiter lengths of the [[scanRegion]] construct starting at `sql(i)`. */
+  private def delimiters(sql: String, i: Int): (Int, Int) =
+    sql(i) match
+      case 'E' | 'e' => (2, 1)
+      case '-'       => (2, 0)
+      case '/'       => (2, 2)
+      case '$'       =>
+        val tag = sql.indexOf('$', i + 1) - i + 1
+        if tag > 0 then (tag, tag) else (1, 1)
+      case _ => (1, 1)
 
   // Shared tokenizer core. `maxTokens` bounds how many tokens are collected before returning -
   // used by claims() to avoid a full-statement scan (per-token allocation and toUpperCase,
