@@ -258,6 +258,28 @@ class StdoutTelemetrySinkSpec extends AnyFlatSpec with Matchers:
     js(lines.head).get[String]("sql") shouldBe Right("  SELEC 1;")
   }
 
+  // Follow-up to #156, reproduced against DuckDB 2.0: an apostrophe in a comment, a SET after a
+  // missing `;` and a bare CREATE SECRET value, each echoed by the engine error.
+  it should "scrub a commented literal after an apostrophe, a mid-statement SET and a bare secret" in {
+    val cases = List(
+      "/* don't 'hunter2xy' */ SELEC 1;" -> "LINE 1: /* don't 'hunter2xy' */ SELEC 1;",
+      "SELECT 1\nSET s3_secret_access_key = hunter2xy" -> "LINE 2: SET s3_secret_access_key = hunter2xy",
+      "CREATE SECRET s (TYPE s3, SECRET hunter2xy, KEY_ID AKIA1)" -> "Invalid Input Error: bad hunter2xy"
+    ).map { case (sql, ctx) => sql -> s"Parser Error: syntax error\n$ctx" }
+
+    val f = new Fixture
+    f.sink.appendStatements(cases.map { case (sql, err) =>
+      stmt(0).copy(sql = sql, status = "error", error = Some(err))
+    })
+    f.sink.appendAudit(cases.map { case (sql, err) =>
+      audit.copy(detail = Map("sql" -> sql, "reason" -> err, "error" -> err))
+    })
+
+    val lines = f.flushed()
+    lines should have size 6
+    lines.foreach(_ should not include "hunter2xy")
+  }
+
   it should "mask an error that names a double-quoted identifier (documented over-redaction)" in {
     val f = new Fixture
     f.sink.appendStatements(

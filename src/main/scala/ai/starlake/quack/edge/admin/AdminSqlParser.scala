@@ -1,7 +1,6 @@
 package ai.starlake.quack.edge.admin
 
 import java.util.Locale
-import scala.util.matching.Regex
 
 /** Parser for the SQL admin dialect (spec 2026-09-09-sql-admin-dialect-design.md).
   *
@@ -156,39 +155,120 @@ object AdminSqlParser:
     else None
 
   /** `sql` with every value masked, for sinks that leave the control plane: string literals become
-    * `'?'`, double-quoted spans `"?"`, comments a space, and the unquoted value of a
-    * statement-leading `SET` / `PRAGMA` assignment `?`. Secrets ride in both quote forms (`CREATE
-    * SECRET ... SECRET '...'` and `SECRET "..."`, `ATTACH '...password=...'`) and bare (`SET
-    * s3_secret_access_key = ...`), and a commented-out literal is still a literal. A span left open
-    * at the end (SQL cut by a length cap) is masked to the end, keeping the statement readable up
-    * to it.
+    * `'?'`, double-quoted spans `"?"`, comments a space, and an unquoted value (see [[bareSpans]])
+    * `?`. Secrets ride in both quote forms (`CREATE SECRET ... SECRET '...'` and `SECRET "..."`,
+    * `ATTACH '...password=...'`) and bare (`SET s3_secret_access_key = ...`, `CREATE SECRET ...
+    * SECRET ...`), and a commented-out literal is still a literal. A span left open at the end (SQL
+    * cut by a length cap) is masked to the end, keeping the statement readable up to it.
     */
   def redactLiterals(sql: String): String =
-    BareAssignment.replaceAllIn(render(pieces(sql)), m => Regex.quoteReplacement(m.group(1) + "?"))
+    val rendered = render(pieces(sql))
+    val out      = new StringBuilder
+    val last     = bareSpans(rendered).foldLeft(0) { case (from, (start, end)) =>
+      out.append(rendered.substring(from, start)).append('?')
+      end
+    }
+    out.append(rendered.substring(last)).toString
 
   /** The contents of every quoted span of `sql` (string literals in any form and double-quoted
-    * spans, delimiters stripped, those inside comments included) and every bare `SET` / `PRAGMA`
-    * value. Feeds `AttachErrorRedactor.scrub` as the known values to chase through an engine error
-    * about this statement, which echoes them in its own quoting or in its `LINE 1:` context.
+    * spans, delimiters stripped, those inside comments included) and every bare value. Feeds
+    * `AttachErrorRedactor.scrub` as the known values to chase through an engine error about this
+    * statement, which echoes them in its own quoting or in its `LINE 1:` context.
+    *
+    * A comment is prose, where an apostrophe (`don't`) shifts the scanner's pairing of the quotes
+    * after it, so every run between two quote characters of a comment is a value too, whatever the
+    * pairing. The cost is over-redaction of a commented-out sentence an error echoes.
     */
   def quotedValues(sql: String): Set[String] =
     val ps     = pieces(sql)
     val quoted = ps.flatMap {
       case Piece.Quoted(v, _)  => Vector(v)
       case Piece.Comment(body) =>
-        pieces(body, comments = false).collect { case Piece.Quoted(v, _) => v }
+        pieces(body, comments = false).collect { case Piece.Quoted(v, _) => v } ++
+          Vector('\'', '"').flatMap(q => body.split(q.toString, -1).drop(1).dropRight(1))
       case Piece.Text(_) => Vector.empty
     }
-    val bare = BareAssignment.findAllMatchIn(render(ps)).map(_.group(2).trim)
+    val rendered = render(ps)
+    val bare     = bareSpans(rendered).map((start, end) => rendered.substring(start, end).trim)
     (quoted ++ bare).filter(_.nonEmpty).toSet
 
-  /** A statement-leading `SET` / `PRAGMA` assignment (group 1) of an unquoted value (group 2), on
-    * [[render]]ed text. Any setting name: a name filter misses a quoted name (`SET
-    * "s3_secret_access_key" = ...`), and quoted values are masked regardless of name.
+  /** Spans of [[render]]ed text holding an unquoted value, in order and disjoint:
+    *   - the value of a `SET` / `PRAGMA` assignment, any setting name (a name filter misses a
+    *     quoted name, `SET "s3_secret_access_key" = ...`, and quoted values are masked regardless
+    *     of name). Wherever it sits, so `SELECT 1\nSET k = v` (a missing `;`, which DuckDB echoes
+    *     in its `LINE 2:` context) is covered, except after an `UPDATE` in the same statement
+    *     (`UPDATE t SET`, `ON CONFLICT DO UPDATE SET`, `WHEN MATCHED THEN UPDATE SET`).
+    *   - the value of every `CREATE SECRET` option but `TYPE` and `PROVIDER`: DuckDB takes a bare
+    *     word for any of them (`SECRET hunter2`).
     */
+  private def bareSpans(rendered: String): Vector[(Int, Int)] =
+    val assignments = BareAssignment
+      .findAllMatchIn(rendered)
+      .filterNot { m =>
+        val from = rendered.lastIndexOf(';', m.start - 1) + 1
+        UpdateWord.findFirstIn(rendered.substring(from, m.start)).isDefined
+      }
+      .map(m => (m.start(1), m.end(1)))
+    val options =
+      SecretHeader.findAllMatchIn(rendered).flatMap(m => secretOptionSpans(rendered, m.end))
+    (assignments ++ options).toVector
+      .sortBy(_._1)
+      .foldLeft(Vector.empty[(Int, Int)]) {
+        case (acc :+ ((s, e)), (start, end)) if start < e => acc :+ (s, e.max(end))
+        case (acc, span)                                  => acc :+ span
+      }
+
+  /** A `SET` / `PRAGMA` assignment of an unquoted value (group 1). */
   private val BareAssignment =
-    ("""(?i)((?:^|;)\s*(?:SET|PRAGMA)\s+(?:(?:GLOBAL|SESSION|LOCAL|VARIABLE)\s+)?""" +
-      """[^\s=;]+(?:\s*=\s*|\s+TO\s+))([^\s;'"][^;]*)""").r
+    ("""(?i)(?<![\w$"])(?:SET|PRAGMA)\s+(?:(?:GLOBAL|SESSION|LOCAL|VARIABLE)\s+)?""" +
+      """[^\s=;]+(?:\s*=\s*|\s+TO\s+)([^\s;'"][^;]*)""").r
+
+  private val UpdateWord = """(?i)(?<![\w$"])UPDATE(?![\w$"])""".r
+
+  /** A `CREATE SECRET` statement up to the `(` opening its option list. */
+  private val SecretHeader =
+    ("""(?i)(?<![\w$"])CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:PERSISTENT|TEMPORARY)\s+)?""" +
+      """SECRET(?![\w$"])[^(;]*\(""").r
+
+  /** Options whose value names a kind, never a credential, kept readable. */
+  private val PlainSecretOptions = Set("TYPE", "PROVIDER")
+
+  /** Value spans of the `CREATE SECRET` option list starting at `from` (just past its `(`): one
+    * `NAME value` item per top-level comma, up to the closing `)`, a `;` or the end (SQL cut by a
+    * length cap). A value made only of quoted placeholders (`'?'`, `SCOPE ['?', '?']`) is left as
+    * is.
+    */
+  private def secretOptionSpans(rendered: String, from: Int): Vector[(Int, Int)] =
+    def item(start: Int, end: Int): Option[(Int, Int)] =
+      var i = start
+      while i < end && rendered(i).isWhitespace do i += 1
+      val nameStart = i
+      while i < end && !rendered(i).isWhitespace do i += 1
+      val name = rendered.substring(nameStart, i).toUpperCase(Locale.ROOT)
+      while i < end && rendered(i).isWhitespace do i += 1
+      var j = end
+      while j > i && rendered(j - 1).isWhitespace do j -= 1
+      val value  = rendered.substring(i, j)
+      val masked = value.replace("'?'", "").replace("\"?\"", "")
+      if PlainSecretOptions(name) || masked.forall(c => c.isWhitespace || ",[]()".contains(c))
+      then None
+      else Some((i, j))
+    val n         = rendered.length
+    val spans     = Vector.newBuilder[(Int, Int)]
+    var i         = from
+    var depth     = 0
+    var itemStart = from
+    while i < n && rendered(i) != ';' && !(depth == 0 && rendered(i) == ')') do
+      rendered(i) match
+        case '(' | '[' | '{'   => depth += 1
+        case ')' | ']' | '}'   => depth -= 1
+        case ',' if depth == 0 =>
+          spans ++= item(itemStart, i)
+          itemStart = i + 1
+        case _ => ()
+      i += 1
+    spans ++= item(itemStart, i)
+    spans.result()
 
   private enum Piece:
     case Text(s: String)
