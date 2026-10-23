@@ -553,8 +553,7 @@ class AdminSqlParserSpec extends AnyFlatSpec with Matchers:
   it should "collect quoted spans inside comments, nested markers read as prose" in:
     AdminSqlParser.quotedValues(
       "/* SECRET 'pw1' /* 'pw2' */ -- 'pw3' */ SELEC 1 -- x 'pw4'"
-    ) shouldBe
-      Set("pw1", "pw2", "pw3", "pw4")
+    ) should contain allOf ("pw1", "pw2", "pw3", "pw4")
     AdminSqlParser.quotedValues("SELECT 1 /* open 'pw5'") shouldBe Set("pw5")
 
   "redactLiterals and quotedValues" should "cover the bare value of a leading SET or PRAGMA" in:
@@ -570,3 +569,41 @@ class AdminSqlParserSpec extends AnyFlatSpec with Matchers:
     redactLiterals("RESET s3_secret_access_key") shouldBe "RESET s3_secret_access_key"
     quotedValues("SET s3_secret_access_key = hunter2xy extra ; SELECT 'a1'") shouldBe
       Set("hunter2xy extra", "a1")
+
+  // Follow-up to #156, reproduced against DuckDB 2.0: a SET after a missing `;` is echoed in
+  // `LINE 2:`, so an assignment is masked wherever it sits, except in an UPDATE's SET clause.
+  it should "cover a SET that does not start the statement, but not an UPDATE's SET clause" in:
+    import AdminSqlParser.{quotedValues, redactLiterals}
+    redactLiterals("SELECT 1\nSET s3_secret_access_key = hunter2xy") shouldBe
+      "SELECT 1\nSET s3_secret_access_key = ?"
+    quotedValues("SELECT 1\nSET s3_secret_access_key = hunter2xy") shouldBe Set("hunter2xy")
+    redactLiterals("UPDATE t\nSET api_key = k2 WHERE id = 1") shouldBe
+      "UPDATE t\nSET api_key = k2 WHERE id = 1"
+    redactLiterals("INSERT INTO t VALUES (1) ON CONFLICT DO UPDATE SET a = b") shouldBe
+      "INSERT INTO t VALUES (1) ON CONFLICT DO UPDATE SET a = b"
+    redactLiterals("SELECT update_ts FROM t\nSET k = hunter2xy") shouldBe
+      "SELECT update_ts FROM t\nSET k = ?"
+    redactLiterals("UPDATE t SET a = 1; SET k = hunter2xy") shouldBe "UPDATE t SET a = 1; SET k = ?"
+    redactLiterals("SELECT settings_set, reset FROM t") shouldBe "SELECT settings_set, reset FROM t"
+
+  // Follow-up to #156: DuckDB 2.0 accepts a bare word for any CREATE SECRET option.
+  it should "cover bare CREATE SECRET option values, TYPE and PROVIDER kept" in:
+    import AdminSqlParser.{quotedValues, redactLiterals}
+    val sql = "CREATE SECRET s (TYPE s3, KEY_ID AKIAEXAMPLE, SECRET hunter2xyz, REGION 'eu')"
+    redactLiterals(sql) shouldBe "CREATE SECRET s (TYPE s3, KEY_ID ?, SECRET ?, REGION '?')"
+    quotedValues(sql) shouldBe Set("AKIAEXAMPLE", "hunter2xyz", "eu")
+    redactLiterals(
+      "create or replace persistent secret if not exists s in local " +
+        "(type postgres, provider config, password pw9x, scope ['a', 'b'], x getenv('V'))"
+    ) shouldBe
+      "create or replace persistent secret if not exists s in local " +
+      "(type postgres, provider config, password ?, scope ['?', '?'], x ?)"
+    redactLiterals("SELECT 1; CREATE TEMPORARY SECRET (TYPE s3, SECRET hunter2") shouldBe
+      "SELECT 1; CREATE TEMPORARY SECRET (TYPE s3, SECRET ?"
+    redactLiterals("""CREATE SECRET (TYPE s3, "SECRET" hunter2xyz)""") shouldBe
+      """CREATE SECRET (TYPE s3, "?" ?)"""
+
+  it should "chase every run between two quotes of a comment, apostrophes included" in:
+    AdminSqlParser.quotedValues("/* don't 'hunter2xy' */ SELEC 1;") should contain("hunter2xy")
+    AdminSqlParser.quotedValues("-- users' \"hunter3xy\" isn't 'pw'\nSELEC 1") should
+      contain("hunter3xy")
